@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="沿大模型注意力架构演化学习 MHA、MQA、GQA、MLA、DSA、CSA/HCA、Linear Attention、DeltaNet 与 KDA。"
+    />
+    <title>Attention Atlas · 前沿注意力架构教程</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    />
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    ></script>
+    <script defer src="assets/chapters.js"></script>
+    <script defer src="assets/course.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <nav class="topbar" aria-label="主导航">
+        <a class="brand" href="index.html">Attention <span>Atlas</span></a>
+        <div class="topnav">
+          <a href="#lineage">发展脉络</a>
+          <a href="#chapters">章节</a>
+          <a href="#cost">成本尺</a>
+          <a href="#sources">来源</a>
+        </div>
+      </nav>
+
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Architecture-first · Mathematics-led</p>
+          <h1>Attention<em>演化图谱</em></h1>
+          <p class="lede">
+            从 2017 年的全量多头读取，到 2026 年沿“头、宽度、位置、状态”四个维度压缩历史。
+            每一章都用同一套问题框架：<strong>为什么设计、受什么限制、数学上改变了什么、代价转移到了哪里。</strong>
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="chapter.html?id=mha">从 MHA 开始</a>
+            <a class="button" href="#lineage">先看全局地图 ↓</a>
+          </div>
+        </div>
+
+        <svg
+          class="hero-map"
+          viewBox="0 0 480 520"
+          role="img"
+          aria-label="注意力架构的三条演化分支"
+        >
+          <defs>
+            <marker
+              id="hero-arrow"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+            >
+              <path d="M0 0L8 4L0 8Z" fill="#9aa4b1" />
+            </marker>
+          </defs>
+          <rect width="480" height="520" fill="#faf9f5" />
+          <text x="28" y="30" font-size="9" fill="#718096">
+            THREE WAYS TO AVOID READING EVERYTHING
+          </text>
+
+          <g fill="none" stroke="#aab3bf" stroke-width="1.2" marker-end="url(#hero-arrow)">
+            <path d="M240 84L106 141" />
+            <path d="M240 84L240 141" />
+            <path d="M240 84L374 141" />
+            <path d="M106 180L106 229" />
+            <path d="M106 268C106 309 177 299 177 337" />
+            <path d="M240 180L240 229" />
+            <path d="M240 268L240 337" />
+            <path d="M374 180L374 229" />
+            <path d="M374 268L374 337" />
+            <path d="M177 376C177 420 240 408 240 448" />
+            <path d="M374 376C374 420 240 408 240 448" />
+          </g>
+
+          <g text-anchor="middle">
+            <rect x="184" y="50" width="112" height="38" rx="4" fill="#fff" stroke="#10243b" />
+            <text x="240" y="74" font-size="13" fill="#10243b">MHA · 2017</text>
+
+            <text x="106" y="124" font-size="9" fill="#285f8f">SHARE HEADS</text>
+            <rect x="57" y="142" width="98" height="38" rx="4" fill="#eaf2f8" stroke="#285f8f" />
+            <text x="106" y="166" font-size="12" fill="#285f8f">MQA / GQA</text>
+            <rect x="57" y="230" width="98" height="38" rx="4" fill="#eaf2f8" stroke="#285f8f" />
+            <text x="106" y="254" font-size="12" fill="#285f8f">MLA</text>
+
+            <text x="240" y="124" font-size="9" fill="#8b5d12">SELECT POSITIONS</text>
+            <rect x="191" y="142" width="98" height="38" rx="4" fill="#f8f0df" stroke="#8b5d12" />
+            <text x="240" y="166" font-size="12" fill="#8b5d12">DSA</text>
+            <rect x="191" y="230" width="98" height="38" rx="4" fill="#f8f0df" stroke="#8b5d12" />
+            <text x="240" y="254" font-size="12" fill="#8b5d12">CSA / HCA</text>
+            <rect x="128" y="338" width="98" height="38" rx="4" fill="#f8f0df" stroke="#8b5d12" />
+            <text x="177" y="362" font-size="11" fill="#8b5d12">1M context</text>
+
+            <text x="374" y="124" font-size="9" fill="#39704f">COMPRESS STATE</text>
+            <rect x="325" y="142" width="98" height="38" rx="4" fill="#eaf3ed" stroke="#39704f" />
+            <text x="374" y="166" font-size="12" fill="#39704f">Linear</text>
+            <rect x="325" y="230" width="98" height="38" rx="4" fill="#eaf3ed" stroke="#39704f" />
+            <text x="374" y="254" font-size="12" fill="#39704f">DeltaNet</text>
+            <rect x="325" y="338" width="98" height="38" rx="4" fill="#f0ebf7" stroke="#684b91" />
+            <text x="374" y="362" font-size="12" fill="#684b91">KDA</text>
+
+            <circle class="pulse" cx="240" cy="468" r="36" fill="none" stroke="#684b91" />
+            <rect x="168" y="449" width="144" height="38" rx="19" fill="#f0ebf7" stroke="#684b91" />
+            <text x="240" y="473" font-size="12" fill="#684b91">Hybrid Attention</text>
+          </g>
+        </svg>
+      </header>
+
+      <section class="metric-strip" aria-label="课程统计">
+        <div class="metric"><strong>10</strong><span>核心章节</span></div>
+        <div class="metric"><strong>3</strong><span>演化分支</span></div>
+        <div class="metric"><strong>18+</strong><span>推导与练习</span></div>
+        <div class="metric">
+          <strong data-progress-count>0 / 10</strong><span>本地学习进度</span>
+        </div>
+      </section>
+
+      <main>
+        <section class="section" id="lineage">
+          <header class="section-head">
+            <span class="section-no">I</span>
+            <div>
+              <h2>不是一条直线，而是三种瓶颈的分叉</h2>
+              <p>
+                一条路线减少 KV 头或每条记录的宽度；一条路线减少需要读取的位置；
+                另一条路线把整个历史折叠成固定状态。2025 年后的主流趋势是把这些路线重新混合。
+              </p>
+            </div>
+          </header>
+          <div class="legend" aria-label="图例">
+            <span><i style="background: var(--dense)"></i>KV 共享 / 低秩</span>
+            <span><i style="background: var(--sparse)"></i>稀疏 / 序列压缩</span>
+            <span><i style="background: var(--linear)"></i>有限状态</span>
+            <span><i style="background: var(--hybrid)"></i>混合架构</span>
+          </div>
+          <div class="timeline">
+            <div class="era dense" data-year="2017">
+              <a class="era-card" href="chapter.html?id=mha">
+                <span class="era-code">MHA</span>
+                <span class="era-copy"><strong>每头独立 K/V</strong><span>高表达力，建立 dense 基线</span></span>
+                <span class="era-cost">CACHE O(LHd)<br />CORE O(L²d)</span>
+              </a>
+            </div>
+            <div class="era dense" data-year="2019">
+              <a class="era-card" href="chapter.html?id=mqa">
+                <span class="era-code">MQA</span>
+                <span class="era-copy"><strong>全部 Q 头共享一套 K/V</strong><span>瞄准内存带宽受限的增量解码</span></span>
+                <span class="era-cost">CACHE O(Ld)<br />EXACT SOFTMAX</span>
+              </a>
+            </div>
+            <div class="era linear" data-year="2020">
+              <a class="era-card" href="chapter.html?id=linear">
+                <span class="era-code">Linear</span>
+                <span class="era-copy"><strong>核分解 + 结合律</strong><span>把完整历史折叠进固定矩阵状态</span></span>
+                <span class="era-cost">STATE O(rd)<br />CORE O(Lrd)</span>
+              </a>
+            </div>
+            <div class="era dense" data-year="2023">
+              <a class="era-card" href="chapter.html?id=gqa">
+                <span class="era-code">GQA</span>
+                <span class="era-copy"><strong>Q 分组共享 K/V</strong><span>在 MHA 与 MQA 之间放入可调旋钮</span></span>
+                <span class="era-cost">1 ≤ Hkv ≤ Hq<br />UPTRAINABLE</span>
+              </a>
+            </div>
+            <div class="era dense" data-year="2024">
+              <a class="era-card" href="chapter.html?id=mla">
+                <span class="era-code">MLA</span>
+                <span class="era-copy"><strong>联合低秩 latent KV</strong><span>缓存紧凑源表示，各头按需展开</span></span>
+                <span class="era-cost">CACHE O(Ldc)<br />DECOUPLED ROPE</span>
+              </a>
+            </div>
+            <div class="era linear" data-year="2024">
+              <a class="era-card" href="chapter.html?id=gated-delta">
+                <span class="era-code">Delta</span>
+                <span class="era-copy"><strong>误差驱动的定点改写</strong><span>从累加记忆走向可覆盖记忆</span></span>
+                <span class="era-cost">RANK-1 UPDATE<br />SCALAR GATE</span>
+              </a>
+            </div>
+            <div class="era sparse" data-year="2025">
+              <a class="era-card" href="chapter.html?id=dsa">
+                <span class="era-code">DSA</span>
+                <span class="era-copy"><strong>Lightning Indexer → top-k</strong><span>只对候选 token 做高维 core attention</span></span>
+                <span class="era-cost">CORE O(Lkd)<br />CONTENT SPARSE</span>
+              </a>
+            </div>
+            <div class="era hybrid" data-year="2025">
+              <a class="era-card" href="chapter.html?id=kda">
+                <span class="era-code">KDA</span>
+                <span class="era-copy"><strong>逐通道 gate + delta</strong><span>Kimi Linear 以 3:1 混合 KDA 与 MLA</span></span>
+                <span class="era-cost">DPLR STATE<br />HYBRID GLOBAL</span>
+              </a>
+            </div>
+            <div class="era sparse" data-year="2026">
+              <a class="era-card" href="chapter.html?id=csa">
+                <span class="era-code">CSA</span>
+                <span class="era-copy"><strong>轻压缩 + top-k</strong><span>先把候选轴缩短 4 倍，再检索摘要</span></span>
+                <span class="era-cost">m=4<br />SPARSE CORE</span>
+              </a>
+            </div>
+            <div class="era sparse" data-year="2026">
+              <a class="era-card" href="chapter.html?id=hca">
+                <span class="era-code">HCA</span>
+                <span class="era-copy"><strong>重压缩 + dense</strong><span>128→1 后完整读取全局摘要</span></span>
+                <span class="era-cost">m′=128<br />NO INDEXER</span>
+              </a>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <header class="section-head">
+            <span class="section-no">II</span>
+            <div>
+              <h2>用“压缩发生在哪里”建立心智模型</h2>
+              <p>不要只背缩写。先问被压缩的是头、每个 token、token 数量，还是全部历史状态。</p>
+            </div>
+          </header>
+          <div class="path-grid">
+            <article class="path-card dense">
+              <span class="card-kicker">Width / Heads</span>
+              <h3>减少每条 KV 的宽度</h3>
+              <p>MQA/GQA 减少 KV 头，MLA 把每个 token 的 KV 联合压到 latent。历史条目数仍随 L 增长。</p>
+            </article>
+            <article class="path-card sparse">
+              <span class="card-kicker">Positions / Entries</span>
+              <h3>减少读取或保存的位置</h3>
+              <p>DSA 用 learned top-k 减少精读位置；CSA/HCA 先把多个 token 合成更短的历史。</p>
+            </article>
+            <article class="path-card linear">
+              <span class="card-kicker">State / Recurrence</span>
+              <h3>不再保存逐 token 历史</h3>
+              <p>Linear、DeltaNet、KDA 维护固定矩阵状态。成本不随历史增长，但信息会竞争有限容量。</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="chapters">
+          <header class="section-head">
+            <span class="section-no">III</span>
+            <div>
+              <h2>十章课程</h2>
+              <p>建议按时间顺序学习；已有 Transformer 基础时，也可从 MLA、DSA 或 KDA 直接切入。</p>
+            </div>
+          </header>
+          <div class="chapter-grid" id="chapter-grid"></div>
+        </section>
+
+        <section class="section" id="cost">
+          <header class="section-head">
+            <span class="section-no">IV</span>
+            <div>
+              <h2>先会算 KV cache，再讨论架构</h2>
+              <p>
+                对传统 MHA/GQA/MQA，单 batch 的注意力 KV cache 近似为
+                \(2NLH_{kv}d_hb\) 字节。下面的计算器不含模型权重、激活、碎片和运行时工作区。
+              </p>
+            </div>
+          </header>
+          <form class="calculator" id="kv-calculator">
+            <label>层数 N<input name="layers" type="number" min="1" value="32" /></label>
+            <label>长度 L<input name="length" type="number" min="1" value="32768" /></label>
+            <label>KV 头 Hkv<input name="heads" type="number" min="1" value="8" /></label>
+            <label>头维 dh<input name="dim" type="number" min="1" value="128" /></label>
+            <label>元素字节 b
+              <select name="bytes">
+                <option value="2">2 · BF16/FP16</option>
+                <option value="1">1 · FP8/INT8</option>
+                <option value="4">4 · FP32</option>
+              </select>
+            </label>
+            <output id="kv-result">—</output>
+          </form>
+
+          <div class="compare" aria-label="架构对比">
+            <div class="head">机制</div><div class="head">缓存随 L</div><div class="head">core 随 L</div><div class="head">是否精确 softmax</div><div class="head">主要风险</div>
+            <div>MHA / GQA</div><div>线性</div><div>Prefill 二次</div><div>是</div><div>带宽 / 显存</div>
+            <div>MLA</div><div>线性但更窄</div><div>二次</div><div>是</div><div>实现复杂度</div>
+            <div>DSA / CSA</div><div>线性或压缩线性</div><div>候选集近线性</div><div>候选内是</div><div>检索漏召回</div>
+            <div>Linear / KDA</div><div>固定状态</div><div>线性</div><div>否</div><div>有限状态干扰</div>
+          </div>
+        </section>
+
+        <section class="section" id="sources">
+          <header class="section-head">
+            <span class="section-no">V</span>
+            <div>
+              <h2>证据层级与阅读约定</h2>
+              <p>课程优先使用原论文、模型团队技术报告与官方开源实现；性能数字保留其适用边界。</p>
+            </div>
+          </header>
+          <div class="path-grid">
+            <article class="path-card dense">
+              <span class="card-kicker">Priority 01</span>
+              <h3>正式论文 / 技术报告</h3>
+              <p>公式、架构参数和实验结论以 arXiv、会议论文及模型团队报告为准。</p>
+            </article>
+            <article class="path-card sparse">
+              <span class="card-kicker">Priority 02</span>
+              <h3>官方代码 / Kernel</h3>
+              <p>用实现核对张量布局、缓存内容、精度与工程上真正执行的计算路径。</p>
+            </article>
+            <article class="path-card hybrid">
+              <span class="card-kicker">Reading rule</span>
+              <h3>报告数字 ≠ 普遍定律</h3>
+              <p>“最高 6×”“减少 93.3%”均标注为对应团队、硬件和基线上的自报结果。</p>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>Attention Atlas · Updated for architecture reports through 2026-06</span>
+      </footer>
+    </div>
+  </body>
+</html>
