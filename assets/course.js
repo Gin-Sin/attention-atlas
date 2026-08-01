@@ -125,6 +125,20 @@
   }
 
   function renderDiagram(config) {
+    if (window.AttentionDiagrams) {
+      var report = window.AttentionDiagrams.build(config);
+      var badges = report.badges.map(function (badge) {
+        return "<span>" + esc(badge) + "</span>";
+      }).join("");
+      var notes = report.notes.map(function (note, index) {
+        return '<li><span class="diagram-guide__num">' + String(index + 1).padStart(2, "0") +
+          '</span><div><strong>' + esc(note[0]) + '</strong><p>' + esc(note[1]) + "</p></div></li>";
+      }).join("");
+      return '<figure class="report-figure" id="architecture-block"><div class="diagram-header"><div><span class="diagram-header__eyebrow">Architecture Deconstruction</span><strong>完整 Attention Block · 教学重绘</strong></div><div class="diagram-header__tools"><div class="diagram-legend">' +
+        badges + '</div><button class="diagram-expand" type="button" data-diagram-expand aria-expanded="false">⤢ 放大查看</button></div></div><div class="diagram diagram--report"><div class="diagram-canvas">' +
+        report.svg + '</div></div><figcaption class="figcaption">' + esc(config.caption) +
+        '</figcaption><ol class="diagram-guide">' + notes + "</ol></figure>";
+    }
     var svg = "";
     if (config.type === "heads") svg = headsDiagram(config.mode);
     if (config.type === "latent") svg = latentDiagram();
@@ -140,6 +154,26 @@
     return '<div class="' + className + '-grid">' + items.map(function (item) {
       return '<article class="' + className + '"><span class="label">' + esc(item.label) + '</span><strong>' + esc(item.title) + '</strong><p>' + esc(item.body) + "</p></article>";
     }).join("") + "</div>";
+  }
+
+  function initDiagramExpand(scope) {
+    var figure = scope.querySelector(".report-figure");
+    var button = scope.querySelector("[data-diagram-expand]");
+    if (!figure || !button) return;
+    function setExpanded(expanded) {
+      figure.classList.toggle("is-expanded", expanded);
+      document.body.classList.toggle("diagram-is-open", expanded);
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+      button.textContent = expanded ? "× 关闭大图" : "⤢ 放大查看";
+    }
+    button.addEventListener("click", function () {
+      setExpanded(!figure.classList.contains("is-expanded"));
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && figure.classList.contains("is-expanded")) {
+        setExpanded(false);
+      }
+    });
   }
 
   function renderChapter() {
@@ -199,6 +233,7 @@
       syncButton();
     });
     syncButton();
+    initDiagramExpand(root);
     renderMath(root);
   }
 

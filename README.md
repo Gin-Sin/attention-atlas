@@ -23,6 +23,7 @@ python3 -m http.server 8000
 - `index.html`：发展脉络、课程入口、KV cache 计算器
 - `chapter.html?id=<id>`：统一章节渲染页
 - `assets/chapters.js`：十章的教学内容、公式、练习与来源
+- `assets/diagrams.js`：十套技术报告级 Attention Block SVG 与编号导读
 - `assets/course.js`：章节渲染、SVG 图解、进度与计算器
 - `assets/styles.css`：响应式 editorial-academic 设计系统
 

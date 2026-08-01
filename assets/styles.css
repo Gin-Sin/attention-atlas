@@ -390,6 +390,128 @@ button { font: inherit; }
 .diagram svg { display: block; width: 100%; height: auto; }
 .diagram text { font-family: var(--mono); }
 .figcaption { margin: 0 0 34px; color: var(--muted); text-align: center; font: italic 13px/1.5 var(--serif); }
+.report-figure {
+  width: min(1120px, calc(100vw - 48px));
+  margin-left: 50%;
+  transform: translateX(-50%);
+}
+.diagram-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-bottom: 0;
+  background: white;
+}
+.diagram-header > div:first-child { display: grid; gap: 4px; }
+.diagram-header__tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.diagram-header__eyebrow {
+  color: var(--category);
+  font: 500 9px/1.3 var(--mono);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.diagram-header strong { font: 500 17px/1.3 var(--display); }
+.diagram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.diagram-legend span {
+  padding: 4px 7px;
+  border: 1px solid var(--rule);
+  color: var(--muted);
+  background: var(--paper-2);
+  font: 8px/1.2 var(--mono);
+  letter-spacing: .06em;
+}
+.diagram-expand {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  color: var(--ink);
+  background: white;
+  cursor: pointer;
+  font: 500 10px/1.2 var(--mono);
+}
+.diagram-expand:hover { color: white; background: var(--ink); }
+.diagram--report {
+  margin-top: 0;
+  padding: 0;
+  border-color: var(--rule);
+  background: var(--paper-2);
+}
+.diagram-canvas {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.diagram-canvas svg {
+  min-width: 980px;
+  padding: 0;
+}
+.report-figure .figcaption { margin: 12px 0 26px; }
+.diagram-guide {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+.diagram-guide li {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 12px;
+  min-height: 100px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--rule);
+  background: white;
+}
+.diagram-guide__num {
+  color: var(--category);
+  font: italic 500 22px/1 var(--display);
+}
+.diagram-guide strong {
+  display: block;
+  margin-bottom: 5px;
+  font-family: var(--serif);
+  font-size: 14px;
+}
+.diagram-guide p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+body.diagram-is-open { overflow: hidden; }
+.report-figure.is-expanded {
+  position: fixed;
+  inset: 16px;
+  z-index: 1000;
+  width: auto;
+  margin: 0;
+  padding: 16px;
+  transform: none;
+  overflow: auto;
+  background: white;
+  box-shadow: 0 0 0 100vmax rgb(16 36 59 / 58%);
+}
+.report-figure.is-expanded .diagram-canvas svg { min-width: 1240px; }
+.report-figure.is-expanded .diagram-guide {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding-bottom: 20px;
+}
 
 .warning {
   margin: 24px 0;
@@ -477,6 +599,13 @@ details p { margin-bottom: 0; }
   .chapter-hero { padding-top: 48px; }
   .chapter-nav { grid-template-columns: 1fr; }
   .chapter-nav .next { text-align: left; }
+  .report-figure { width: calc(100vw - 30px); }
+  .diagram-header { align-items: flex-start; flex-direction: column; }
+  .diagram-header__tools { align-items: flex-start; flex-direction: column; }
+  .diagram-legend { justify-content: flex-start; }
+  .diagram-guide { grid-template-columns: 1fr; }
+  .report-figure.is-expanded { inset: 6px; padding: 8px; }
+  .report-figure.is-expanded .diagram-guide { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -488,4 +617,7 @@ details p { margin-bottom: 0; }
   body { background: white; }
   .chapter-shell { width: 100%; }
   .formula, .takeaway, .exercise, .diagram { break-inside: avoid; }
+  .report-figure { width: 100%; margin-left: 0; transform: none; }
+  .diagram-canvas { overflow: visible; }
+  .diagram-canvas svg { min-width: 0; }
 }
