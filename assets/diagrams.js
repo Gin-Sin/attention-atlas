@@ -101,6 +101,19 @@
     ]
   };
 
+  var memories = {
+    mha: "每个 Q 头都有自己的 K/V 档案柜：最完整，也最占缓存。",
+    mqa: "很多个 Q 提问题，只共用一套 K/V 档案：多问、一库。",
+    gqa: "把 Q 头分成若干小组，每组共用一套 K/V：组内共享、组间独立。",
+    mla: "历史 token 只存一张低维提货单 cKV 和一枚位置印章 kR，各头按需读取。",
+    dsa: "Lightning Indexer 先查目录选 top-k，真正的 MLA 再取原始 latent 精读。",
+    csa: "先把每 4 个 token 做重叠智能摘要，再 top-k；最近 128 个 token 保留原文。",
+    hca: "每 128 个 token 压成一份摘要，摘要足够少所以全部阅读，同时保留近期原文。",
+    linear: "不保存逐 token KV，只维护一张键值统计表 S 和一个分母计数器 z。",
+    delta: "先问记忆里这个 key 已经写了什么，再只写入预测误差；GDN 还会先整体褪色。",
+    kda: "让记忆矩阵每个通道以不同速度褪色，再做 delta 纠写；每 3 层 KDA 插 1 层全局 MLA。"
+  };
+
   function defs(id) {
     return (
       '<defs>' +
@@ -168,97 +181,87 @@
     var kv = mode === "mha" ? "Hkv = Hq" : mode === "mqa" ? "Hkv = 1" : "1 < Hkv < Hq";
     var mapping = mode === "mha" ? "一一对应" : mode === "mqa" ? "全部 Q 读取同一 KV" : "组内共享 KV";
     var body = "";
-    body += zone(20, 44, 430, 540, "PROJECTION & POSITION PATH", P.dense);
-    body += zone(472, 44, 310, 540, "ATTENTION CORE", P.hybrid);
-    body += zone(804, 44, 276, 540, "MERGE & WRITE BACK", P.linear);
-    body += box(42, 276, 120, 62, "X / Norm(X)", "profile-dependent [B,L,d]", P.ink, P.paper, 1);
-    body += box(204, 82, 110, 58, "WQ", "d → Hq·dh", P.dense, P.denseSoft, 2);
-    body += box(204, 252, 110, 58, "WK", "d → Hkv·dh", P.dense, P.denseSoft, 2);
-    body += box(204, 422, 110, 58, "WV", "d → Hkv·dv", P.dense, P.denseSoft, 2);
-    body += box(342, 82, 88, 58, "Q heads", "Hq × dh", P.dense, P.paper, 3);
-    body += box(342, 252, 88, 58, "K heads", kv, P.dense, P.paper, 3);
-    body += box(342, 422, 88, 58, "V heads", kv, P.dense, P.paper, 3);
-    body += box(492, 82, 116, 58, "Position(Q)", "RoPE · modern profile", P.hybrid, P.hybridSoft, 4);
-    body += box(492, 252, 116, 58, "Position(K)", "RoPE · modern profile", P.hybrid, P.hybridSoft, 4);
-    body += cacheBox(id, 626, 230, 132, 104, "KV cache", "K′ + V · decode", 5);
-    body += box(492, 392, 266, 58, "Head mapping", mapping, P.dense, P.denseSoft, 5);
-    body += box(492, 478, 266, 74, "A=softmax(QKᵀ/√dh+M+Bpos)", "[B,Hq,Lq,Lk]", P.hybrid, P.hybridSoft, 6);
-    body += box(824, 182, 236, 68, "A · V", "per-query-head outputs", P.linear, P.linearSoft, 7);
-    body += box(824, 292, 236, 58, "Concat heads", "[B,L,Hq·dv]", P.linear, P.paper, 8);
-    body += box(824, 392, 236, 58, "WO", "Hq·dv → d", P.linear, P.linearSoft, 8);
-    body += box(824, 492, 236, 58, "Output + residual", "[B,L,d]", P.ink, P.paper, 9);
-    body += edge(id, "M162 307C182 307 182 111 204 111");
-    body += edge(id, "M162 307H204");
-    body += edge(id, "M162 307C182 307 182 451 204 451");
-    body += edge(id, "M314 111H342");
-    body += edge(id, "M314 281H342");
-    body += edge(id, "M314 451H342");
-    body += edge(id, "M430 111H492");
-    body += edge(id, "M430 281H492");
-    body += edge(id, "M608 111C650 111 650 462 625 478", [654, 104, "Q′"]);
-    body += edge(id, "M608 281H626", [617, 271, "K′"]);
-    body += edge(id, "M430 451C520 451 560 334 626 316", [532, 434, "V"]);
-    body += edge(id, "M758 282C780 282 780 507 758 515");
-    body += edge(id, "M625 450V478");
-    body += edge(id, "M758 515C790 515 790 216 824 216");
-    body += edge(id, "M758 282C790 282 790 216 824 216");
-    body += edge(id, "M942 250V292");
-    body += edge(id, "M942 350V392");
-    body += edge(id, "M942 450V492");
-    return baseSvg(id, 620, body, mode.toUpperCase() + " 完整 attention block");
+    body += zone(18, 58, 344, 540, "PROJECT & RESHAPE", P.dense);
+    body += zone(382, 58, 344, 540, "POSITION, CACHE & ROUTING", P.cache);
+    body += zone(746, 58, 336, 540, "SCORE, MIX & WRITE BACK", P.hybrid);
+
+    body += box(34, 270, 120, 66, "X / Norm(X)", "[B,Lq,d] · profile-dependent", P.ink, P.paper, 1);
+    body += box(188, 92, 152, 68, "WQ → Q heads", "[B,Hq,Lq,D]", P.dense, P.denseSoft, 2);
+    body += box(188, 270, 152, 68, "WK → Knew", "[B,Hkv,Lq,D]", P.dense, P.denseSoft, 2);
+    body += box(188, 448, 152, 68, "WV → Vnew", "[B,Hkv,Lq,D]", P.dense, P.denseSoft, 2);
+
+    body += box(402, 92, 142, 68, "Position(Q)", "RoPE · modern profile", P.hybrid, P.hybridSoft, 3);
+    body += box(402, 244, 142, 68, "Position(K)", "RoPE · modern profile", P.hybrid, P.hybridSoft, 3);
+    body += cacheBox(id, 568, 226, 138, 116, "Append KV cache", "2×[B,Hkv,Lk,D]", 4);
+    body += box(402, 420, 304, 74, "Logical head routing", mapping + " · " + kv, P.dense, P.denseSoft, 5);
+
+    body += box(766, 106, 296, 94, "S = QKᵀ/√D + mask + position bias", "[B,Hq,Lq,Lk] · before softmax", P.hybrid, P.hybridSoft, 6);
+    body += box(766, 246, 296, 76, "A = softmax over key axis", "exact attention weights", P.hybrid, P.paper, 6);
+    body += box(766, 366, 296, 70, "Oheads = A · V", "[B,Hq,Lq,D]", P.linear, P.linearSoft, 7);
+    body += box(766, 474, 142, 72, "Concat → WO", "Hq·D → d", P.linear, P.paper, 8);
+    body += box(930, 474, 132, 72, "Residual output", "[B,Lq,d]", P.ink, P.paper, 9);
+
+    body += edge(id, "M154 303C172 303 172 126 188 126");
+    body += edge(id, "M154 303H188");
+    body += edge(id, "M154 303C172 303 172 482 188 482");
+    body += edge(id, "M340 126H402");
+    body += edge(id, "M340 304C370 304 382 278 402 278");
+    body += edge(id, "M544 278H568");
+    body += edge(id, "M340 482C520 482 520 326 568 326");
+    body += edge(id, "M473 160C473 350 510 390 554 420");
+    body += edge(id, "M637 342V420");
+    body += edge(id, "M706 457C738 430 742 190 766 153");
+    body += edge(id, "M914 200V246");
+    body += edge(id, "M914 322V366");
+    body += edge(id, "M706 284C740 300 744 394 766 401", [734, 290, "cached V"]);
+    body += edge(id, "M914 436C914 456 860 456 837 474");
+    body += edge(id, "M908 510H930");
+    return baseSvg(id, 630, body, mode.toUpperCase() + " 完整 causal self-attention block");
   }
 
   function mlaDiagram() {
     var id = "full-mla";
     var b = "";
-    b += zone(18, 52, 492, 548, "QUERY PATH", P.dense);
-    b += zone(528, 52, 390, 548, "JOINT KV LATENT PATH", P.cache);
-    b += zone(936, 52, 146, 548, "CORE", P.hybrid);
-    b += box(34, 500, 180, 62, "Input hidden hₜ", "[B,1,d]", P.ink, P.paper, 1);
-    b += box(246, 448, 112, 56, "WᴰQ", "down-project + RMSNorm", P.dense, P.denseSoft, 2);
-    b += box(384, 448, 108, 56, "latent cₜQ", "dq", P.dense, P.paper, 2);
-    b += box(246, 314, 112, 56, "WᵁQ", "up-project H heads", P.dense, P.denseSoft, 3);
-    b += box(384, 314, 108, 56, "qᶜ heads", "H × dh", P.dense, P.paper, 3);
-    b += box(246, 180, 112, 56, "WQR", "RoPE branch", P.hybrid, P.hybridSoft, 4);
-    b += box(384, 180, 108, 56, "RoPE(qᴿ)", "H × dR", P.hybrid, P.paper, 4);
-    b += box(246, 82, 246, 62, "concat [qᶜ ; qᴿ]", "full query heads", P.dense, P.denseSoft, 5);
-    b += box(548, 448, 112, 56, "WᴰKV", "down-project + RMSNorm", P.cache, P.cacheSoft, 2);
-    b += cacheBox(id, 686, 438, 206, 76, "latent cₜKV", "CACHED · dc", 3);
-    b += box(548, 314, 112, 56, "WᵁK", "content keys", P.cache, P.cacheSoft, 4);
-    b += box(686, 314, 96, 56, "kᶜ heads", "H × dh", P.cache, P.paper, 4);
-    b += box(796, 382, 96, 44, "WᵁV", "value up-project", P.cache, P.cacheSoft, 4);
-    b += box(796, 314, 96, 56, "v heads", "H × dv", P.cache, P.paper, 4);
-    b += box(548, 180, 112, 56, "WKR", "shared RoPE key", P.hybrid, P.hybridSoft, 4);
-    b += cacheBox(id, 686, 170, 206, 76, "RoPE(kᴿ)", "CACHED · shared dR", 4);
-    b += box(548, 82, 246, 62, "concat [kᶜ ; kᴿ]", "full key heads", P.cache, P.cacheSoft, 5);
-    b += box(948, 108, 122, 88, "Scaled QKᵀ", "+ causal mask", P.hybrid, P.hybridSoft, 6);
-    b += box(948, 238, 122, 68, "Softmax", "over history", P.hybrid, P.paper, 6);
-    b += box(948, 348, 122, 68, "A · V", "head outputs", P.hybrid, P.hybridSoft, 7);
-    b += box(948, 458, 122, 68, "WO → uₜ", "write residual", P.ink, P.paper, 8);
-    b += edge(id, "M214 531C230 531 230 476 246 476");
-    b += edge(id, "M358 476H384");
-    b += edge(id, "M384 476C360 476 330 410 302 370");
-    b += edge(id, "M358 342H384");
-    b += edge(id, "M438 448C438 270 380 250 358 208");
-    b += edge(id, "M358 208H384");
-    b += edge(id, "M438 180V144");
-    b += edge(id, "M438 314V144");
-    b += edge(id, "M214 531H548");
-    b += edge(id, "M660 476H686");
-    b += edge(id, "M686 476C620 476 604 400 604 370");
-    b += edge(id, "M660 342H686");
-    b += edge(id, "M789 438C820 438 844 438 844 426");
-    b += edge(id, "M844 382V370");
-    b += edge(id, "M214 531C520 531 520 208 548 208");
-    b += edge(id, "M660 208H686");
-    b += edge(id, "M734 314V144");
-    b += edge(id, "M794 113H948");
-    b += edge(id, "M492 113H948");
-    b += edge(id, "M1009 196V238");
-    b += edge(id, "M1009 306V348");
-    b += edge(id, "M892 342H948", [919, 332, "V"]);
-    b += edge(id, "M1009 416V458");
-    return baseSvg(id, 630, b, "MLA 完整低秩与解耦 RoPE attention block");
+    b += zone(18, 74, 492, 548, "QUERY CONSTRUCTION", P.dense);
+    b += zone(528, 74, 390, 548, "JOINT KV LATENT & CACHE", P.cache);
+    b += zone(936, 74, 146, 548, "ATTENTION CORE", P.hybrid);
+
+    b += box(340, 642, 420, 54, "Input hidden hₜ", "[B,1,d] · shared source", P.ink, P.paper, 1);
+
+    b += box(138, 526, 252, 66, "WᴰQ → RMSNorm → latent cₜQ", "dq · query low-rank bottleneck", P.dense, P.denseSoft, 2);
+    b += box(42, 394, 186, 64, "WᵁQ → qᶜ heads", "content query · H × dh", P.dense, P.paper, 3);
+    b += box(264, 394, 220, 64, "WQR → RoPE(qᴿ)", "position query · H × dR", P.hybrid, P.hybridSoft, 4);
+    b += box(92, 258, 350, 68, "concat [qᶜ ; qᴿ]", "complete multi-head query", P.dense, P.denseSoft, 5);
+
+    b += cacheBox(id, 598, 526, 270, 66, "WᴰKV → RMSNorm → latent cₜKV", "CACHED · dc · joint K/V bottleneck", 2);
+    b += box(544, 394, 156, 64, "WᵁK → kᶜ heads", "content key · H × dh", P.cache, P.paper, 3);
+    b += box(724, 394, 156, 64, "WᵁV → v heads", "value · H × dv", P.cache, P.paper, 3);
+    b += cacheBox(id, 724, 286, 156, 72, "WKR(hₜ) → RoPE(kᴿ)", "CACHED · shared dR", 4);
+    b += box(544, 258, 156, 68, "concat [kᶜ ; kᴿ]", "complete key heads", P.cache, P.cacheSoft, 5);
+
+    b += box(948, 112, 122, 86, "Scaled QKᵀ", "+ causal mask", P.hybrid, P.hybridSoft, 6);
+    b += box(948, 238, 122, 64, "Softmax", "over cached history", P.hybrid, P.paper, 6);
+    b += box(948, 350, 122, 68, "A · V", "per-head output", P.hybrid, P.hybridSoft, 7);
+    b += box(948, 474, 122, 68, "Concat → WO → uₜ", "write residual", P.ink, P.paper, 8);
+
+    b += edge(id, "M460 642C410 624 330 610 264 592");
+    b += edge(id, "M640 642C690 624 760 610 733 592");
+    b += edge(id, "M264 526C220 500 165 482 135 458");
+    b += edge(id, "M264 526C320 500 360 482 374 458");
+    b += edge(id, "M135 394C135 360 190 344 220 326");
+    b += edge(id, "M374 394C374 360 330 344 310 326");
+    b += edge(id, "M733 526C690 500 640 482 622 458");
+    b += edge(id, "M733 526C780 500 800 482 802 458");
+    b += edge(id, "M700 394C700 360 650 344 622 326");
+    b += edge(id, "M760 669C920 669 920 322 880 322", [914, 520, "direct position-key branch"]);
+    b += edge(id, "M802 286C760 270 720 270 700 292");
+    b += edge(id, "M442 292C650 214 850 158 948 155");
+    b += edge(id, "M700 292C800 230 880 180 948 155");
+    b += edge(id, "M1009 198V238");
+    b += edge(id, "M1009 302V350");
+    b += edge(id, "M880 426C916 426 930 384 948 384", [918, 414, "V"]);
+    b += edge(id, "M1009 418V474");
+    return baseSvg(id, 720, b, "MLA 完整低秩、解耦 RoPE 与推理缓存结构");
   }
 
   function dsaDiagram() {
@@ -333,7 +336,7 @@
     b += edge(id, "M420 312V254");
     b += edge(id, "M250 186C330 150 460 150 538 210");
     b += edge(id, "M414 186C470 160 500 180 538 210");
-    b += edge(id, "M654 262V354", [675, 310, "scan L/m"]);
+    b += edge(id, "M654 262C654 318 592 326 592 354", [634, 310, "scan L/m"]);
     b += edge(id, "M646 383H662");
     b += edge(id, "M716 412V476");
     b += edge(id, "M770 508C800 508 800 327 828 327");
@@ -365,7 +368,7 @@
     b += box(826, 250, 236, 42, "inverse RoPE(−t)", "output trailing 64 dims", P.hybrid, P.paper, 8);
     b += box(826, 168, 236, 56, "Grouped WᴼA → concat → WᴼB", "low-rank head groups → d", P.linear, P.linearSoft, 8);
     b += box(826, 76, 236, 56, "Output hidden", "[B,L,d]", P.ink, P.paper, 9);
-    b += edge(id, "M154 484H184");
+    b += edge(id, "M154 484C170 484 170 432 184 432");
     b += edge(id, "M154 484C170 484 170 517 184 517");
     b += edge(id, "M296 432H326");
     b += edge(id, "M296 517H326");
@@ -428,88 +431,85 @@
   function deltaDiagram() {
     var id = "full-delta";
     var b = "";
-    b += zone(18, 46, 394, 544, "LOCAL MIXING & PROJECTIONS", P.linear);
-    b += zone(430, 46, 374, 544, "GATED DELTA FAST WEIGHT", P.cache);
-    b += zone(822, 46, 260, 544, "READOUT", P.hybrid);
-    b += box(34, 474, 120, 58, "Input xₜ", "[B,1,d]", P.ink, P.paper, 1);
-    b += box(184, 474, 206, 58, "WQ/WK/WV/Wα/Wβ/Wg", "parallel projections", P.linear, P.linearSoft, 2);
-    b += box(184, 338, 92, 54, "q/k ShortConv", "SiLU", P.linear, P.linearSoft, 3);
-    b += box(298, 338, 92, 54, "v ShortConv", "SiLU", P.linear, P.linearSoft, 3);
-    b += box(184, 228, 92, 54, "L2 norm", "q̂,k̂", P.linear, P.paper, 4);
-    b += box(298, 228, 92, 54, "β = sigmoid", "write gate / head", P.linear, P.paper, 4);
-    b += box(184, 118, 206, 54, "GDN: Wα → log-decay", "scalar α / head · optional in DeltaNet", P.linear, P.linearSoft, 4);
-    b += cacheBox(id, 450, 110, 160, 88, "Sₜ₋₁", "dk × dv fast weight", 5);
-    b += box(634, 104, 150, 100, "α(I−βkkᵀ)Sₜ₋₁", "forget + directional erase", P.cache, P.cacheSoft, 6);
-    b += box(522, 286, 188, 74, "+ β k vᵀ", "write corrected value", P.cache, P.cacheSoft, 6);
-    b += cacheBox(id, 522, 438, 188, 78, "updated Sₜ", "recurrent decode state", 7);
-    b += box(842, 128, 220, 66, "oₜ = Sₜᵀqₜ", "query-dependent read", P.hybrid, P.hybridSoft, 8);
-    b += box(842, 274, 220, 72, "RMSNorm × SiLU(Wg x)", "Gated DeltaNet output gate", P.hybrid, P.paper, 9);
-    b += box(842, 426, 220, 62, "WO + residual", "output hidden", P.ink, P.paper, 10);
-    b += edge(id, "M154 503H184");
-    b += edge(id, "M287 474C287 430 230 430 230 392");
-    b += edge(id, "M287 474C320 440 344 430 344 392");
-    b += edge(id, "M230 338V282");
-    b += edge(id, "M390 503C420 503 420 255 390 255");
-    b += edge(id, "M287 474V172");
-    b += edge(id, "M610 154H634");
-    b += edge(id, "M390 145C500 40 700 40 709 104");
-    b += edge(id, "M276 255C430 230 520 300 522 323");
-    b += edge(id, "M390 255C470 255 490 323 522 323");
-    b += edge(id, "M344 392C430 392 470 340 522 323");
-    b += edge(id, "M709 204V286");
-    b += edge(id, "M616 360V438");
-    b += edge(id, "M710 477C790 477 790 161 842 161");
-    b += edge(id, "M276 255C600 210 760 161 842 161");
-    b += edge(id, "M952 194V274");
-    b += edge(id, "M390 503C640 590 760 390 842 310", [690, 525, "Wg output branch"], P.hybrid);
-    b += edge(id, "M952 346V426");
-    b += '<text x="452" y="560" font-size="10" fill="' + P.muted + '">TRAIN: WY / chunkwise scan packs rank-1 updates</text>';
-    return baseSvg(id, 620, b, "Gated DeltaNet 完整局部卷积、门控状态更新与输出 block");
+    b += zone(18, 54, 330, 540, "1 · PARAMETERIZE CURRENT TOKEN", P.linear);
+    b += zone(366, 54, 374, 540, "2 · PREDICT, ERASE & REWRITE", P.cache);
+    b += zone(758, 54, 324, 540, "3 · READOUT", P.hybrid);
+
+    b += box(38, 480, 116, 58, "Input xₜ", "[B,1,d]", P.ink, P.paper, 1);
+    b += box(176, 470, 152, 78, "Parallel projections", "WQ/WK/WV/Wα/Wβ/Wg", P.linear, P.linearSoft, 2);
+    b += box(58, 330, 124, 72, "q/k paths", "ShortConv→SiLU→L2Norm", P.linear, P.paper, 3);
+    b += box(204, 330, 124, 72, "v and β paths", "ShortConv→SiLU / sigmoid", P.linear, P.paper, 3);
+    b += box(58, 186, 124, 82, "GDN scalar α", "Wα→log-decay · DeltaNet=1", P.hybrid, P.hybridSoft, 4);
+    b += box(204, 186, 124, 82, "output gate g", "Wg→SiLU · GDN profile", P.hybrid, P.hybridSoft, 4);
+
+    b += cacheBox(id, 482, 96, 142, 76, "Sₜ₋₁", "[B,H,dk,dv]", 5);
+    b += box(398, 236, 310, 118, "Sₜ = αSₜ₋₁ + βk(v−(αSₜ₋₁)ᵀk)ᵀ", "decay → predict old value → error-controlled rewrite", P.cache, P.cacheSoft, 6);
+    b += cacheBox(id, 482, 442, 142, 76, "Sₜ", "fixed recurrent state", 7);
+
+    b += box(788, 112, 264, 72, "oₜ = Sₜᵀ(qₜ/√dk)", "query-dependent state read", P.hybrid, P.hybridSoft, 8);
+    b += box(788, 236, 264, 72, "RMSNorm(oₜ) × SiLU(g)", "Gated DeltaNet output gate", P.hybrid, P.paper, 9);
+    b += box(788, 360, 264, 64, "WO + residual", "attention-block output", P.ink, P.paper, 10);
+    b += box(788, 488, 264, 66, "TRAIN: decay-aware UT / WY", "chunk boundary state + intra-chunk parallel read", P.linear, P.linearSoft);
+
+    b += edge(id, "M154 509H176");
+    b += edge(id, "M252 470C220 444 152 426 120 402");
+    b += edge(id, "M252 470C285 444 288 426 266 402");
+    b += edge(id, "M252 470C220 390 152 304 120 268");
+    b += edge(id, "M252 470C300 390 290 304 266 268");
+    b += edge(id, "M553 172V236");
+    b += edge(id, "M182 366C300 366 340 300 398 300", [286, 356, "q,k"]);
+    b += edge(id, "M328 366C360 350 380 322 398 312", [354, 340, "v,β"]);
+    b += edge(id, "M182 227C300 190 350 246 398 270", [300, 194, "α"]);
+    b += edge(id, "M553 354V442");
+    b += edge(id, "M624 480C720 480 730 148 788 148");
+    b += edge(id, "M920 184V236");
+    b += edge(id, "M920 308V360");
+    b += edge(id, "M920 424V488", [938, 466, "training schedule"], P.linear, true);
+    return baseSvg(id, 630, b, "Gated DeltaNet 的预测误差改写、标量遗忘与输出门");
   }
 
   function kdaDiagram() {
     var id = "full-kda";
     var b = "";
-    b += zone(18, 42, 400, 548, "KDA PARAMETERIZATION", P.linear);
-    b += zone(436, 42, 366, 548, "CHANNEL-WISE DPLR STATE", P.cache);
-    b += zone(820, 42, 262, 548, "READOUT & HYBRID STACK", P.hybrid);
-    b += box(34, 486, 120, 56, "Input xₜ", "[B,1,d]", P.ink, P.paper, 1);
-    b += box(182, 486, 216, 56, "WQ/WK/WV/Wα/Wβ/Wg", "parallel projections", P.linear, P.linearSoft, 2);
-    b += box(182, 366, 96, 52, "q/k ShortConv", "SiLU + L2Norm", P.linear, P.linearSoft, 3);
-    b += box(302, 366, 96, 52, "v ShortConv + β", "SiLU / sigmoid", P.linear, P.linearSoft, 3);
-    b += box(182, 246, 216, 66, "W↓α → W↑α", "low-rank channel gate", P.hybrid, P.hybridSoft, 4);
-    b += box(182, 128, 216, 66, "αₜ ∈ [0,1]ᵈᵏ", "one decay per key channel", P.hybrid, P.paper, 4);
-    b += cacheBox(id, 456, 104, 142, 84, "Sₜ₋₁", "dk × dv", 5);
-    b += box(622, 92, 160, 108, "Diag(αₜ)Sₜ₋₁", "fine-grained decay", P.cache, P.cacheSoft, 6);
-    b += box(456, 272, 326, 92, "(I−βkkᵀ) · decayed S", "Householder-style erase", P.cache, P.cacheSoft, 6);
-    b += box(506, 430, 226, 70, "+ β k vᵀ", "delta write", P.cache, P.cacheSoft, 7);
-    b += cacheBox(id, 506, 522, 226, 56, "Sₜ", "decode recurrent state", 7);
-    b += box(840, 96, 222, 66, "oₜ = Sₜᵀqₜ", "state read", P.hybrid, P.hybridSoft, 8);
-    b += box(840, 220, 222, 66, "RMSNorm × sigmoid(g)", "Wg↓ → Wg↑ output gate", P.hybrid, P.paper, 9);
-    b += box(840, 344, 222, 58, "WO + residual", "output hidden", P.ink, P.paper, 10);
-    b += box(840, 468, 52, 68, "KDA", "L1", P.linear, P.linearSoft);
-    b += box(900, 468, 52, 68, "KDA", "L2", P.linear, P.linearSoft);
-    b += box(960, 468, 52, 68, "KDA", "L3", P.linear, P.linearSoft);
-    b += box(1020, 468, 52, 68, "MLA", "L4 · NoPE", P.dense, P.denseSoft);
-    b += edge(id, "M154 514H182");
-    b += edge(id, "M290 486C290 450 230 450 230 418");
-    b += edge(id, "M290 486C350 450 350 436 350 418");
-    b += edge(id, "M290 486V312");
-    b += edge(id, "M290 246V194");
-    b += edge(id, "M398 161C500 40 690 40 702 92");
-    b += edge(id, "M598 146H622");
-    b += edge(id, "M702 200V272");
-    b += edge(id, "M278 392C420 360 430 318 456 318");
-    b += edge(id, "M398 392C440 392 470 465 506 465");
-    b += edge(id, "M619 364V430");
-    b += edge(id, "M619 500V522");
-    b += edge(id, "M732 550C810 550 810 129 840 129");
-    b += edge(id, "M278 392C650 230 760 129 840 129");
-    b += edge(id, "M951 162V220");
-    b += edge(id, "M398 514C650 590 760 360 840 253", [690, 523, "low-rank Wg"], P.hybrid);
-    b += edge(id, "M951 286V344");
-    b += '<text x="840" y="448" font-size="10" font-weight="600" fill="' + P.hybrid + '">KIMI LINEAR · LAYERWISE 3 : 1</text>';
-    return baseSvg(id, 620, b, "KDA 完整通道门控状态更新、输出门与 Kimi Linear 混合层栈");
+    b += zone(18, 54, 330, 540, "1 · PARAMETERIZE CURRENT TOKEN", P.linear);
+    b += zone(366, 54, 374, 540, "2 · UPDATE CHANNEL-WISE STATE", P.cache);
+    b += zone(758, 54, 324, 540, "3 · READ & PLACE IN HYBRID STACK", P.hybrid);
+
+    b += box(38, 480, 116, 58, "Input xₜ", "[B,1,d]", P.ink, P.paper, 1);
+    b += box(176, 470, 152, 78, "Parallel projections", "WQ/WK/WV/Wα/Wβ/Wg", P.linear, P.linearSoft, 2);
+    b += box(58, 330, 124, 72, "q/k paths", "ShortConv→SiLU→L2Norm", P.linear, P.paper, 3);
+    b += box(204, 330, 124, 72, "v and β paths", "ShortConv→SiLU / sigmoid", P.linear, P.paper, 3);
+    b += box(58, 186, 124, 82, "channel α", "W↓α→W↑α→log-decay", P.hybrid, P.hybridSoft, 4);
+    b += box(204, 186, 124, 82, "output gate g", "W↓g→W↑g→sigmoid", P.hybrid, P.hybridSoft, 4);
+
+    b += cacheBox(id, 482, 96, 142, 76, "Sₜ₋₁", "[B,H,dk,dv]", 5);
+    b += box(398, 236, 310, 118, "(I−βkkᵀ)Diag(α)Sₜ₋₁ + βkvᵀ", "channel decay → directional erase → delta write", P.cache, P.cacheSoft, 6);
+    b += cacheBox(id, 482, 442, 142, 76, "Sₜ", "fixed recurrent state", 7);
+
+    b += box(788, 112, 264, 72, "oₜ = Sₜᵀ(qₜ/√dk)", "query-dependent state read", P.hybrid, P.hybridSoft, 8);
+    b += box(788, 236, 264, 72, "RMSNorm(oₜ) × sigmoid(g)", "low-rank output gate", P.hybrid, P.paper, 9);
+    b += box(788, 360, 264, 64, "WO + residual", "KDA block output", P.ink, P.paper, 10);
+    b += box(788, 488, 56, 66, "KDA", "L1", P.linear, P.linearSoft);
+    b += box(852, 488, 56, 66, "KDA", "L2", P.linear, P.linearSoft);
+    b += box(916, 488, 56, 66, "KDA", "L3", P.linear, P.linearSoft);
+    b += box(980, 488, 72, 66, "MLA", "L4 · NoPE", P.dense, P.denseSoft);
+
+    b += edge(id, "M154 509H176");
+    b += edge(id, "M252 470C220 444 152 426 120 402");
+    b += edge(id, "M252 470C285 444 288 426 266 402");
+    b += edge(id, "M252 470C220 390 152 304 120 268");
+    b += edge(id, "M252 470C300 390 290 304 266 268");
+    b += edge(id, "M553 172V236");
+    b += edge(id, "M182 366C300 366 340 300 398 300", [286, 356, "q,k"]);
+    b += edge(id, "M328 366C360 350 380 322 398 312", [354, 340, "v,β"]);
+    b += edge(id, "M182 227C300 190 350 246 398 270", [300, 194, "α"]);
+    b += edge(id, "M553 354V442");
+    b += edge(id, "M624 480C720 480 730 148 788 148");
+    b += edge(id, "M920 184V236");
+    b += edge(id, "M920 308V360");
+    b += edge(id, "M920 424V488");
+    b += '<text x="788" y="468" font-size="10" font-weight="600" fill="' + P.hybrid + '">KIMI LINEAR · KDA → KDA → KDA → MLA(NoPE)</text>';
+    return baseSvg(id, 630, b, "KDA 参数生成、通道级 DPLR 更新、输出门与 3:1 层栈");
   }
 
   function key(config) {
@@ -537,6 +537,7 @@
     return {
       svg: svg,
       notes: guides[k] || [],
+      memory: memories[k] || "",
       badges: ["TECHNICAL-REPORT VIEW", "STRIPED = CACHED", "SOLID = COMPUTE", "DASHED = TRAINING / BOUNDARY"]
     };
   }

@@ -137,7 +137,8 @@
       return '<figure class="report-figure" id="architecture-block"><div class="diagram-header"><div><span class="diagram-header__eyebrow">Architecture Deconstruction</span><strong>完整 Attention Block · 教学重绘</strong></div><div class="diagram-header__tools"><div class="diagram-legend">' +
         badges + '</div><button class="diagram-expand" type="button" data-diagram-expand aria-expanded="false">⤢ 放大查看</button></div></div><div class="diagram diagram--report"><div class="diagram-canvas">' +
         report.svg + '</div></div><figcaption class="figcaption">' + esc(config.caption) +
-        '</figcaption><ol class="diagram-guide">' + notes + "</ol></figure>";
+        '</figcaption><aside class="diagram-memory"><span>One-line Memory · 一眼记住</span><p>' +
+        esc(report.memory) + '</p></aside><ol class="diagram-guide">' + notes + "</ol></figure>";
     }
     var svg = "";
     if (config.type === "heads") svg = headsDiagram(config.mode);

@@ -459,6 +459,28 @@ button { font: inherit; }
   padding: 0;
 }
 .report-figure .figcaption { margin: 12px 0 26px; }
+.diagram-memory {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 16px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--category);
+  background: linear-gradient(90deg, var(--category-soft), white 70%);
+}
+.diagram-memory span {
+  color: var(--category);
+  font: 500 9px/1.4 var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.diagram-memory p {
+  margin: 0;
+  color: var(--ink);
+  font: 500 14px/1.65 var(--serif);
+}
 .diagram-guide {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -604,6 +626,7 @@ details p { margin-bottom: 0; }
   .diagram-header__tools { align-items: flex-start; flex-direction: column; }
   .diagram-legend { justify-content: flex-start; }
   .diagram-guide { grid-template-columns: 1fr; }
+  .diagram-memory { grid-template-columns: 1fr; gap: 5px; }
   .report-figure.is-expanded { inset: 6px; padding: 8px; }
   .report-figure.is-expanded .diagram-guide { grid-template-columns: 1fr; }
 }
