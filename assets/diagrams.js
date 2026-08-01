@@ -123,6 +123,61 @@
     );
   }
 
+  function superScript(base, script) {
+    return base + '<tspan baseline-shift="super" font-size="8">' + script + "</tspan>";
+  }
+
+  function subScript(base, script) {
+    return base + '<tspan baseline-shift="sub" font-size="8">' + script + "</tspan>";
+  }
+
+  function svgLabel(value) {
+    var exact = {
+      "cₜKV": 'c<tspan baseline-shift="sub" font-size="8">t</tspan><tspan baseline-shift="super" font-size="8">KV</tspan>',
+      "cₜQ": 'c<tspan baseline-shift="sub" font-size="8">t</tspan><tspan baseline-shift="super" font-size="8">Q</tspan>',
+      "WᴰKV": superScript("W", "DKV"),
+      "WᴰQ": superScript("W", "DQ"),
+      "WᵁK": superScript("W", "UK"),
+      "WᵁV": superScript("W", "UV"),
+      "WᵁQ": superScript("W", "UQ")
+    };
+    var text = String(value);
+    Object.keys(exact).forEach(function (token) {
+      text = text.split(token).join(exact[token]);
+    });
+    var replacements = {
+      cKV: superScript("c", "KV"),
+      cQ: superScript("c", "Q"),
+      kR: superScript("k", "R"),
+      qI: superScript("q", "I"),
+      kI: superScript("k", "I"),
+      Hkv: subScript("H", "kv"),
+      Hq: subScript("H", "q"),
+      Lq: subScript("L", "q"),
+      Lk: subScript("L", "k"),
+      dk: subScript("d", "k"),
+      dv: subScript("d", "v"),
+      dh: subScript("d", "h"),
+      dc: subScript("d", "c"),
+      dR: subScript("d", "R"),
+      WUK: superScript("W", "UK"),
+      WUV: superScript("W", "UV"),
+      WOA: superScript("W", "OA"),
+      WOB: superScript("W", "OB"),
+      WKR: superScript("W", "KR"),
+      WQR: superScript("W", "QR"),
+      WIUQ: superScript("W", "IUQ"),
+      WIK: superScript("W", "IK"),
+      WQ: subScript("W", "Q"),
+      WK: subScript("W", "K"),
+      WV: subScript("W", "V"),
+      WO: subScript("W", "O")
+    };
+    return text.replace(/\b(cKV|cQ|kR|qI|kI|Hkv|Hq|Lq|Lk|dk|dv|dh|dc|dR|WUK|WUV|WOA|WOB|WKR|WQR|WIUQ|WIK|WQ|WK|WV|WO)\b/g, function (token) {
+      return replacements[token];
+    });
+  }
+
   function zone(x, y, w, h, title, color) {
     return (
       '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="10" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-dasharray="7 5"/>' +
@@ -138,8 +193,8 @@
     return (
       '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="6" fill="' + (cached ? 'url(#diagram-cache)' : fill) + '" stroke="' + color + '" stroke-width="1.4"/>' +
       number +
-      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 - (sub ? 3 : -4)) + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + P.ink + '">' + title + '</text>' +
-      (sub ? '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 + 15) + '" text-anchor="middle" font-size="9" fill="' + P.muted + '">' + sub + '</text>' : "") +
+      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 - (sub ? 3 : -4)) + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + P.ink + '">' + svgLabel(title) + '</text>' +
+      (sub ? '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 + 15) + '" text-anchor="middle" font-size="9" fill="' + P.muted + '">' + svgLabel(sub) + '</text>' : "") +
       '</g>'
     );
   }
@@ -151,8 +206,8 @@
     return (
       '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="6" fill="url(#' + id + '-cache)" stroke="' + P.cache + '" stroke-width="1.5"/>' +
       number +
-      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 - 3) + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + P.ink + '">' + title + '</text>' +
-      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 + 15) + '" text-anchor="middle" font-size="9" fill="' + P.cache + '">' + sub + '</text></g>'
+      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 - 3) + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + P.ink + '">' + svgLabel(title) + '</text>' +
+      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 + 15) + '" text-anchor="middle" font-size="9" fill="' + P.cache + '">' + svgLabel(sub) + '</text></g>'
     );
   }
 
@@ -161,7 +216,7 @@
       '<g><path d="' + d + '" fill="none" stroke="' + (color || P.muted) + '" stroke-width="1.5" ' +
       (dashed ? 'stroke-dasharray="6 5" ' : "") +
       'marker-end="url(#' + id + '-arrow)"/>' +
-      (label ? '<text x="' + label[0] + '" y="' + label[1] + '" text-anchor="middle" font-size="9" fill="' + (color || P.muted) + '">' + label[2] + '</text>' : "") +
+      (label ? '<text x="' + label[0] + '" y="' + label[1] + '" text-anchor="middle" font-size="9" fill="' + (color || P.muted) + '">' + svgLabel(label[2]) + '</text>' : "") +
       '</g>'
     );
   }

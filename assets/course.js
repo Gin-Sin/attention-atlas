@@ -12,6 +12,36 @@
       .replace(/"/g, "&quot;");
   }
 
+  function technicalText(value) {
+    var replacements = {
+      cKV: "\\(c^{KV}\\)",
+      cQ: "\\(c^{Q}\\)",
+      kR: "\\(k^{R}\\)",
+      qI: "\\(q^{I}\\)",
+      kI: "\\(k^{I}\\)",
+      Hkv: "\\(H_{kv}\\)",
+      Hq: "\\(H_q\\)",
+      Lq: "\\(L_q\\)",
+      Lk: "\\(L_k\\)",
+      dk: "\\(d_k\\)",
+      dv: "\\(d_v\\)",
+      dh: "\\(d_h\\)",
+      dc: "\\(d_c\\)",
+      dR: "\\(d_R\\)",
+      WUK: "\\(W^{UK}\\)",
+      WUV: "\\(W^{UV}\\)",
+      WOA: "\\(W^{OA}\\)",
+      WOB: "\\(W^{OB}\\)",
+      WKR: "\\(W^{KR}\\)",
+      WQR: "\\(W^{QR}\\)",
+      WIUQ: "\\(W^{IUQ}\\)",
+      WIK: "\\(W^{IK}\\)"
+    };
+    return esc(value).replace(/\b(cKV|cQ|kR|qI|kI|Hkv|Hq|Lq|Lk|dk|dv|dh|dc|dR|WUK|WUV|WOA|WOB|WKR|WQR|WIUQ|WIK)\b/g, function (token) {
+      return replacements[token];
+    });
+  }
+
   function readProgress() {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -132,13 +162,13 @@
       }).join("");
       var notes = report.notes.map(function (note, index) {
         return '<li><span class="diagram-guide__num">' + String(index + 1).padStart(2, "0") +
-          '</span><div><strong>' + esc(note[0]) + '</strong><p>' + esc(note[1]) + "</p></div></li>";
+          '</span><div><strong>' + technicalText(note[0]) + '</strong><p>' + technicalText(note[1]) + "</p></div></li>";
       }).join("");
       return '<figure class="report-figure" id="architecture-block"><div class="diagram-header"><div><span class="diagram-header__eyebrow">Architecture Deconstruction</span><strong>完整 Attention Block · 教学重绘</strong></div><div class="diagram-header__tools"><div class="diagram-legend">' +
         badges + '</div><button class="diagram-expand" type="button" data-diagram-expand aria-expanded="false">⤢ 放大查看</button></div></div><div class="diagram diagram--report"><div class="diagram-canvas">' +
-        report.svg + '</div></div><figcaption class="figcaption">' + esc(config.caption) +
+        report.svg + '</div></div><figcaption class="figcaption">' + technicalText(config.caption) +
         '</figcaption><aside class="diagram-memory"><span>One-line Memory · 一眼记住</span><p>' +
-        esc(report.memory) + '</p></aside><ol class="diagram-guide">' + notes + "</ol></figure>";
+        technicalText(report.memory) + '</p></aside><ol class="diagram-guide">' + notes + "</ol></figure>";
     }
     var svg = "";
     if (config.type === "heads") svg = headsDiagram(config.mode);
