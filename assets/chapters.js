@@ -22,7 +22,7 @@
         "它后来成为所有 KV 共享、低秩压缩、稀疏选择和线性状态方法的参照系。理解后续架构，本质上是在回答：MHA 的哪部分可以共享、压缩或省略？"
       ],
       constraints: [
-        { label: "训练算力", title: "注意力图是二次的", body: "长度为 L 时要形成 H 个 L×L 分数图，核心算量约为 O(L²d)。" },
+        { label: "训练算力", title: "注意力图是二次的", body: R`长度为 \(L\) 时要形成 \(H\) 个 \(L\times L\) 分数图，核心算量约为 \(O(L^2d)\)。` },
         { label: "推理存储", title: "KV 随上下文线性增长", body: "每层每 token 缓存 H 组 K 和 V；长上下文与大 batch 会迅速吃满显存。" },
         { label: "解码带宽", title: "常常不是算不动，而是搬不快", body: "每生成一个 token，都要从 HBM 读取历史 KV；小 batch 解码常受内存带宽限制。" }
       ],
@@ -58,7 +58,7 @@
       exercises: [
         {
           q: R`某模型有 \(N=32\) 层、\(H=32\)、\(d_h=128\)，以 BF16 缓存一条 \(L=4096\) 的序列。忽略 batch 维，MHA KV cache 多大？`,
-          hint: "代入 2NLHd_hb，BF16 的 b=2。",
+          hint: R`代入 \(2NLHd_hb\)，BF16 的 \(b=2\)。`,
           answer: R`\(2\times32\times4096\times32\times128\times2=2{,}147{,}483{,}648\) 字节，约 \(2.0\) GiB。`
         },
         {
@@ -83,7 +83,7 @@
       difficulty: "基础",
       report: "Fast Transformer Decoding",
       deck: "MQA 没有改变查询头的数量，也没有近似 softmax；它只让全部 Q 头共享一套 K/V，从源头减少自回归解码必须读取的数据。",
-      takeaway: "把“提出多少个问题”和“保存多少份历史索引”解耦：保留多 Q 头，令 \(H_{kv}=1\)。",
+      takeaway: R`把“提出多少个问题”和“保存多少份历史索引”解耦：保留多 Q 头，令 \(H_{kv}=1\)。`,
       motivation: [
         "增量解码一次只处理一个新 token，矩阵乘法很窄，GPU 计算单元难以吃满；反而从 HBM 反复加载历史 K/V 成为主要瓶颈。",
         "Shazeer 的核心观察是：查询头需要多样性，但历史 token 不一定要为每个查询头保存独立地址与内容。",
@@ -91,7 +91,7 @@
       ],
       constraints: [
         { label: "目标", title: "优化解码带宽", body: "训练阶段仍需计算完整的多 Q 头注意力；主要收益发生在增量推理。" },
-        { label: "存储", title: "KV 缩小约 H 倍", body: "相同头维下，Hkv 从 H 变为 1；实际收益还取决于布局、量化和 kernel。" },
+        { label: "存储", title: R`KV 缩小约 \(H\) 倍`, body: R`相同头维下，\(H_{kv}\) 从 \(H\) 变为 1；实际收益还取决于布局、量化和 kernel。` },
         { label: "容量", title: "共享可能损失质量", body: "所有 Q 头只能在同一 K/V 表示上读取，独立的键值子空间容量下降。" }
       ],
       intuitions: [
@@ -127,7 +127,7 @@
       exercises: [
         {
           q: "沿用上一章 32 层、32 头、头维 128、4096 长度、BF16 的例子，MQA KV cache 多大？",
-          hint: "把 Hkv 从 32 改为 1。",
+          hint: R`把 \(H_{kv}\) 从 32 改为 1。`,
           answer: "约 64 MiB；相对 MHA 理论缩小 32 倍。"
         },
         {
@@ -150,7 +150,7 @@
       category: "dense",
       difficulty: "进阶",
       report: "GQA: Training Generalized Multi-Query Transformer Models",
-      deck: "GQA 把 MHA 与 MQA 放在同一条连续轴上：每组 Q 头共享一个 K/V 头，用 Hkv 直接控制质量—缓存—带宽的折中。",
+      deck: R`GQA 把 MHA 与 MQA 放在同一条连续轴上：每组 Q 头共享一个 K/V 头，用 \(H_{kv}\) 直接控制质量—缓存—带宽的折中。`,
       takeaway: R`GQA 不是第三种完全不同的算子，而是 \(1\le H_{kv}\le H_q\) 的统一参数化：MQA 是 1，MHA 是 \(H_q\)。`,
       motivation: [
         "MQA 的缓存最小，但单一 K/V 头可能成为表达瓶颈；MHA 表达充足，却为每个 Q 头重复保存历史。",
@@ -158,13 +158,13 @@
         "原论文还给出从 MHA checkpoint 升级到 GQA 的办法：组内 K/V 投影做均值池化，再用约原预训练算力 5% 的继续训练恢复能力。5% 是该论文配方，不是固定标准。"
       ],
       constraints: [
-        { label: "结构约束", title: "通常要求整除", body: "常见实现要求 Hq 能被 Hkv 整除，每个 KV 头服务 r=Hq/Hkv 个 Q 头。" },
+        { label: "结构约束", title: "通常要求整除", body: R`常见实现要求 \(H_q\) 能被 \(H_{kv}\) 整除，每个 KV 头服务 \(r=H_q/H_{kv}\) 个 Q 头。` },
         { label: "硬件约束", title: "布局与 kernel 要匹配", body: "理论缓存下降不保证 kernel 自动高效；广播和并行切分会影响实际吞吐。" },
         { label: "迁移成本", title: "可从 MHA uptrain", body: "均值池化只是初始化，仍需继续训练适应共享后的表示。" }
       ],
       intuitions: [
         { label: "类比", title: "小组共用资料员", body: "每位成员有问题；每组有一位资料员维护索引。" },
-        { label: "旋钮", title: "Hkv 控制折中", body: "越大越接近 MHA，越小越接近 MQA。" },
+        { label: "旋钮", title: R`\(H_{kv}\) 控制折中`, body: "越大越接近 MHA，越小越接近 MQA。" },
         { label: "分组", title: "共享发生在组内", body: "组间仍可学习不同 K/V 子空间。" }
       ],
       diagram: { type: "heads", mode: "gqa", caption: "GQA：示意 8 个 Q 头按 2 个一组，共享 4 个 K/V 头。" },
@@ -194,8 +194,8 @@
       warning: "“GQA 速度与 MQA 相当、质量接近 MHA”来自特定 uptraining 实验。服务框架、batch、序列长度和并行策略改变后，最优 G 不一定相同。",
       exercises: [
         {
-          q: "Hq=48、Hkv=8 时，每个 KV 头服务多少个 Q 头？相对 MHA 的 KV 缩减倍数是多少？",
-          hint: "都等于 Hq/Hkv。",
+          q: R`\(H_q=48\)、\(H_{kv}=8\) 时，每个 KV 头服务多少个 Q 头？相对 MHA 的 KV 缩减倍数是多少？`,
+          hint: R`都等于 \(H_q/H_{kv}\)。`,
           answer: "每组 6 个 Q 头；KV cache 理论缩小 6 倍。"
         },
         {
@@ -223,20 +223,20 @@
       takeaway: "GQA 在“头数”上共享，MLA 在“低秩潜空间”里共享。只缓存联合压缩 latent，保留多头上投影的表达力。",
       motivation: [
         "MQA/GQA 通过减少 KV 头数降缓存，但 K/V 表示容量也随之减少。DeepSeek-V2 希望保留多头差异，同时继续降低 KV cache。",
-        "MLA 对 K 与 V 做联合低秩压缩：每个 token 只保存一个低维向量 cKV；每个头的 K/V 由不同上投影从 cKV 重建。",
+        R`MLA 对 K 与 V 做联合低秩压缩：每个 token 只保存一个低维向量 \(c^{KV}\)；每个头的 K/V 由不同上投影从 \(c^{KV}\) 重建。`,
         "RoPE 会阻碍把上投影吸收到查询侧，因此 MLA 把位置相关的 RoPE 子空间与可低秩吸收的内容子空间分开，这就是 decoupled RoPE。"
       ],
       constraints: [
-        { label: "缓存", title: "宽度从 Hdh 变成 dc", body: "每 token 主要缓存 cKV 与较小的 RoPE key；收益取决于 dc 和 dR。" },
+        { label: "缓存", title: R`宽度从 \(Hd_h\) 变成 \(d_c\)`, body: R`每 token 主要缓存 \(c^{KV}\) 与较小的 RoPE key；收益取决于 \(d_c\) 和 \(d_R\)。` },
         { label: "算子", title: "需要吸收或重建", body: "朴素地显式恢复各头 K/V 会增加算力；高效推理通常把上投影吸收到 Q/输出侧。" },
         { label: "位置编码", title: "RoPE 必须解耦", body: "位置依赖旋转与低秩投影一般不可交换，需要单独保存旋转 key 分量。" }
       ],
       intuitions: [
         { label: "类比", title: "保存源文件，不存多份导出", body: "latent 是紧凑源文件，各头按需用不同模板展开。" },
-        { label: "低秩", title: "共享生成基底", body: "K/V 头都来自同一个 dc 维潜空间。" },
+        { label: "低秩", title: "共享生成基底", body: R`K/V 头都来自同一个 \(d_c\) 维潜空间。` },
         { label: "RoPE", title: "位置水印另存", body: "内容可压缩吸收，位置旋转通道单独处理。" }
       ],
-      diagram: { type: "latent", caption: "MLA：每个 token 只缓存低维 cKV 与解耦的 RoPE key，再供多头读取。" },
+      diagram: { type: "latent", caption: R`MLA：每个 token 只缓存低维 \(c^{KV}\) 与解耦的 RoPE key，再供多头读取。` },
       derivations: [
         {
           title: "KV 联合低秩压缩",
@@ -306,13 +306,13 @@
       deck: "DSA 把昂贵的 core attention 拆成两阶段：低成本 Lightning Indexer 为每个 query 找 top-k 历史 token，随后只在这些 token 上运行高维 MLA 注意力。",
       takeaway: "DSA 的核心不是预先固定窗口，而是内容驱动的 learned top-k：便宜地找候选，昂贵地精确读取。",
       motivation: [
-        "MLA 解决了每个 token 缓存过宽的问题，但 dense attention 仍要让每个 query 与所有历史位置做高维交互；上下文极长时，算量仍随 L² 增长。",
+        R`MLA 解决了每个 token 缓存过宽的问题，但 dense attention 仍要让每个 query 与所有历史位置做高维交互；上下文极长时，算量仍随 \(L^2\) 增长。`,
         "DSA 引入 Lightning Indexer：用低维、低成本路径估计相关性，为每个 query 选择 k 个历史位置；core attention 只对选中 token 计算。",
         "DeepSeek-V3.2-Exp 以接近 V3.1-Terminus 的训练配置验证稀疏化，官方称输出质量基本持平，并开源训练/推理 kernel。"
       ],
       constraints: [
         { label: "选择预算", title: "k 决定精度与成本", body: "k 太小会漏掉关键 token；太大则接近 dense attention。" },
-        { label: "索引成本", title: "索引器本身也要扫描", body: "若对所有历史位置打分，索引路径仍含 L² 项，只是维度和精度更低。" },
+        { label: "索引成本", title: "索引器本身也要扫描", body: R`若对所有历史位置打分，索引路径仍含 \(L^2\) 项，只是维度和精度更低。` },
         { label: "训练系统", title: "离散 top-k 难优化", body: "需要索引损失、稳定训练与专用稀疏 kernel；纸面稀疏不自动等于硬件高效。" }
       ],
       intuitions: [
@@ -347,7 +347,7 @@
             C_{\mathrm{index}}\sim O(L^2d_I),\qquad
             C_{\mathrm{core}}\sim O(Lkd).
             \]
-            DSA 的价值来自 \(d_I\ll d\)、低精度索引和 \(k\ll L\)。它不应被粗暴写成“所有部分都严格 O(Lk)”。`
+            DSA 的价值来自 \(d_I\ll d\)、低精度索引和 \(k\ll L\)。它不应被粗暴写成“所有部分都严格 \(O(Lk)\)”。`
         },
         {
           title: "Indexer 用独立对齐目标训练",
@@ -364,7 +364,7 @@
       exercises: [
         {
           q: R`当 \(L=131072,k=2048\) 时，core attention 的位置对数量相对 dense 减少多少倍？`,
-          hint: "比较 L² 与 Lk。",
+          hint: R`比较 \(L^2\) 与 \(Lk\)。`,
           answer: R`理想比值为 \(L/k=64\) 倍。这里只比较 core 位置对，不包括 indexer、局部路径和系统开销。`
         },
         {
@@ -436,7 +436,7 @@
       warning: "DeepSeek-V4 是 2026 年预览技术报告。其百万上下文效率数字、FP4 indexer 和召回率均应标注为官方自报，并等待更广泛的独立复现。",
       exercises: [
         {
-          q: R`L=1,000,000，CSA 的 m=4、k=512。压缩池有多少条目？每个 query 的 core 只读其中多少比例？`,
+          q: R`\(L=1{,}000{,}000\)，CSA 的 \(m=4\)、\(k=512\)。压缩池有多少条目？每个 query 的 core 只读其中多少比例？`,
           hint: "先算 L/m，再算 k/(L/m)。",
           answer: "压缩池约 250,000 条；core 读取约 0.2048%。此外还有局部窗口和 indexer。"
         },
@@ -470,8 +470,8 @@
       ],
       constraints: [
         { label: "压缩损失", title: "128 个 token → 1 条摘要", body: "极强的信息瓶颈难以保留符号、引用和 token 级精确细节。" },
-        { label: "计算", title: "压缩后仍是 dense", body: "query 轴未压缩，prefill 仍含 O(L²/m′) 项，并非严格线性。" },
-        { label: "局部性", title: "必须并联滑窗", body: "未闭合块与近期细节由 w=128 的原始 KV 窗口补足。" }
+        { label: "计算", title: "压缩后仍是 dense", body: R`query 轴未压缩，prefill 仍含 \(O(L^2/m')\) 项，并非严格线性。` },
+        { label: "局部性", title: "必须并联滑窗", body: R`未闭合块与近期细节由 \(w=128\) 的原始 KV 窗口补足。` }
       ],
       intuitions: [
         { label: "Compress", title: "把整卷做成目录", body: "每 128 个 token 合成一个粗粒度全局条目。" },
@@ -545,7 +545,7 @@
       constraints: [
         { label: "核约束", title: "不再是精确 softmax", body: "必须选择可分解特征映射 φ；核的归纳偏置决定模型可表达的相似性。" },
         { label: "状态容量", title: "固定状态会发生干扰", body: "所有历史写入同一个矩阵，精确复制和多键检索常弱于 full attention。" },
-        { label: "硬件现实", title: "O(L) 不等于一定更快", body: "短序列上，成熟的 FlashAttention 可能因更高算术强度而更快。" }
+        { label: "硬件现实", title: R`\(O(L)\) 不等于一定更快`, body: "短序列上，成熟的 FlashAttention 可能因更高算术强度而更快。" }
       ],
       intuitions: [
         { label: "Dense", title: "每次翻全部档案", body: "query 与每条历史逐一比较。" },
@@ -589,8 +589,8 @@
           answer: R`\(S=1\times2+3\times4=14\)，输出 \(qS=28\)。`
         },
         {
-          q: R`特征维 r=64、value 维 128，单头状态 S 有多少元素？若上下文从 4K 变到 1M，S 是否变大？`,
-          hint: "S 的形状是 r×dv。",
+          q: R`特征维 \(r=64\)、value 维 128，单头状态 \(S\) 有多少元素？若上下文从 4K 变到 1M，\(S\) 是否变大？`,
+          hint: R`\(S\) 的形状是 \(r\times d_v\)。`,
           answer: "S 有 8192 个元素；上下文增长时状态尺寸不变，但有限状态中的信息干扰可能增加。"
         }
       ],
