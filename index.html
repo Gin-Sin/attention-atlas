@@ -147,77 +147,158 @@
             <span><i style="background: var(--linear)"></i>有限状态</span>
             <span><i style="background: var(--hybrid)"></i>混合架构</span>
           </div>
-          <div class="timeline">
-            <div class="era dense" data-year="2017">
-              <a class="era-card" href="chapter.html?id=mha">
-                <span class="era-code">MHA</span>
-                <span class="era-copy"><strong>每头独立 K/V</strong><span>高表达力，建立 dense 基线</span></span>
-                <span class="era-cost">CACHE O(LHd)<br />CORE O(L²d)</span>
+          <div class="lineage-wrap">
+            <svg
+              class="lineage-dag"
+              viewBox="0 0 1160 590"
+              role="img"
+              aria-labelledby="lineage-title lineage-desc"
+            >
+              <title id="lineage-title">注意力架构三分支演化图</title>
+              <desc id="lineage-desc">
+                从 MHA 分出 KV 共享与低秩、稀疏与序列压缩、有限状态三条路线，
+                并在 Kimi Linear 中重新混合。
+              </desc>
+              <defs>
+                <marker
+                  id="dag-arrow"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path d="M0 0L8 4L0 8Z" fill="context-stroke" />
+                </marker>
+              </defs>
+
+              <!-- 年份横轴 -->
+              <g aria-hidden="true">
+                <line class="dag-year-line" x1="180" y1="54" x2="180" y2="550" />
+                <line class="dag-year-line" x1="300" y1="54" x2="300" y2="550" />
+                <line class="dag-year-line" x1="420" y1="54" x2="420" y2="550" />
+                <line class="dag-year-line" x1="560" y1="54" x2="560" y2="550" />
+                <line class="dag-year-line" x1="700" y1="54" x2="700" y2="550" />
+                <line class="dag-year-line" x1="840" y1="54" x2="840" y2="550" />
+                <line class="dag-year-line" x1="1040" y1="54" x2="1040" y2="550" />
+                <text class="dag-year" x="180" y="34" text-anchor="middle">2017</text>
+                <text class="dag-year" x="300" y="34" text-anchor="middle">2019</text>
+                <text class="dag-year" x="420" y="34" text-anchor="middle">2020</text>
+                <text class="dag-year" x="560" y="34" text-anchor="middle">2023</text>
+                <text class="dag-year" x="700" y="34" text-anchor="middle">2024</text>
+                <text class="dag-year" x="840" y="34" text-anchor="middle">2025</text>
+                <text class="dag-year" x="1040" y="34" text-anchor="middle">2026</text>
+              </g>
+
+              <!-- 三条泳道 -->
+              <g aria-hidden="true">
+                <text class="dag-label" x="28" y="149" fill="#285f8f">KV 共享 / 低秩</text>
+                <line class="dag-lane-line" x1="150" y1="145" x2="1125" y2="145" stroke="#285f8f" />
+                <text class="dag-label" x="28" y="324" fill="#8b5d12">稀疏 / 序列压缩</text>
+                <line class="dag-lane-line" x1="150" y1="320" x2="1125" y2="320" stroke="#8b5d12" />
+                <text class="dag-label" x="28" y="499" fill="#39704f">有限状态</text>
+                <line class="dag-lane-line" x1="150" y1="495" x2="1125" y2="495" stroke="#39704f" />
+              </g>
+
+              <!-- 分叉与汇合关系 -->
+              <g aria-hidden="true">
+                <path class="dag-edge dag-edge--dense" d="M225 145H255" />
+                <path class="dag-edge dag-edge--dense" d="M345 145H515" />
+                <path class="dag-edge dag-edge--dense" d="M605 145H655" />
+                <path class="dag-edge dag-edge--linear" d="M180 173C180 315 420 325 420 467" />
+                <path class="dag-edge dag-edge--linear" d="M465 495H655" />
+                <path class="dag-edge dag-edge--linear" d="M745 495H795" />
+                <path class="dag-edge dag-edge--sparse" d="M700 173C700 246 840 234 840 292" />
+                <path class="dag-edge dag-edge--sparse" d="M885 320C930 320 948 280 995 280" />
+                <path class="dag-edge dag-edge--sparse" d="M700 173C700 285 900 360 995 360" />
+                <path class="dag-edge dag-edge--hybrid" d="M700 173C700 410 938 382 950 467" />
+                <path class="dag-edge dag-edge--hybrid" d="M885 495H895" />
+                <text class="dag-cross-label" x="790" y="414">3 KDA : 1 MLA · layerwise hybrid</text>
+              </g>
+
+              <!-- KV 共享 / 低秩路线 -->
+              <a href="chapter.html?id=mha" aria-label="MHA，2017，多头注意力">
+                <g class="dag-node dag-node--dense" tabindex="0">
+                  <rect x="135" y="117" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="180" y="141" text-anchor="middle">MHA</text>
+                  <text class="dag-node__note" x="180" y="159" text-anchor="middle">独立 K / V</text>
+                </g>
               </a>
-            </div>
-            <div class="era dense" data-year="2019">
-              <a class="era-card" href="chapter.html?id=mqa">
-                <span class="era-code">MQA</span>
-                <span class="era-copy"><strong>全部 Q 头共享一套 K/V</strong><span>瞄准内存带宽受限的增量解码</span></span>
-                <span class="era-cost">CACHE O(Ld)<br />EXACT SOFTMAX</span>
+              <a href="chapter.html?id=mqa" aria-label="MQA，2019，多查询注意力">
+                <g class="dag-node dag-node--dense" tabindex="0">
+                  <rect x="255" y="117" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="300" y="141" text-anchor="middle">MQA</text>
+                  <text class="dag-node__note" x="300" y="159" text-anchor="middle">1 个 KV 头</text>
+                </g>
               </a>
-            </div>
-            <div class="era linear" data-year="2020">
-              <a class="era-card" href="chapter.html?id=linear">
-                <span class="era-code">Linear</span>
-                <span class="era-copy"><strong>核分解 + 结合律</strong><span>把完整历史折叠进固定矩阵状态</span></span>
-                <span class="era-cost">STATE O(rd)<br />CORE O(Lrd)</span>
+              <a href="chapter.html?id=gqa" aria-label="GQA，2023，分组查询注意力">
+                <g class="dag-node dag-node--dense" tabindex="0">
+                  <rect x="515" y="117" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="560" y="141" text-anchor="middle">GQA</text>
+                  <text class="dag-node__note" x="560" y="159" text-anchor="middle">分组共享</text>
+                </g>
               </a>
-            </div>
-            <div class="era dense" data-year="2023">
-              <a class="era-card" href="chapter.html?id=gqa">
-                <span class="era-code">GQA</span>
-                <span class="era-copy"><strong>Q 分组共享 K/V</strong><span>在 MHA 与 MQA 之间放入可调旋钮</span></span>
-                <span class="era-cost">1 ≤ Hkv ≤ Hq<br />UPTRAINABLE</span>
+              <a href="chapter.html?id=mla" aria-label="MLA，2024，多头潜变量注意力">
+                <g class="dag-node dag-node--dense" tabindex="0">
+                  <rect x="655" y="117" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="700" y="141" text-anchor="middle">MLA</text>
+                  <text class="dag-node__note" x="700" y="159" text-anchor="middle">latent KV</text>
+                </g>
               </a>
-            </div>
-            <div class="era dense" data-year="2024">
-              <a class="era-card" href="chapter.html?id=mla">
-                <span class="era-code">MLA</span>
-                <span class="era-copy"><strong>联合低秩 latent KV</strong><span>缓存紧凑源表示，各头按需展开</span></span>
-                <span class="era-cost">CACHE O(Ldc)<br />DECOUPLED ROPE</span>
+
+              <!-- 稀疏 / 序列压缩路线 -->
+              <a href="chapter.html?id=dsa" aria-label="DSA，2025，DeepSeek 稀疏注意力">
+                <g class="dag-node dag-node--sparse" tabindex="0">
+                  <rect x="795" y="292" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="840" y="316" text-anchor="middle">DSA</text>
+                  <text class="dag-node__note" x="840" y="334" text-anchor="middle">learned top-k</text>
+                </g>
               </a>
-            </div>
-            <div class="era linear" data-year="2024">
-              <a class="era-card" href="chapter.html?id=gated-delta">
-                <span class="era-code">Delta</span>
-                <span class="era-copy"><strong>误差驱动的定点改写</strong><span>从累加记忆走向可覆盖记忆</span></span>
-                <span class="era-cost">RANK-1 UPDATE<br />SCALAR GATE</span>
+              <a href="chapter.html?id=csa" aria-label="CSA，2026，压缩稀疏注意力">
+                <g class="dag-node dag-node--sparse" tabindex="0">
+                  <rect x="995" y="252" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="1040" y="276" text-anchor="middle">CSA</text>
+                  <text class="dag-node__note" x="1040" y="294" text-anchor="middle">m=4 + top-k</text>
+                </g>
               </a>
-            </div>
-            <div class="era sparse" data-year="2025">
-              <a class="era-card" href="chapter.html?id=dsa">
-                <span class="era-code">DSA</span>
-                <span class="era-copy"><strong>Lightning Indexer → top-k</strong><span>只对候选 token 做高维 core attention</span></span>
-                <span class="era-cost">CORE O(Lkd)<br />CONTENT SPARSE</span>
+              <a href="chapter.html?id=hca" aria-label="HCA，2026，重压缩注意力">
+                <g class="dag-node dag-node--sparse" tabindex="0">
+                  <rect x="995" y="332" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="1040" y="356" text-anchor="middle">HCA</text>
+                  <text class="dag-node__note" x="1040" y="374" text-anchor="middle">m′=128 + dense</text>
+                </g>
               </a>
-            </div>
-            <div class="era hybrid" data-year="2025">
-              <a class="era-card" href="chapter.html?id=kda">
-                <span class="era-code">KDA</span>
-                <span class="era-copy"><strong>逐通道 gate + delta</strong><span>Kimi Linear 以 3:1 混合 KDA 与 MLA</span></span>
-                <span class="era-cost">DPLR STATE<br />HYBRID GLOBAL</span>
+
+              <!-- 有限状态与混合路线 -->
+              <a href="chapter.html?id=linear" aria-label="Linear Attention，2020，线性注意力">
+                <g class="dag-node dag-node--linear" tabindex="0">
+                  <rect x="375" y="467" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="420" y="491" text-anchor="middle">Linear</text>
+                  <text class="dag-node__note" x="420" y="509" text-anchor="middle">fixed state</text>
+                </g>
               </a>
-            </div>
-            <div class="era sparse" data-year="2026">
-              <a class="era-card" href="chapter.html?id=csa">
-                <span class="era-code">CSA</span>
-                <span class="era-copy"><strong>轻压缩 + top-k</strong><span>先把候选轴缩短 4 倍，再检索摘要</span></span>
-                <span class="era-cost">m=4<br />SPARSE CORE</span>
+              <a href="chapter.html?id=gated-delta" aria-label="DeltaNet，2024，门控 Delta 更新">
+                <g class="dag-node dag-node--linear" tabindex="0">
+                  <rect x="655" y="467" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="700" y="491" text-anchor="middle">DeltaNet</text>
+                  <text class="dag-node__note" x="700" y="509" text-anchor="middle">定点改写</text>
+                </g>
               </a>
-            </div>
-            <div class="era sparse" data-year="2026">
-              <a class="era-card" href="chapter.html?id=hca">
-                <span class="era-code">HCA</span>
-                <span class="era-copy"><strong>重压缩 + dense</strong><span>128→1 后完整读取全局摘要</span></span>
-                <span class="era-cost">m′=128<br />NO INDEXER</span>
+              <a href="chapter.html?id=kda" aria-label="KDA，2025，Kimi Delta Attention">
+                <g class="dag-node dag-node--linear" tabindex="0">
+                  <rect x="795" y="467" width="90" height="56" rx="5" />
+                  <text class="dag-node__name" x="840" y="491" text-anchor="middle">KDA</text>
+                  <text class="dag-node__note" x="840" y="509" text-anchor="middle">channel gate</text>
+                </g>
               </a>
-            </div>
+              <a href="chapter.html?id=kda" aria-label="Kimi Linear，KDA 与 MLA 的混合架构">
+                <g class="dag-node dag-node--hybrid" tabindex="0">
+                  <rect x="895" y="467" width="110" height="56" rx="5" />
+                  <text class="dag-node__name" x="950" y="491" text-anchor="middle">Kimi Linear</text>
+                  <text class="dag-node__note" x="950" y="509" text-anchor="middle">hybrid global</text>
+                </g>
+              </a>
+            </svg>
           </div>
         </section>
 

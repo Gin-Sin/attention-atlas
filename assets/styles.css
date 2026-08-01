@@ -161,58 +161,74 @@ button { font: inherit; }
 }
 .legend i { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 50%; }
 
-.timeline {
-  position: relative;
+.lineage-wrap {
   margin-left: 228px;
-  padding-left: 56px;
-}
-.timeline::before {
-  content: "";
-  position: absolute;
-  left: 17px;
-  top: 8px;
-  bottom: 8px;
-  width: 1px;
-  background: var(--rule);
-}
-.era { position: relative; margin: 0 0 16px; }
-.era::before {
-  content: attr(data-year);
-  position: absolute;
-  left: -56px;
-  top: 22px;
-  transform: translateX(-100%);
-  color: var(--muted);
-  font: 10px/1 var(--mono);
-}
-.era::after {
-  content: "";
-  position: absolute;
-  left: -44px;
-  top: 25px;
-  width: 12px;
-  height: 12px;
-  border: 3px solid white;
-  border-radius: 50%;
-  background: var(--category);
-  box-shadow: 0 0 0 1px var(--category);
-}
-.era-card {
-  display: grid;
-  grid-template-columns: 110px 1fr auto;
-  align-items: center;
-  gap: 22px;
-  padding: 17px 20px;
+  overflow-x: auto;
   border: 1px solid var(--rule);
-  border-left: 3px solid var(--category);
-  background: white;
-  transition: .2s ease;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 35%), transparent 18%),
+    var(--paper-2);
+  box-shadow: 0 10px 36px rgb(16 36 59 / 6%);
 }
-.era-card:hover { transform: translateX(5px); border-color: var(--category); box-shadow: 0 6px 20px rgb(16 36 59 / 7%); }
-.era-code { color: var(--category); font: 500 22px/1 var(--display); }
-.era-copy strong { display: block; font-family: var(--serif); }
-.era-copy span { color: var(--muted); font-size: 13px; }
-.era-cost { color: var(--muted); text-align: right; font: 10px/1.6 var(--mono); }
+.lineage-dag {
+  display: block;
+  width: 100%;
+  min-width: 1020px;
+  height: auto;
+}
+.dag-year-line { stroke: #e4e1d8; stroke-width: 1; stroke-dasharray: 3 5; }
+.dag-lane-line { stroke-width: 1; opacity: .25; }
+.dag-edge {
+  fill: none;
+  stroke: #9aa4b1;
+  stroke-width: 1.6;
+  marker-end: url("#dag-arrow");
+}
+.dag-edge--dense { stroke: var(--dense); }
+.dag-edge--sparse { stroke: var(--sparse); }
+.dag-edge--linear { stroke: var(--linear); }
+.dag-edge--hybrid {
+  stroke: var(--hybrid);
+  stroke-dasharray: 6 5;
+}
+.dag-node rect {
+  fill: white;
+  stroke-width: 1.4;
+  transition:
+    transform .2s ease,
+    filter .2s ease;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dag-node:hover rect,
+.dag-node:focus rect {
+  transform: translateY(-3px);
+  filter: drop-shadow(0 7px 8px rgb(16 36 59 / 13%));
+}
+.dag-node text { pointer-events: none; }
+.dag-node__name { font: 500 15px/1 var(--display); }
+.dag-node__note { font: 9px/1 var(--mono); fill: var(--muted); }
+.dag-node--dense rect { stroke: var(--dense); }
+.dag-node--dense .dag-node__name { fill: var(--dense); }
+.dag-node--sparse rect { stroke: var(--sparse); }
+.dag-node--sparse .dag-node__name { fill: var(--sparse); }
+.dag-node--linear rect { stroke: var(--linear); }
+.dag-node--linear .dag-node__name { fill: var(--linear); }
+.dag-node--hybrid rect { stroke: var(--hybrid); }
+.dag-node--hybrid .dag-node__name { fill: var(--hybrid); }
+.dag-label {
+  font: 500 10px/1 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.dag-year {
+  font: 10px/1 var(--mono);
+  fill: var(--muted);
+}
+.dag-cross-label {
+  font: 9px/1 var(--mono);
+  fill: var(--hybrid);
+}
 .dense { --category: var(--dense); --category-soft: var(--dense-soft); }
 .sparse { --category: var(--sparse); --category-soft: var(--sparse-soft); }
 .linear { --category: var(--linear); --category-soft: var(--linear-soft); }
@@ -439,7 +455,7 @@ details p { margin-bottom: 0; }
   .hero-map { max-width: 560px; }
   .path-grid, .chapter-grid { grid-template-columns: repeat(2, 1fr); }
   .section-head { grid-template-columns: 110px 1fr; }
-  .legend, .timeline { margin-left: 158px; }
+  .legend, .lineage-wrap { margin-left: 158px; }
   .constraint-grid, .intuition-grid { grid-template-columns: 1fr 1fr; }
   .calculator { grid-template-columns: repeat(3, 1fr); }
 }
@@ -457,12 +473,7 @@ details p { margin-bottom: 0; }
   .section { padding: 58px 0; }
   .section-head { grid-template-columns: 1fr; gap: 12px; }
   .section-no { font-size: 34px; }
-  .legend, .timeline { margin-left: 0; }
-  .timeline { padding-left: 35px; }
-  .era::before { display: none; }
-  .era::after { left: -24px; }
-  .era-card { grid-template-columns: 76px 1fr; }
-  .era-cost { display: none; }
+  .legend, .lineage-wrap { margin-left: 0; }
   .chapter-hero { padding-top: 48px; }
   .chapter-nav { grid-template-columns: 1fr; }
   .chapter-nav .next { text-align: left; }
