@@ -8,7 +8,7 @@
       content="沿大模型注意力架构演化学习 MHA、MQA、GQA、MLA、DSA、CSA/HCA、Linear Attention、DeltaNet 与 KDA。"
     />
     <title>Attention Atlas · 前沿注意力架构教程</title>
-    <link rel="stylesheet" href="assets/styles.css" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260801-2" />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
@@ -158,16 +158,42 @@
                 从 MHA 分出 KV 共享与低秩、稀疏与序列压缩、有限状态三条路线，
                 并在 Kimi Linear 中重新混合。
               </desc>
+              <style>
+                .dag-edge { fill: none; stroke: #9aa4b1; stroke-width: 1.6; marker-end: url("#dag-arrow"); }
+                .dag-edge--dense { stroke: #285f8f; }
+                .dag-edge--sparse { stroke: #8b5d12; }
+                .dag-edge--linear { stroke: #39704f; }
+                .dag-edge--hybrid { stroke: #684b91; stroke-dasharray: 6 5; }
+                .dag-node rect { fill: #fff; stroke-width: 1.4; }
+                .dag-node text { pointer-events: none; }
+                .dag-node__name { font: 500 15px Georgia, serif; }
+                .dag-node__note { fill: #718096; font: 9px monospace; }
+                .dag-node--dense rect { stroke: #285f8f; }
+                .dag-node--dense .dag-node__name { fill: #285f8f; }
+                .dag-node--sparse rect { stroke: #8b5d12; }
+                .dag-node--sparse .dag-node__name { fill: #8b5d12; }
+                .dag-node--linear rect { stroke: #39704f; }
+                .dag-node--linear .dag-node__name { fill: #39704f; }
+                .dag-node--hybrid rect { stroke: #684b91; }
+                .dag-node--hybrid .dag-node__name { fill: #684b91; }
+                .dag-year-line { stroke: #e4e1d8; stroke-width: 1; stroke-dasharray: 3 5; }
+                .dag-lane-line { stroke-width: 1; opacity: .25; }
+                .dag-label { font: 500 10px monospace; letter-spacing: .1em; }
+                .dag-year { fill: #718096; font: 10px monospace; }
+                .dag-cross-label { fill: #684b91; font: 9px monospace; }
+              </style>
               <defs>
                 <marker
                   id="dag-arrow"
+                  viewBox="0 0 8 8"
+                  markerUnits="userSpaceOnUse"
                   markerWidth="8"
                   markerHeight="8"
-                  refX="7"
+                  refX="6.5"
                   refY="4"
                   orient="auto"
                 >
-                  <path d="M0 0L8 4L0 8Z" fill="context-stroke" />
+                  <path d="M0 0L8 4L0 8Z" fill="#9aa4b1" />
                 </marker>
               </defs>
 
@@ -200,7 +226,13 @@
               </g>
 
               <!-- 分叉与汇合关系 -->
-              <g aria-hidden="true">
+              <g
+                aria-hidden="true"
+                fill="none"
+                stroke="#9aa4b1"
+                stroke-width="1.6"
+                marker-end="url(#dag-arrow)"
+              >
                 <path class="dag-edge dag-edge--dense" d="M225 145H255" />
                 <path class="dag-edge dag-edge--dense" d="M345 145H515" />
                 <path class="dag-edge dag-edge--dense" d="M605 145H655" />
@@ -218,83 +250,83 @@
               <!-- KV 共享 / 低秩路线 -->
               <a href="chapter.html?id=mha" aria-label="MHA，2017，多头注意力">
                 <g class="dag-node dag-node--dense" tabindex="0">
-                  <rect x="135" y="117" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="180" y="141" text-anchor="middle">MHA</text>
-                  <text class="dag-node__note" x="180" y="159" text-anchor="middle">独立 K / V</text>
+                  <rect x="135" y="117" width="90" height="56" rx="5" fill="#fff" stroke="#285f8f" />
+                  <text class="dag-node__name" x="180" y="141" text-anchor="middle" fill="#285f8f">MHA</text>
+                  <text class="dag-node__note" x="180" y="159" text-anchor="middle" fill="#718096">独立 K / V</text>
                 </g>
               </a>
               <a href="chapter.html?id=mqa" aria-label="MQA，2019，多查询注意力">
                 <g class="dag-node dag-node--dense" tabindex="0">
-                  <rect x="255" y="117" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="300" y="141" text-anchor="middle">MQA</text>
-                  <text class="dag-node__note" x="300" y="159" text-anchor="middle">1 个 KV 头</text>
+                  <rect x="255" y="117" width="90" height="56" rx="5" fill="#fff" stroke="#285f8f" />
+                  <text class="dag-node__name" x="300" y="141" text-anchor="middle" fill="#285f8f">MQA</text>
+                  <text class="dag-node__note" x="300" y="159" text-anchor="middle" fill="#718096">1 个 KV 头</text>
                 </g>
               </a>
               <a href="chapter.html?id=gqa" aria-label="GQA，2023，分组查询注意力">
                 <g class="dag-node dag-node--dense" tabindex="0">
-                  <rect x="515" y="117" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="560" y="141" text-anchor="middle">GQA</text>
-                  <text class="dag-node__note" x="560" y="159" text-anchor="middle">分组共享</text>
+                  <rect x="515" y="117" width="90" height="56" rx="5" fill="#fff" stroke="#285f8f" />
+                  <text class="dag-node__name" x="560" y="141" text-anchor="middle" fill="#285f8f">GQA</text>
+                  <text class="dag-node__note" x="560" y="159" text-anchor="middle" fill="#718096">分组共享</text>
                 </g>
               </a>
               <a href="chapter.html?id=mla" aria-label="MLA，2024，多头潜变量注意力">
                 <g class="dag-node dag-node--dense" tabindex="0">
-                  <rect x="655" y="117" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="700" y="141" text-anchor="middle">MLA</text>
-                  <text class="dag-node__note" x="700" y="159" text-anchor="middle">latent KV</text>
+                  <rect x="655" y="117" width="90" height="56" rx="5" fill="#fff" stroke="#285f8f" />
+                  <text class="dag-node__name" x="700" y="141" text-anchor="middle" fill="#285f8f">MLA</text>
+                  <text class="dag-node__note" x="700" y="159" text-anchor="middle" fill="#718096">latent KV</text>
                 </g>
               </a>
 
               <!-- 稀疏 / 序列压缩路线 -->
               <a href="chapter.html?id=dsa" aria-label="DSA，2025，DeepSeek 稀疏注意力">
                 <g class="dag-node dag-node--sparse" tabindex="0">
-                  <rect x="795" y="292" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="840" y="316" text-anchor="middle">DSA</text>
-                  <text class="dag-node__note" x="840" y="334" text-anchor="middle">learned top-k</text>
+                  <rect x="795" y="292" width="90" height="56" rx="5" fill="#fff" stroke="#8b5d12" />
+                  <text class="dag-node__name" x="840" y="316" text-anchor="middle" fill="#8b5d12">DSA</text>
+                  <text class="dag-node__note" x="840" y="334" text-anchor="middle" fill="#718096">learned top-k</text>
                 </g>
               </a>
               <a href="chapter.html?id=csa" aria-label="CSA，2026，压缩稀疏注意力">
                 <g class="dag-node dag-node--sparse" tabindex="0">
-                  <rect x="995" y="252" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="1040" y="276" text-anchor="middle">CSA</text>
-                  <text class="dag-node__note" x="1040" y="294" text-anchor="middle">m=4 + top-k</text>
+                  <rect x="995" y="252" width="90" height="56" rx="5" fill="#fff" stroke="#8b5d12" />
+                  <text class="dag-node__name" x="1040" y="276" text-anchor="middle" fill="#8b5d12">CSA</text>
+                  <text class="dag-node__note" x="1040" y="294" text-anchor="middle" fill="#718096">m=4 + top-k</text>
                 </g>
               </a>
               <a href="chapter.html?id=hca" aria-label="HCA，2026，重压缩注意力">
                 <g class="dag-node dag-node--sparse" tabindex="0">
-                  <rect x="995" y="332" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="1040" y="356" text-anchor="middle">HCA</text>
-                  <text class="dag-node__note" x="1040" y="374" text-anchor="middle">m′=128 + dense</text>
+                  <rect x="995" y="332" width="90" height="56" rx="5" fill="#fff" stroke="#8b5d12" />
+                  <text class="dag-node__name" x="1040" y="356" text-anchor="middle" fill="#8b5d12">HCA</text>
+                  <text class="dag-node__note" x="1040" y="374" text-anchor="middle" fill="#718096">m′=128 + dense</text>
                 </g>
               </a>
 
               <!-- 有限状态与混合路线 -->
               <a href="chapter.html?id=linear" aria-label="Linear Attention，2020，线性注意力">
                 <g class="dag-node dag-node--linear" tabindex="0">
-                  <rect x="375" y="467" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="420" y="491" text-anchor="middle">Linear</text>
-                  <text class="dag-node__note" x="420" y="509" text-anchor="middle">fixed state</text>
+                  <rect x="375" y="467" width="90" height="56" rx="5" fill="#fff" stroke="#39704f" />
+                  <text class="dag-node__name" x="420" y="491" text-anchor="middle" fill="#39704f">Linear</text>
+                  <text class="dag-node__note" x="420" y="509" text-anchor="middle" fill="#718096">fixed state</text>
                 </g>
               </a>
               <a href="chapter.html?id=gated-delta" aria-label="DeltaNet，2024，门控 Delta 更新">
                 <g class="dag-node dag-node--linear" tabindex="0">
-                  <rect x="655" y="467" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="700" y="491" text-anchor="middle">DeltaNet</text>
-                  <text class="dag-node__note" x="700" y="509" text-anchor="middle">定点改写</text>
+                  <rect x="655" y="467" width="90" height="56" rx="5" fill="#fff" stroke="#39704f" />
+                  <text class="dag-node__name" x="700" y="491" text-anchor="middle" fill="#39704f">DeltaNet</text>
+                  <text class="dag-node__note" x="700" y="509" text-anchor="middle" fill="#718096">定点改写</text>
                 </g>
               </a>
               <a href="chapter.html?id=kda" aria-label="KDA，2025，Kimi Delta Attention">
                 <g class="dag-node dag-node--linear" tabindex="0">
-                  <rect x="795" y="467" width="90" height="56" rx="5" />
-                  <text class="dag-node__name" x="840" y="491" text-anchor="middle">KDA</text>
-                  <text class="dag-node__note" x="840" y="509" text-anchor="middle">channel gate</text>
+                  <rect x="795" y="467" width="90" height="56" rx="5" fill="#fff" stroke="#39704f" />
+                  <text class="dag-node__name" x="840" y="491" text-anchor="middle" fill="#39704f">KDA</text>
+                  <text class="dag-node__note" x="840" y="509" text-anchor="middle" fill="#718096">channel gate</text>
                 </g>
               </a>
               <a href="chapter.html?id=kda" aria-label="Kimi Linear，KDA 与 MLA 的混合架构">
                 <g class="dag-node dag-node--hybrid" tabindex="0">
-                  <rect x="895" y="467" width="110" height="56" rx="5" />
-                  <text class="dag-node__name" x="950" y="491" text-anchor="middle">Kimi Linear</text>
-                  <text class="dag-node__note" x="950" y="509" text-anchor="middle">hybrid global</text>
+                  <rect x="895" y="467" width="110" height="56" rx="5" fill="#fff" stroke="#684b91" />
+                  <text class="dag-node__name" x="950" y="491" text-anchor="middle" fill="#684b91">Kimi Linear</text>
+                  <text class="dag-node__note" x="950" y="509" text-anchor="middle" fill="#718096">hybrid global</text>
                 </g>
               </a>
             </svg>
