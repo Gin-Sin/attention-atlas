@@ -181,7 +181,6 @@
     if (!workbench) return;
     var pane = workbench.querySelector(".architecture-pane");
     var ide = workbench.querySelector(".code-ide");
-    var figure = workbench.closest(".report-figure");
     if (!pane || !ide) return;
 
     function apply() {
@@ -189,11 +188,8 @@
       workbench.style.removeProperty("--workbench-height");
       var sideBySide = window.matchMedia("(min-width: 1500px)").matches;
       if (!sideBySide) return;
-      var unified = Math.min(pane.offsetHeight, ide.offsetHeight);
-      if (figure && figure.classList.contains("is-expanded")) {
-        /* Keep the pair inside the fullscreen overlay's visible area. */
-        unified = Math.min(unified, Math.max(240, window.innerHeight - 220));
-      }
+      /* Both panes follow the diagram's natural height; the editor flexes. */
+      var unified = pane.offsetHeight;
       if (!isFinite(unified) || unified < 200) return;
       workbench.style.setProperty("--workbench-height", unified + "px");
       workbench.classList.add("is-height-synced");
