@@ -106,12 +106,10 @@
       '<button class="code-ide__icon" type="button" data-workbench-copy title="复制当前代码" aria-label="复制当前代码">⧉</button>' +
       '<a class="code-ide__icon" href="' + esc(implementation.path) +
       '" download title="下载完整源码" aria-label="下载完整源码">↓</a></span></div>' +
-      '<div class="code-ide__toolbar"><div class="code-ide__meta"><span data-workbench-block-label>Block ' +
-      esc(initialId) + '</span> · <strong data-workbench-title>' + esc(initial.title) +
-      '</strong> · <span data-workbench-lines>Lines ' + esc(initial.start) + "–" +
-      esc(initial.end) + '</span></div>' +
+      '<div class="code-ide__toolbar">' +
       '<select class="code-ide__jump" data-workbench-select aria-label="选择实现代码块" title="跳转到指定代码块">' +
-      options + '</select></div>' +
+      options + '</select><span class="code-ide__lines" data-workbench-lines>Lines ' +
+      esc(initial.start) + "–" + esc(initial.end) + "</span></div>" +
       '<p class="code-ide__status" data-workbench-status aria-live="polite">' +
       "选择架构图节点，或从列表跳转到对应实现。</p>" +
       '<pre class="code-ide__editor language-python line-numbers" data-workbench-pre data-start="' +
@@ -231,8 +229,6 @@
     var select = ide.querySelector("[data-workbench-select]");
     var modeButton = ide.querySelector("[data-workbench-mode]");
     var copyButton = ide.querySelector("[data-workbench-copy]");
-    var blockLabel = ide.querySelector("[data-workbench-block-label]");
-    var title = ide.querySelector("[data-workbench-title]");
     var lines = ide.querySelector("[data-workbench-lines]");
     var status = ide.querySelector("[data-workbench-status]");
     var pre = ide.querySelector("[data-workbench-pre]");
@@ -333,8 +329,6 @@
       if (!block) return;
       currentId = normalized;
       select.value = currentId;
-      blockLabel.textContent = "Block " + currentId;
-      title.textContent = block.title;
       lines.textContent = "Lines " + block.start + "–" + block.end;
       syncDiagramNodes();
       refreshEditor(true);
