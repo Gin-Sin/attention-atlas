@@ -188,9 +188,12 @@
       workbench.classList.remove("is-height-synced");
       workbench.style.removeProperty("--workbench-height");
       var sideBySide = window.matchMedia("(min-width: 1500px)").matches;
-      var expanded = figure && figure.classList.contains("is-expanded");
-      if (!sideBySide || expanded) return;
+      if (!sideBySide) return;
       var unified = Math.min(pane.offsetHeight, ide.offsetHeight);
+      if (figure && figure.classList.contains("is-expanded")) {
+        /* Keep the pair inside the fullscreen overlay's visible area. */
+        unified = Math.min(unified, Math.max(240, window.innerHeight - 220));
+      }
       if (!isFinite(unified) || unified < 200) return;
       workbench.style.setProperty("--workbench-height", unified + "px");
       workbench.classList.add("is-height-synced");
