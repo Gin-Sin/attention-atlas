@@ -28,7 +28,7 @@ class CausalDepthwiseConv1d(nn.Module):
             channels,
             kernel_size,
             groups=channels,
-            bias=True,
+            bias=False,
         )
 
     def forward(
@@ -76,7 +76,7 @@ def kda_recurrence(
         v: ``[B,T,H,Dv]``.
         alpha: ``[B,T,H,Dk]`` channel-wise retention in ``(0, 1)``.
         beta: ``[B,T,H]`` rank-1 delta strength.
-        memory: optional ``S [B,H,Dk,Dv]``.
+        memory: optional tutorial state ``S [B,H,Dk,Dv]``.
 
     For each token:
 
@@ -89,6 +89,10 @@ def kda_recurrence(
     Thus the transition matrix is a restricted DPLR form: its diagonal and
     rank-1 factors are not arbitrary; the low-rank correction is tied to the
     current key.
+
+    Kimi Linear writes the fast weight as ``F [B,H,Dv,Dk]``.  The tutorial
+    uses the transposed orientation ``S = F^T``; consequently channel decay
+    left-multiplies ``S`` here instead of right-multiplying ``F``.
     """
 
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
@@ -132,14 +136,14 @@ def kda_recurrence(
 
 # [Block 03] Importable KDA module
 class KDAState(NamedTuple):
-    """Streaming KDA memory and causal-convolution history."""
+    """Streaming KDA memory plus independent q/k/v ShortConv histories."""
 
     memory: Tensor  # [B,H,Dh,Dh]
-    conv_cache: Tensor  # [B,K-1,C]
+    conv_cache: Tuple[Tensor, Tensor, Tensor]  # q, k, v: each [B,K-1,C]
 
 
 class KimiDeltaAttention(nn.Module):
-    """Short-conv KDA with channel retention and an output gate."""
+    """Paper-shaped KDA with channel decay and low-rank gate projections."""
 
     def __init__(
         self,
@@ -154,17 +158,25 @@ class KimiDeltaAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
 
-        self.short_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.alpha_proj = nn.Linear(d_model, d_model)  # one alpha per key channel
-        self.beta_proj = nn.Linear(d_model, num_heads)
-        self.output_gate_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_conv1d = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.k_conv1d = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.v_conv1d = CausalDepthwiseConv1d(d_model, conv_kernel_size)
 
-        nn.init.constant_(self.alpha_proj.bias, 2.0)
-        nn.init.zeros_(self.beta_proj.bias)
+        # Kimi Linear uses rank=head_dim for both low-rank gate paths.
+        self.alpha_down = nn.Linear(d_model, self.head_dim, bias=False)
+        self.alpha_up = nn.Linear(self.head_dim, d_model, bias=False)
+        self.beta_proj = nn.Linear(d_model, num_heads, bias=False)
+        self.output_gate_down = nn.Linear(d_model, self.head_dim, bias=False)
+        self.output_gate_up = nn.Linear(self.head_dim, d_model)
+        self.A_log = nn.Parameter(torch.zeros(num_heads))
+        self.alpha_bias = nn.Parameter(
+            torch.full((num_heads, self.head_dim), -2.25)
+        )
+        self.output_norm = nn.RMSNorm(self.head_dim)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
     def _heads(self, x: Tensor) -> Tensor:
         batch, length, _ = x.shape
@@ -179,41 +191,56 @@ class KimiDeltaAttention(nn.Module):
 
         if x.ndim != 3 or x.shape[-1] != self.d_model:
             raise ValueError(f"x must have shape [B, T, {self.d_model}]")
-        conv_cache = None if state is None else state.conv_cache
         memory = None if state is None else state.memory
-        mixed, new_cache = self.short_conv(x, cache=conv_cache)
+        q_cache, k_cache, v_cache = (
+            (None, None, None) if state is None else state.conv_cache
+        )
 
-        q = self._heads(self.q_proj(mixed))
-        k = self._heads(self.k_proj(mixed))
-        v = self._heads(self.v_proj(mixed))
-        alpha = self._heads(torch.sigmoid(self.alpha_proj(mixed)))
-        beta = torch.sigmoid(self.beta_proj(mixed))
+        q, new_q_cache = self.q_conv1d(self.q_proj(x), cache=q_cache)
+        k, new_k_cache = self.k_conv1d(self.k_proj(x), cache=k_cache)
+        v, new_v_cache = self.v_conv1d(self.v_proj(x), cache=v_cache)
+        q = self._heads(F.silu(q))
+        k = self._heads(F.silu(k))
+        v = self._heads(F.silu(v))
+
+        # All gates read un-convolved x.  In particular beta is not a fourth
+        # ShortConv path.
+        alpha_logits = self._heads(self.alpha_up(self.alpha_down(x)))
+        log_alpha = -torch.exp(self.A_log)[None, None, :, None] * F.softplus(
+            alpha_logits + self.alpha_bias
+        )
+        alpha = torch.exp(log_alpha)
+        beta = torch.sigmoid(self.beta_proj(x))
 
         y, new_memory = kda_recurrence(
             q, k, v, alpha, beta, memory=memory
         )
-        output_gate = self._heads(torch.sigmoid(self.output_gate_proj(mixed)))
-        y = y * output_gate
+        output_gate_logits = self.output_gate_up(self.output_gate_down(x))
+        output_gate = self._heads(torch.sigmoid(output_gate_logits))
+        y = self.output_norm(y) * output_gate
 
         batch, length, _, _ = y.shape
         y = self.out_proj(y.reshape(batch, length, self.d_model))
-        return y, KDAState(new_memory, new_cache)
+        new_conv_cache = (new_q_cache, new_k_cache, new_v_cache)
+        return y, KDAState(new_memory, new_conv_cache)
 # [/Block 03]
 
 
 # [Block 04] Simplified NoPE global attention
 NOPE_NOTE = (
     "NoPE means this teaching layer adds no absolute, rotary, or relative "
-    "position embedding. Its causal mask still exposes token order through "
-    "prefix membership, but the scores contain no explicit position signal."
+    "position embedding. Released Kimi Linear uses low-rank MLA here; despite "
+    "that compression, its KV state remains token-indexed and grows with the "
+    "prefix. This smaller MHA placeholder is likewise token-indexed."
 )
 
 
 class NoPECausalSelfAttention(nn.Module):
-    """Tiny quadratic causal MHA used only as the hybrid's global layer.
+    """Tiny quadratic causal MHA standing in for the hybrid's NoPE MLA layer.
 
-    Kimi Linear uses MLA for its periodic global layers.  Plain MHA is used
-    here so the global, uncompressed read is recognizable in a few lines.
+    Released Kimi Linear's global layer is low-rank MLA, whose compressed KV
+    cache is still stored per token.  Plain MHA keeps the global token-indexed
+    read recognizable without reimplementing the separate MLA chapter.
     """
 
     def __init__(self, d_model: int, num_heads: int) -> None:
@@ -251,37 +278,38 @@ class NoPECausalSelfAttention(nn.Module):
 
 
 # [Block 05] Educational layerwise hybrid
-def educational_hybrid_schedule(
-    num_layers: int = 4, kda_per_global: int = 3
-) -> Tuple[str, ...]:
-    """Return a layerwise schedule such as ``("kda","kda","kda","global")``."""
+KIMI_LINEAR_27_LAYER_SCHEDULE = (
+    ("kda", "kda", "kda", "mla") * 6 + ("kda", "kda", "mla")
+)
 
-    if num_layers < 1 or kda_per_global < 1:
-        raise ValueError("num_layers and kda_per_global must be positive")
-    period = kda_per_global + 1
-    return tuple(
-        "global" if (index + 1) % period == 0 else "kda"
-        for index in range(num_layers)
-    )
+
+def educational_hybrid_schedule() -> Tuple[str, ...]:
+    """Return the released 27-layer Kimi Linear KDA/MLA ordering.
+
+    Six full 3:1 groups account for layers 1--24.  The final three layers are
+    KDA, KDA, MLA, so the concrete release must not be generated by blindly
+    repeating a four-layer motif and truncating it.
+    """
+
+    return KIMI_LINEAR_27_LAYER_SCHEDULE
 
 
 class EducationalKDAHybrid(nn.Module):
-    """Pre-norm residual stack following a small 3-KDA:1-global schedule.
+    """Pre-norm residual stack following the released 27-layer ordering.
 
     This is layerwise alternation, not a weighted mixture of two attention
-    outputs in one layer.  It intentionally omits feed-forward sublayers.
+    outputs in one layer.  ``mla`` entries use the simplified token-indexed
+    NoPE placeholder above.  Feed-forward sublayers are intentionally omitted.
     """
 
     def __init__(
         self,
         d_model: int,
         num_heads: int,
-        num_layers: int = 4,
-        kda_per_global: int = 3,
         conv_kernel_size: int = 4,
     ) -> None:
         super().__init__()
-        self.schedule = educational_hybrid_schedule(num_layers, kda_per_global)
+        self.schedule = educational_hybrid_schedule()
         self.norms = nn.ModuleList(nn.LayerNorm(d_model) for _ in self.schedule)
         self.layers = nn.ModuleList(
             KimiDeltaAttention(d_model, num_heads, conv_kernel_size)
@@ -308,8 +336,8 @@ class EducationalKDAHybrid(nn.Module):
 REFERENCE_SIMPLIFICATIONS = (
     "The KDA recurrence is sequential Python, not a chunkwise UT/WY kernel.",
     "Long-chunk numerical safeguards and higher-precision accumulators are omitted.",
-    "Gate parameterizations are illustrative and not checkpoint-compatible.",
-    "The global layer is vanilla causal MHA rather than production MLA.",
+    "Gate equations follow KDA, but initialization is simplified and not checkpoint-compatible.",
+    "The NoPE global placeholder is MHA, not production low-rank MLA; both are token-indexed.",
     "The hybrid omits MLPs, distributed layouts, fused kernels, and global KV caching.",
 )
 # [/Block 06]
@@ -356,7 +384,9 @@ def _smoke_test() -> None:
     hybrid.eval()
     with torch.no_grad():
         hybrid_output = hybrid(x)
-    assert hybrid.schedule == ("kda", "kda", "kda", "global")
+    assert hybrid.schedule == (
+        ("kda", "kda", "kda", "mla") * 6 + ("kda", "kda", "mla")
+    )
     assert hybrid_output.shape == x.shape and torch.isfinite(hybrid_output).all()
 
     print("kda: explicit DPLR equation and token streaming agree")

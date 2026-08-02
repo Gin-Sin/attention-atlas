@@ -14,6 +14,10 @@
       .replace(/'/g, "&#39;");
   }
 
+  function richText(value) {
+    return esc(value).replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+  }
+
   function technicalText(value) {
     var replacements = {
       cKV: "\\(c^{KV}\\)",
@@ -74,7 +78,47 @@
     });
   }
 
-  function renderDiagram(config) {
+  function renderImplementationEditor(implementation) {
+    if (!implementation || !(implementation.blocks || []).length) {
+      return '<aside class="code-ide code-ide--unavailable" role="status">' +
+        "<strong>PyTorch 教学实现未能载入</strong>" +
+        "<p>架构图仍可阅读；请检查 assets/implementations.js 是否可访问。</p></aside>";
+    }
+
+    var blocks = implementation.blocks;
+    var initial = blocks.find(function (block) {
+      return String(block.id) === "01";
+    }) || blocks[0];
+    var initialId = String(initial.id || "01").padStart(2, "0");
+    var options = blocks.map(function (block, index) {
+      var blockId = String(block.id || index + 1).padStart(2, "0");
+      return '<option value="' + esc(blockId) + '"' +
+        (blockId === initialId ? " selected" : "") + ">Block " + esc(blockId) +
+        " · " + esc(block.title) + "</option>";
+    }).join("");
+
+    return '<aside class="code-ide" data-architecture-ide tabindex="-1" aria-label="PyTorch architecture code workbench">' +
+      '<div class="code-ide__titlebar"><span class="code-ide__traffic" aria-hidden="true">' +
+      '<i></i><i></i><i></i></span><a class="code-ide__meta" href="' +
+      esc(implementation.path) + '" title="打开完整源码 ' + esc(implementation.path) +
+      '">Source · ' + esc(implementation.path) + '</a><a class="code-ide__button" href="' +
+      esc(implementation.path) + '" download title="下载完整源码" aria-label="下载完整源码">↓</a></div>' +
+      '<div class="code-ide__toolbar"><div class="code-ide__meta"><span data-workbench-block-label>Block ' +
+      esc(initialId) + '</span> · <strong data-workbench-title>' + esc(initial.title) +
+      '</strong> · <span data-workbench-lines>Lines ' + esc(initial.start) + "–" +
+      esc(initial.end) + '</span></div><div class="code-ide__actions">' +
+      '<select class="code-ide__jump" data-workbench-select aria-label="选择实现代码块">' +
+      options + '</select><button class="code-ide__button" type="button" data-workbench-jump>跳转</button>' +
+      '<button class="code-ide__button" type="button" data-workbench-mode aria-pressed="false">完整源码</button>' +
+      '<button class="code-ide__button" type="button" data-workbench-copy>复制</button></div></div>' +
+      '<p class="code-ide__status" data-workbench-status aria-live="polite">' +
+      "选择架构图节点，或从列表跳转到对应实现。</p>" +
+      '<pre class="code-ide__editor language-python line-numbers" data-workbench-pre data-start="' +
+      esc(initial.start) + '"><code class="language-python" data-workbench-editor>' +
+      esc(initial.code) + "</code></pre></aside>";
+  }
+
+  function renderDiagram(config, implementation) {
     if (window.AttentionDiagrams) {
       var report = window.AttentionDiagrams.build(config);
       var badges = report.badges.map(function (badge) {
@@ -84,9 +128,10 @@
         return '<li><span class="diagram-guide__num">' + String(index + 1).padStart(2, "0") +
           '</span><div><strong>' + technicalText(note[0]) + '</strong><p>' + technicalText(note[1]) + "</p></div></li>";
       }).join("");
-      return '<figure class="report-figure" id="architecture-block"><div class="diagram-header"><div><span class="diagram-header__eyebrow">Architecture Deconstruction</span><strong>完整 Attention Block · 教学重绘</strong></div><div class="diagram-header__tools"><div class="diagram-legend">' +
-        badges + '</div><button class="diagram-expand" type="button" data-diagram-expand aria-expanded="false">⤢ 放大查看</button></div></div><div class="diagram diagram--report"><div class="diagram-canvas">' +
-        report.svg + '</div></div><figcaption class="figcaption">' + technicalText(config.caption) +
+      return '<figure class="report-figure report-figure--workbench" id="architecture-block"><div class="diagram-header"><div><span class="diagram-header__eyebrow">Architecture Deconstruction</span><strong>完整 Attention Block · 教学重绘</strong></div><div class="diagram-header__tools"><div class="diagram-legend">' +
+        badges + '</div><button class="diagram-expand" type="button" data-diagram-expand aria-expanded="false">⤢ 放大查看</button></div></div><div class="architecture-workbench"><div class="architecture-pane"><div class="diagram diagram--report"><div class="diagram-canvas">' +
+        report.svg + "</div></div></div>" + renderImplementationEditor(implementation) +
+        '</div><figcaption class="figcaption">' + technicalText(config.caption) +
         '</figcaption><aside class="diagram-memory"><span>One-line Memory · 一眼记住</span><p>' +
         technicalText(report.memory) + '</p></aside><ol class="diagram-guide">' + notes + "</ol></figure>";
     }
@@ -108,31 +153,6 @@
       position.equation + "</div></article>" +
       renderCards(position.steps || [], "intuition") +
       '<div class="warning"><strong>实现边界：</strong> ' + esc(position.caveat) + "</div>";
-  }
-
-  function renderImplementations(chapterId) {
-    var implementation = implementations[chapterId];
-    if (!implementation) {
-      return '<div class="warning" role="status">本章的 PyTorch 教学实现未能载入。</div>';
-    }
-    var prefix = "implementation-" + chapterId + "-";
-    var blocks = (implementation.blocks || []).map(function (block, index) {
-      var number = block.id || String(index + 1).padStart(2, "0");
-      var codeId = prefix + number;
-      return '<article class="formula implementation-block"><span class="formula-label">Block ' +
-        esc(number) + " · Lines " + esc(block.start) + "–" + esc(block.end) +
-        "</span><h3>" + esc(block.title) + '</h3><button class="button" type="button" data-copy-target="' +
-        esc(codeId) + '">复制代码</button><pre><code id="' + esc(codeId) + '">' +
-        esc(block.code) + "</code></pre></article>";
-    }).join("");
-    var fullSourceId = prefix + "full-source";
-    return '<p>源文件：<a href="' + esc(implementation.path) + '"><code>' +
-      esc(implementation.path) + "</code></a></p>" + blocks +
-      '<details class="formula implementation-source"><summary>展开完整 PyTorch 源码</summary>' +
-      '<p>Source path · <code>' + esc(implementation.path) + '</code></p>' +
-      '<button class="button" type="button" data-copy-target="' + esc(fullSourceId) +
-      '">复制完整源码</button><pre><code id="' + esc(fullSourceId) + '">' +
-      esc(implementation.source) + "</code></pre></details>";
   }
 
   function initDiagramExpand(scope) {
@@ -195,6 +215,185 @@
     });
   }
 
+  function initArchitectureWorkbench(scope, implementation) {
+    var workbench = scope.querySelector(".architecture-workbench");
+    var ide = scope.querySelector("[data-architecture-ide]");
+    if (!workbench || !ide || !implementation || !(implementation.blocks || []).length) return;
+
+    var blocks = implementation.blocks;
+    var byId = {};
+    blocks.forEach(function (block, index) {
+      var id = String(block.id || index + 1).padStart(2, "0");
+      byId[id] = block;
+    });
+
+    var select = ide.querySelector("[data-workbench-select]");
+    var jumpButton = ide.querySelector("[data-workbench-jump]");
+    var modeButton = ide.querySelector("[data-workbench-mode]");
+    var copyButton = ide.querySelector("[data-workbench-copy]");
+    var blockLabel = ide.querySelector("[data-workbench-block-label]");
+    var title = ide.querySelector("[data-workbench-title]");
+    var lines = ide.querySelector("[data-workbench-lines]");
+    var status = ide.querySelector("[data-workbench-status]");
+    var pre = ide.querySelector("[data-workbench-pre]");
+    var code = ide.querySelector("[data-workbench-editor]");
+    var diagramNodes = workbench.querySelectorAll("svg [data-code-block]");
+    var firstDiagramId = diagramNodes.length
+      ? String(diagramNodes[0].getAttribute("data-code-block") || "").padStart(2, "0")
+      : "";
+    var initialId = byId[firstDiagramId]
+      ? firstDiagramId
+      : byId["01"] ? "01" : Object.keys(byId)[0];
+    var currentId = initialId;
+    var fullSource = false;
+    var displayedCode = "";
+    var scrollRequest = 0;
+
+    function normalizeId(value) {
+      var id = String(value || "").trim();
+      return /^\d+$/.test(id) ? id.padStart(2, "0") : id;
+    }
+
+    function setStatus(message) {
+      status.textContent = message;
+    }
+
+    function clearPrismDecorations() {
+      pre.querySelectorAll(".line-highlight").forEach(function (element) {
+        element.remove();
+      });
+    }
+
+    function highlightCode() {
+      clearPrismDecorations();
+      code.textContent = displayedCode;
+      if (!window.Prism || typeof window.Prism.highlightElement !== "function") return;
+      try {
+        window.Prism.highlightElement(code);
+      } catch (_) {
+        code.textContent = displayedCode;
+      }
+    }
+
+    function scrollToSourceLine(block) {
+      var request = ++scrollRequest;
+      window.requestAnimationFrame(function () {
+        if (request !== scrollRequest || !fullSource) return;
+        var lineHeight = parseFloat(window.getComputedStyle(code).lineHeight) || 20;
+        pre.scrollTop = Math.max(0, (Number(block.start) - 2) * lineHeight);
+      });
+    }
+
+    function refreshEditor(scrollToLine) {
+      var block = byId[currentId];
+      if (!block) return;
+      displayedCode = fullSource ? implementation.source : block.code;
+      if (fullSource) {
+        pre.setAttribute("data-line", block.start + "-" + block.end);
+        pre.removeAttribute("data-start");
+      } else {
+        pre.removeAttribute("data-line");
+        pre.setAttribute("data-start", block.start);
+        pre.scrollTop = 0;
+      }
+      highlightCode();
+      if (fullSource && scrollToLine) scrollToSourceLine(block);
+    }
+
+    function syncDiagramNodes() {
+      diagramNodes.forEach(function (node) {
+        var active = normalizeId(node.getAttribute("data-code-block")) === currentId;
+        node.classList.toggle("is-active", active);
+        node.classList.toggle("is-code-active", active);
+        node.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+
+    function revealIdeIfNeeded() {
+      var rect = ide.getBoundingClientRect();
+      var outsideViewport = rect.top < 0 || rect.bottom > window.innerHeight;
+      if (!outsideViewport) return;
+      try {
+        ide.focus({ preventScroll: true });
+      } catch (_) {
+        ide.focus();
+      }
+      var reduceMotion = window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      ide.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "nearest",
+        inline: "nearest"
+      });
+    }
+
+    function selectBlock(id, options) {
+      var normalized = normalizeId(id);
+      var block = byId[normalized];
+      if (!block) return;
+      currentId = normalized;
+      select.value = currentId;
+      blockLabel.textContent = "Block " + currentId;
+      title.textContent = block.title;
+      lines.textContent = "Lines " + block.start + "–" + block.end;
+      syncDiagramNodes();
+      refreshEditor(true);
+      setStatus("Block " + currentId + " 已选中 · " +
+        (fullSource ? "完整源码已定位到高亮行；" : "编辑器显示当前代码块；") +
+        "点击图中节点或使用列表继续切换。");
+      if (options && options.reveal) revealIdeIfNeeded();
+    }
+
+    diagramNodes.forEach(function (node) {
+      var id = normalizeId(node.getAttribute("data-code-block"));
+      var block = byId[id];
+      if (!block) return;
+      node.setAttribute("tabindex", "0");
+      node.setAttribute("role", "button");
+      node.setAttribute("aria-label", "查看代码块 " + id + "：" + block.title);
+      node.addEventListener("click", function () {
+        selectBlock(id, { reveal: true });
+      });
+      node.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+        event.preventDefault();
+        selectBlock(id, { reveal: true });
+      });
+    });
+
+    select.addEventListener("change", function () {
+      selectBlock(select.value);
+    });
+    jumpButton.addEventListener("click", function () {
+      selectBlock(select.value);
+    });
+    modeButton.addEventListener("click", function () {
+      fullSource = !fullSource;
+      modeButton.setAttribute("aria-pressed", fullSource ? "true" : "false");
+      modeButton.textContent = fullSource ? "仅看当前块" : "查看完整源码";
+      refreshEditor(true);
+      setStatus(fullSource
+        ? "完整源码模式 · 当前块行号已高亮。"
+        : "当前代码块模式 · 仅显示选中实现。");
+    });
+    copyButton.addEventListener("click", function () {
+      var original = copyButton.textContent;
+      copyText(displayedCode).then(function () {
+        copyButton.textContent = "✓ 已复制";
+        setStatus(fullSource ? "完整源码已复制。" : "当前代码块已复制。");
+      }).catch(function () {
+        copyButton.textContent = "复制失败";
+        setStatus("复制失败，请从编辑器中手动选择代码。");
+      }).finally(function () {
+        window.setTimeout(function () {
+          copyButton.textContent = original;
+        }, 1500);
+      });
+    });
+
+    selectBlock(initialId);
+  }
+
   function renderChapter() {
     var root = document.getElementById("chapter-root");
     if (!root) return;
@@ -211,7 +410,7 @@
         ? '<p><a class="formula-label" href="#authoritative-sources">Source anchor · ' + esc(d.source) + "</a></p>"
         : "";
       return '<article class="formula"><span class="formula-label">Derivation ' + (i + 1) +
-        "</span><h3>" + d.title + "</h3><div>" + d.body + "</div>" + source + "</article>";
+        "</span><h3>" + esc(d.title) + "</h3><div>" + richText(d.body) + "</div>" + source + "</article>";
     }).join("");
     var exercises = c.exercises.map(function (e, i) {
       return '<article class="exercise"><div class="diagram-legend" aria-label="练习分类与难度"><span>Kind · ' + esc(e.kind) +
@@ -238,13 +437,12 @@
       '<main class="chapter-main"><h2 data-no="01">问题从哪里来</h2>' + motivation +
       '<h2 data-no="02">设计限定条件</h2>' + renderCards(c.constraints, "constraint") +
       '<h2 data-no="03">先抓住数学直觉</h2>' + renderCards(c.intuitions, "intuition") +
-      '<h2 data-no="04">架构图</h2>' + renderDiagram(c.diagram) +
+      '<h2 data-no="04">架构图与交互实现</h2>' + renderDiagram(c.diagram, implementations[c.id]) +
       '<h2 data-no="05">位置编码与时序注入</h2>' + renderPositionEncoding(c.positionEncoding) +
       '<h2 data-no="06">数学推导</h2>' + derivations +
       '<div class="warning"><strong>边界与误区：</strong> ' + esc(c.warning) + "</div>" +
-      '<h2 data-no="07">PyTorch 逐块实现</h2>' + renderImplementations(c.id) +
-      '<h2 data-no="08">练习与答案</h2>' + exercises +
-      '<h2 data-no="09" id="authoritative-sources">权威来源</h2><ol class="source-list">' + sources + "</ol>" +
+      '<h2 data-no="07">练习与答案</h2>' + exercises +
+      '<h2 data-no="08" id="authoritative-sources">权威来源</h2><ol class="source-list">' + sources + "</ol>" +
       '<button class="button" id="complete-chapter" type="button">标记本章完成</button>' +
       nav + "</main>";
 
@@ -264,6 +462,7 @@
     });
     syncButton();
     initDiagramExpand(root);
+    initArchitectureWorkbench(root, implementations[c.id]);
     initCopyButtons(root);
     renderMath(root);
   }

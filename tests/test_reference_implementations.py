@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib
 import importlib.util
@@ -146,6 +147,169 @@ class MarkerAndAssetTests(unittest.TestCase):
                 self.assertFalse(self.sync.synchronize(check=True, root=root))
             self.assertEqual(asset_path.read_text(encoding="utf-8"), "stale\n")
             self.assertIn("is stale", stderr.getvalue())
+
+
+class StaticRecurrentArchitectureTests(unittest.TestCase):
+    """AST checks for paper-critical paths; these do not import PyTorch."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.sources = {
+            name: (ROOT / relative_path).read_text(encoding="utf-8")
+            for name, relative_path in {
+                "gated-delta": "pytorch/gated_delta.py",
+                "kda": "pytorch/kda.py",
+            }.items()
+        }
+        cls.trees = {
+            name: ast.parse(source)
+            for name, source in cls.sources.items()
+        }
+
+    def method(self, chapter: str, class_name: str, method_name: str):
+        tree = self.trees[chapter]
+        class_node = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        )
+        return next(
+            node
+            for node in class_node.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == method_name
+        )
+
+    def function(self, chapter: str, function_name: str):
+        return next(
+            node
+            for node in self.trees[chapter].body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+
+    def call_arguments(self, node, attribute: str) -> list[str]:
+        calls = [
+            child
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == attribute
+        ]
+        return [ast.unparse(call.args[0]) for call in calls]
+
+    def evaluate_schedule_expression(self, node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Tuple):
+            return tuple(
+                self.evaluate_schedule_expression(element)
+                for element in node.elts
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return (
+                self.evaluate_schedule_expression(node.left)
+                + self.evaluate_schedule_expression(node.right)
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            return (
+                self.evaluate_schedule_expression(node.left)
+                * self.evaluate_schedule_expression(node.right)
+            )
+        raise AssertionError(f"unsupported schedule expression: {ast.dump(node)}")
+
+    def test_gdn_qkv_shortconv_and_direct_gate_inputs(self) -> None:
+        forward = self.method(
+            "gated-delta", "GatedDeltaAttention", "forward"
+        )
+        self.assertEqual(
+            self.call_arguments(forward, "q_conv1d"),
+            ["self.q_proj(x)"],
+        )
+        self.assertEqual(
+            self.call_arguments(forward, "k_conv1d"),
+            ["self.k_proj(x)"],
+        )
+        self.assertEqual(
+            self.call_arguments(forward, "v_conv1d"),
+            ["self.v_proj(x)"],
+        )
+        self.assertEqual(self.call_arguments(forward, "alpha_proj"), ["x"])
+        self.assertEqual(self.call_arguments(forward, "beta_proj"), ["x"])
+        self.assertEqual(
+            self.call_arguments(forward, "output_gate_proj"),
+            ["x"],
+        )
+
+        forward_text = ast.unparse(forward)
+        self.assertIn("q = self._heads(F.silu(q))", forward_text)
+        self.assertIn("k = self._heads(F.silu(k))", forward_text)
+        self.assertIn("v = self._heads(F.silu(v))", forward_text)
+        self.assertIn("output_gate = F.silu", forward_text)
+        self.assertIn("log_alpha = -torch.exp(self.A_log)", forward_text)
+        recurrence = ast.unparse(
+            self.function("gated-delta", "gated_delta_recurrence")
+        )
+        self.assertIn("q = F.normalize(q", recurrence)
+        self.assertIn("k = F.normalize(k", recurrence)
+        self.assertIn("S = F^T", self.sources["gated-delta"])
+
+    def test_kda_qkv_shortconv_and_low_rank_direct_gates(self) -> None:
+        forward = self.method("kda", "KimiDeltaAttention", "forward")
+        self.assertEqual(
+            self.call_arguments(forward, "q_conv1d"),
+            ["self.q_proj(x)"],
+        )
+        self.assertEqual(
+            self.call_arguments(forward, "k_conv1d"),
+            ["self.k_proj(x)"],
+        )
+        self.assertEqual(
+            self.call_arguments(forward, "v_conv1d"),
+            ["self.v_proj(x)"],
+        )
+        self.assertEqual(self.call_arguments(forward, "alpha_down"), ["x"])
+        self.assertEqual(self.call_arguments(forward, "beta_proj"), ["x"])
+        self.assertEqual(
+            self.call_arguments(forward, "output_gate_down"),
+            ["x"],
+        )
+
+        forward_text = ast.unparse(forward)
+        self.assertIn("self.alpha_up(self.alpha_down(x))", forward_text)
+        self.assertIn(
+            "log_alpha = -torch.exp(self.A_log)", forward_text
+        )
+        self.assertIn("F.softplus(alpha_logits + self.alpha_bias)", forward_text)
+        self.assertIn(
+            "self.output_gate_up(self.output_gate_down(x))",
+            forward_text,
+        )
+        self.assertIn("torch.sigmoid(output_gate_logits)", forward_text)
+        recurrence = ast.unparse(self.function("kda", "kda_recurrence"))
+        self.assertIn("q = F.normalize(q", recurrence)
+        self.assertIn("k = F.normalize(k", recurrence)
+        self.assertIn("S = F^T", self.sources["kda"])
+
+    def test_released_27_layer_schedule_and_nope_description(self) -> None:
+        assignment = next(
+            node
+            for node in self.trees["kda"].body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "KIMI_LINEAR_27_LAYER_SCHEDULE"
+                for target in node.targets
+            )
+        )
+        schedule = self.evaluate_schedule_expression(assignment.value)
+        expected = (
+            ("kda", "kda", "kda", "mla") * 6
+            + ("kda", "kda", "mla")
+        )
+        self.assertEqual(schedule, expected)
+        self.assertEqual(len(schedule), 27)
+        self.assertIn("low-rank MLA", self.sources["kda"])
+        self.assertIn("token-indexed", self.sources["kda"])
 
 
 @unittest.skipUnless(torch is not None, TORCH_SKIP_REASON)
@@ -309,11 +473,33 @@ class PyTorchReferenceTests(unittest.TestCase):
             conv_kernel_size=3,
         ).eval()
         x = torch.randn(2, 5, 16)
+        gate_inputs = {}
+
+        def capture_gate(name):
+            def hook(_module, inputs):
+                gate_inputs[name] = inputs[0].detach().clone()
+
+            return hook
+
+        handles = [
+            layer.register_forward_pre_hook(capture_gate(name))
+            for name, layer in {
+                "alpha": model.alpha_proj,
+                "beta": model.beta_proj,
+                "output": model.output_gate_proj,
+            }.items()
+        ]
         with torch.no_grad():
             output, state = model(x)
+        for handle in handles:
+            handle.remove()
         self.assert_finite_shape(output, (2, 5, 16))
         self.assert_finite_shape(state.memory, (2, 4, 4, 4))
-        self.assert_finite_shape(state.conv_cache, (2, 2, 16))
+        self.assertEqual(len(state.conv_cache), 3)
+        for cache in state.conv_cache:
+            self.assert_finite_shape(cache, (2, 2, 16))
+        for gate_input in gate_inputs.values():
+            torch.testing.assert_close(gate_input, x)
 
     def test_kda_tiny_forward_and_hybrid(self) -> None:
         module = self.modules["kda"]
@@ -325,19 +511,45 @@ class PyTorchReferenceTests(unittest.TestCase):
         hybrid = module.EducationalKDAHybrid(
             d_model=12,
             num_heads=3,
-            num_layers=4,
-            kda_per_global=3,
             conv_kernel_size=3,
         ).eval()
         x = torch.randn(2, 5, 12)
+        gate_inputs = {}
+
+        def capture_gate(name):
+            def hook(_module, inputs):
+                gate_inputs[name] = inputs[0].detach().clone()
+
+            return hook
+
+        handles = [
+            layer.register_forward_pre_hook(capture_gate(name))
+            for name, layer in {
+                "alpha": model.alpha_down,
+                "beta": model.beta_proj,
+                "output": model.output_gate_down,
+            }.items()
+        ]
         with torch.no_grad():
             output, state = model(x)
             hybrid_output = hybrid(x)
+        for handle in handles:
+            handle.remove()
         self.assert_finite_shape(output, (2, 5, 12))
         self.assert_finite_shape(state.memory, (2, 3, 4, 4))
-        self.assert_finite_shape(state.conv_cache, (2, 2, 12))
+        self.assertEqual(len(state.conv_cache), 3)
+        for cache in state.conv_cache:
+            self.assert_finite_shape(cache, (2, 2, 12))
         self.assert_finite_shape(hybrid_output, (2, 5, 12))
-        self.assertEqual(hybrid.schedule, ("kda", "kda", "kda", "global"))
+        self.assertEqual(
+            hybrid.schedule,
+            ("kda", "kda", "kda", "mla") * 6
+            + ("kda", "kda", "mla"),
+        )
+        for gate_input in gate_inputs.values():
+            torch.testing.assert_close(gate_input, x)
+        self.assertEqual(model.alpha_down.out_features, model.head_dim)
+        self.assertEqual(model.output_gate_down.out_features, model.head_dim)
 
 
 if __name__ == "__main__":

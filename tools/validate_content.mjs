@@ -46,6 +46,7 @@ const counts = {
   derivations: 0,
   exercises: 0,
   diagrams: 0,
+  interactiveNodes: 0,
   implementations: 0,
   blocks: 0,
   indexLinks: 0
@@ -220,7 +221,7 @@ function validateChapters(chapters) {
   });
 }
 
-function validateDiagrams(chapters, diagramBuilder) {
+function validateDiagrams(chapters, diagramBuilder, implementations) {
   if (!diagramBuilder || typeof diagramBuilder.build !== "function") {
     addError("assets/diagrams.js must expose window.AttentionDiagrams.build");
     return;
@@ -242,6 +243,22 @@ function validateDiagrams(chapters, diagramBuilder) {
       if (!isNonEmptyString(report.svg) || !report.svg.includes("<svg")) {
         addError(`${location} build returned an empty or invalid svg`);
       }
+      const validBlocks = new Set(
+        (implementations?.[chapter.id]?.blocks || []).map((block) => String(block.id))
+      );
+      const interactiveBlocks = Array.from(
+        report.svg.matchAll(/\bdata-code-block="([^"]+)"/g),
+        (match) => match[1]
+      );
+      if (interactiveBlocks.length === 0) {
+        addError(`${location} has no interactive architecture-to-code nodes`);
+      }
+      interactiveBlocks.forEach((blockId) => {
+        if (!validBlocks.has(blockId)) {
+          addError(`${location} links to unknown implementation block ${blockId}`);
+        }
+      });
+      counts.interactiveNodes += interactiveBlocks.length;
       if (!Array.isArray(report.notes) || report.notes.length === 0) {
         addError(`${location} build returned no notes`);
       } else {
@@ -264,6 +281,24 @@ function validateDiagrams(chapters, diagramBuilder) {
       addError(`${location} failed to build: ${error.message}`);
     }
   });
+}
+
+function validateRenderer(courseSource, chapterHtml) {
+  if (!/richText\(d\.body\)/.test(courseSource)) {
+    addError("assets/course.js must pass every derivation body through richText()");
+  }
+  if (!/data-architecture-ide/.test(courseSource) || !/data-workbench-editor/.test(courseSource)) {
+    addError("assets/course.js must render the integrated diagram/code workbench");
+  }
+  if (/PyTorch 逐块实现/.test(courseSource)) {
+    addError("assets/course.js still renders a separate PyTorch implementation section");
+  }
+  if (!/prism-python(?:\.min)?\.js/.test(chapterHtml)) {
+    addError("chapter.html must load pinned Prism Python highlighting");
+  }
+  if (/<style\b/i.test(chapterHtml)) {
+    addError("chapter.html must keep workbench styling in assets/styles.css, not inline");
+  }
 }
 
 function splitLinesKeepEnds(source) {
@@ -566,18 +601,22 @@ function main() {
   executeBrowserAsset(context, "assets/implementations.js");
 
   const chapters = context.window.ATTENTION_CHAPTERS;
+  const implementations = context.window.ATTENTION_IMPLEMENTATIONS;
   validateChapters(chapters);
   validateNoLegacyDiagramMarkup(diagramSource);
-  validateDiagrams(chapters, context.window.AttentionDiagrams);
+  validateDiagrams(chapters, context.window.AttentionDiagrams, implementations);
 
   const chapterIds = Array.isArray(chapters)
     ? chapters.map((chapter) => chapter.id)
     : EXPECTED_IDS;
   validateImplementations(
-    context.window.ATTENTION_IMPLEMENTATIONS,
+    implementations,
     chapterIds
   );
-  validateIndexHtml(readText("index.html"), Array.isArray(chapters) ? chapters : []);
+  const indexHtml = readText("index.html");
+  const chapterHtml = readText("chapter.html");
+  validateIndexHtml(indexHtml, Array.isArray(chapters) ? chapters : []);
+  validateRenderer(readText("assets/course.js"), chapterHtml);
   validateGeneratedBundleSync();
 
   if (errors.length > 0) {
@@ -591,6 +630,7 @@ function main() {
     "Content valid: " +
       `${counts.chapters} chapters, ${counts.derivations} derivations, ` +
       `${counts.exercises} exercises, ${counts.diagrams} diagrams, ` +
+      `${counts.interactiveNodes} interactive nodes, ` +
       `${counts.implementations} implementations/${counts.blocks} blocks, ` +
       `${counts.indexLinks} index links; generated bundle synchronized.`
   );

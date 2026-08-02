@@ -14,10 +14,10 @@
       category: "dense",
       difficulty: "基础",
       report: "Attention Is All You Need",
-      deck: "先建立一把统一的“成本尺”。MHA 的表达力来自每个查询头拥有独立的 K/V 子空间，但自回归解码时也必须为每层、每个历史 token 保存全部 K/V。",
+      deck: "先建立一把统一的“成本尺”。2017 Transformer 在编码器自注意力、带因果掩码的解码器自注意力和编码器—解码器交叉注意力中都使用 MHA；自回归解码时必须为相关层保存历史 K/V。",
       takeaway: "MHA 的关键不是“有很多头”，而是每个头都拥有一套独立的读地址 K 与读内容 V；这同时给出高容量与最大的 KV cache。",
       motivation: [
-        "循环网络必须按时间步串行传播状态。MHA 让每个 token 在一层内直接读取任意历史位置，训练时可对整个序列并行。",
+        "循环网络必须按时间步串行传播状态。编码器自注意力可读取全部源位置；解码器自注意力只能读取当前及过去位置；交叉注意力则让解码器 query 读取编码器输出。",
         "不同头使用不同投影子空间：一个头可学习局部搭配，另一个头可学习指代或远程依赖；最终经拼接和输出投影写回残差流。",
         "它后来成为所有 KV 共享、低秩压缩、稀疏选择和线性状态方法的参照系。理解后续架构，本质上是在回答：MHA 的哪部分可以共享、压缩或省略？"
       ],
@@ -31,19 +31,19 @@
         { label: "Key", title: "我能被怎样索引？", body: "历史 token 为每个头提供独立地址。" },
         { label: "Value", title: "找到后读出什么？", body: "匹配权重对内容向量做加权汇总。" }
       ],
-      diagram: { type: "heads", mode: "mha", caption: "MHA：每个 Q 头都配有独立 K/V 头，表达容量高，缓存也最大。" },
+      diagram: { type: "heads", mode: "mha", caption: "MHA：每个 Q 头都配有独立 K/V 头；同一算子可用于编码器自注意力、解码器因果自注意力和交叉注意力。" },
       derivations: [
         {
           title: "从投影到加权读取",
-          body: R`对第 \(h\) 个头，令
+          body: R`令 \(X_Q\) 提供 query、\(X_{KV}\) 提供 key/value；自注意力时二者相同，交叉注意力时分别来自解码器与编码器。对第 \(h\) 个头，
             \[
-            Q_h=XW_h^Q,\quad K_h=XW_h^K,\quad V_h=XW_h^V,
+            Q_h=X_QW_h^Q,\quad K_h=X_{KV}W_h^K,\quad V_h=X_{KV}W_h^V,
             \]
             \[
             O_h=\operatorname{softmax}\!\left(\frac{Q_hK_h^\top}{\sqrt{d_h}}+M\right)V_h,\qquad
             Y=\operatorname{Concat}(O_1,\ldots,O_H)W^O.
             \]
-            缩放因子 \(\sqrt{d_h}\) 抑制点积方差；因果掩码 \(M\) 禁止读取未来。`
+            缩放因子 \(\sqrt{d_h}\) 抑制点积方差。\(M\) 在解码器自注意力中含因果掩码；编码器自注意力和交叉注意力没有“未来目标 token”这一掩码，但仍可含 padding mask。`
         },
         {
           title: "统一的 KV cache 计量公式",
@@ -54,7 +54,7 @@
             系数 2 来自 K 与 V。对 MHA，\(H_{kv}=H_q=H\)。该公式只算注意力 KV，不含权重、激活、碎片和运行时工作区。`
         }
       ],
-      warning: "“头数减半”不等于“KV cache 减半”，除非 KV 头数也减半。很多模型的 Q 头数与 KV 头数并不相同。",
+      warning: "“MHA”只描述多头注意力算子，不等于“因果自注意力”。原始 Transformer 的编码器、解码器和交叉注意力掩码/输入来源不同；“头数减半”也只有在 KV 头数随之减少时才会减小 KV cache。",
       exercises: [
         {
           q: R`某模型有 \(N=32\) 层、\(H=32\)、\(d_h=128\)，以 BF16 缓存一条 \(L=4096\) 的序列。忽略 batch 维，MHA KV cache 多大？`,
@@ -82,15 +82,15 @@
       category: "dense",
       difficulty: "基础",
       report: "Fast Transformer Decoding",
-      deck: "MQA 没有改变查询头的数量，也没有近似 softmax；它只让全部 Q 头共享一套 K/V，从源头减少自回归解码必须读取的数据。",
+      deck: "MQA 没有改变查询头数量，也没有近似 softmax；它让全部 Q 头共享一套 K/V。原论文在 WMT 编码器—解码器的三类注意力层都替换为 MQA，并另测 decoder-only 语言模型。",
       takeaway: R`把“提出多少个问题”和“保存多少份历史索引”解耦：保留多 Q 头，令 \(H_{kv}=1\)。`,
       motivation: [
         "增量解码一次只处理一个新 token，矩阵乘法很窄，GPU 计算单元难以吃满；反而从 HBM 反复加载历史 K/V 成为主要瓶颈。",
         "Shazeer 的核心观察是：查询头需要多样性，但历史 token 不一定要为每个查询头保存独立地址与内容。",
-        "因此 MQA 保留 H 个 Q 投影与 H 个输出通道，只把 K/V 投影压成一个共享头。它是结构性共享，不是量化或低秩近似。"
+        "因此 MQA 保留 H 个 Q 投影与 H 个输出通道，只把 K/V 投影压成一个共享头。论文把它用于编码器自注意力、解码器自注意力与交叉注意力；主要速度动机和收益仍来自增量解码。"
       ],
       constraints: [
-        { label: "目标", title: "优化解码带宽", body: "训练阶段仍需计算完整的多 Q 头注意力；主要收益发生在增量推理。" },
+        { label: "目标", title: "优化解码带宽", body: "训练阶段仍需计算全部 Q 头分数；主要收益发生在增量解码。原论文的结构范围并不只限 decoder self-attention。" },
         { label: "存储", title: R`KV 缩小约 \(H\) 倍`, body: R`相同头维下，\(H_{kv}\) 从 \(H\) 变为 1；实际收益还取决于布局、量化和 kernel。` },
         { label: "容量", title: "共享可能损失质量", body: "所有 Q 头只能在同一 K/V 表示上读取，独立的键值子空间容量下降。" }
       ],
@@ -103,15 +103,15 @@
       derivations: [
         {
           title: "共享 K/V 的定义",
-          body: R`令 \(Q_h=XW_h^Q\)，但只计算
+          body: R`令 \(Q_h=X_QW_h^Q\)，但对同一层只计算一套
             \[
-            K=XW^K,\qquad V=XW^V.
+            K=X_{KV}W^K,\qquad V=X_{KV}W^V.
             \]
             第 \(h\) 个输出仍为
             \[
             O_h=\operatorname{softmax}\!\left(\frac{Q_hK^\top}{\sqrt{d_h}}+M\right)V.
             \]
-            因此 softmax 仍精确，查询仍多头；变化只发生在 K/V 的头维。`
+            因此 softmax 仍精确，查询仍多头；变化只发生在 K/V 的头轴。自注意力有 \(X_Q=X_{KV}\)，交叉注意力则分别来自解码器和编码器。`
         },
         {
           title: "带宽收益的上界",
@@ -123,7 +123,7 @@
             这是 KV 数据量的上界比，不等同于端到端加速比。权重读取、通信、调度和非注意力层不会按 H 倍缩小。`
         }
       ],
-      warning: "MQA 的论文结论是“显著更快且只有轻微质量损失”的特定实验结果，不是所有模型、任务和训练配方上的普遍定理。",
+      warning: "MQA 的“显著更快且只有轻微质量损失”来自论文中的 TPU、batch、WMT/Billion Word 与特定等参数配方；它不是所有模型和硬件上的定理。论文还明确把三类 encoder-decoder attention 都替换成 MQA。",
       exercises: [
         {
           q: "沿用上一章 32 层、32 头、头维 128、4096 长度、BF16 的例子，MQA KV cache 多大？",
@@ -150,12 +150,12 @@
       category: "dense",
       difficulty: "进阶",
       report: "GQA: Training Generalized Multi-Query Transformer Models",
-      deck: R`GQA 把 MHA 与 MQA 放在同一条连续轴上：每组 Q 头共享一个 K/V 头，用 \(H_{kv}\) 直接控制质量—缓存—带宽的折中。`,
-      takeaway: R`GQA 不是第三种完全不同的算子，而是 \(1\le H_{kv}\le H_q\) 的统一参数化：MQA 是 1，MHA 是 \(H_q\)。`,
+      deck: R`GQA 把 MHA 与 MQA 放在同一条离散分组轴上：每组 Q 头共享一个 K/V 头，常见实现从 \(H_q\) 的整除因子中选择 \(H_{kv}\)。`,
+      takeaway: R`GQA 不是连续可微的“组数旋钮”，而是离散头布局：\(H_{kv}=1\) 为 MQA，\(H_{kv}=H_q\) 为 MHA，中间整除值给出等大小分组。`,
       motivation: [
         "MQA 的缓存最小，但单一 K/V 头可能成为表达瓶颈；MHA 表达充足，却为每个 Q 头重复保存历史。",
         "GQA 把查询头分为 G 组，每组共享一套 K/V。模型设计者可以根据目标硬件和质量预算选择中间点。",
-        "原论文还给出从 MHA checkpoint 升级到 GQA 的办法：组内 K/V 投影做均值池化，再用约原预训练算力 5% 的继续训练恢复能力。5% 是该论文配方，不是固定标准。"
+        "原论文还给出从 MHA checkpoint uptrain 到 GQA 的办法：组内 K/V 投影做均值池化，再用约原预训练算力 5% 的继续训练恢复能力。实验只改 T5.1.1 的 decoder self-attention 与 cross-attention，不改 encoder self-attention；5% 也只是该配方。"
       ],
       constraints: [
         { label: "结构约束", title: "通常要求整除", body: R`常见实现要求 \(H_q\) 能被 \(H_{kv}\) 整除，每个 KV 头服务 \(r=H_q/H_{kv}\) 个 Q 头。` },
@@ -167,7 +167,7 @@
         { label: "旋钮", title: R`\(H_{kv}\) 控制折中`, body: "越大越接近 MHA，越小越接近 MQA。" },
         { label: "分组", title: "共享发生在组内", body: "组间仍可学习不同 K/V 子空间。" }
       ],
-      diagram: { type: "heads", mode: "gqa", caption: "GQA：示意 8 个 Q 头按 2 个一组，共享 4 个 K/V 头。" },
+      diagram: { type: "heads", mode: "gqa", caption: "GQA：离散示例中 8 个 Q 头按 2 个一组，共享 4 个 K/V 头。" },
       derivations: [
         {
           title: "头到组的映射",
@@ -191,7 +191,7 @@
             所以 32 个 Q 头、8 个 KV 头的 GQA 理论上把 KV cache 压到 MHA 的 \(1/4\)。`
         }
       ],
-      warning: "“GQA 速度与 MQA 相当、质量接近 MHA”来自特定 uptraining 实验。服务框架、batch、序列长度和并行策略改变后，最优 G 不一定相同。",
+      warning: "“GQA 速度与 MQA 相当、质量接近 MHA”来自 T5.1.1 encoder-decoder 的特定 uptraining；论文只改 decoder self/cross-attention。服务框架、序列长度和并行策略改变后，最优离散组数不一定相同。",
       exercises: [
         {
           q: R`\(H_q=48\)、\(H_{kv}=8\) 时，每个 KV 头服务多少个 Q 头？相对 MHA 的 KV 缩减倍数是多少？`,
@@ -219,16 +219,16 @@
       category: "dense",
       difficulty: "高阶",
       report: "DeepSeek-V2 Technical Report",
-      deck: "MLA 不再让若干 Q 头直接共享一套完整 K/V，而是先把每个 token 压到低维 latent，缓存 latent；需要注意力时再为各头上投影恢复 K/V。",
-      takeaway: "GQA 在“头数”上共享，MLA 在“低秩潜空间”里共享。只缓存联合压缩 latent，保留多头上投影的表达力。",
+      deck: R`MLA 先把每个 token 压到低维 \(c_t^{KV}\)，并另存共享的 decoupled-RoPE key \(k_t^R\)。decode 主路径吸收 K/V 上投影，直接读取缓存，而不是逐步显式重建全部多头 K/V。`,
+      takeaway: R`GQA 在头轴共享，MLA 在低秩潜空间共享；DeepSeek-V2 每层每 token 的完整注意力缓存是 \(c_t^{KV}+k_t^R\)，宽度 \(d_c+d_h^R\)。`,
       motivation: [
         "MQA/GQA 通过减少 KV 头数降缓存，但 K/V 表示容量也随之减少。DeepSeek-V2 希望保留多头差异，同时继续降低 KV cache。",
-        R`MLA 对 K 与 V 做联合低秩压缩：每个 token 只保存一个低维向量 \(c^{KV}\)；每个头的 K/V 由不同上投影从 \(c^{KV}\) 重建。`,
+        R`MLA 对 K 与 V 做联合低秩压缩：内容 K/V 都由低维 \(c^{KV}\) 上投影；位置相关的共享 \(k^R\) 另行生成和缓存。显式重建便于解释，吸收式计算才是高效 decode 的主路径。`,
         "RoPE 会阻碍把上投影吸收到查询侧，因此 MLA 把位置相关的 RoPE 子空间与可低秩吸收的内容子空间分开，这就是 decoupled RoPE。"
       ],
       constraints: [
-        { label: "缓存", title: R`宽度从 \(Hd_h\) 变成 \(d_c\)`, body: R`每 token 主要缓存 \(c^{KV}\) 与较小的 RoPE key；收益取决于 \(d_c\) 和 \(d_R\)。` },
-        { label: "算子", title: "需要吸收或重建", body: "朴素地显式恢复各头 K/V 会增加算力；高效推理通常把上投影吸收到 Q/输出侧。" },
+        { label: "缓存", title: R`完整宽度是 \(d_c+d_h^R\)`, body: R`每 token 缓存 latent 与共享 RoPE key，不是“只有 \(d_c\)”；收益取决于两者宽度及存储精度。` },
+        { label: "算子", title: "decode 采用两侧吸收", body: "概念图可显式恢复各头 K/V；高效 decode 把 K 上投影吸收到 Q 侧、V 上投影吸收到输出侧。" },
         { label: "位置编码", title: "RoPE 必须解耦", body: "位置依赖旋转与低秩投影一般不可交换，需要单独保存旋转 key 分量。" }
       ],
       intuitions: [
@@ -236,20 +236,21 @@
         { label: "低秩", title: "共享生成基底", body: R`K/V 头都来自同一个 \(d_c\) 维潜空间。` },
         { label: "RoPE", title: "位置水印另存", body: "内容可压缩吸收，位置旋转通道单独处理。" }
       ],
-      diagram: { type: "latent", caption: R`MLA：每个 token 只缓存低维 \(c^{KV}\) 与解耦的 RoPE key，再供多头读取。` },
+      diagram: { type: "latent", caption: R`MLA：缓存 \(c_t^{KV}\) 与共享 \(k_t^R\)；decode 通过吸收后的多头 query/输出投影直接读取这份紧凑缓存。` },
       derivations: [
         {
           title: "KV 联合低秩压缩",
-          body: R`对 token 隐状态 \(h_t\)，先下投影
+          body: R`论文 §2.1.2 先定义原始低秩向量
             \[
-            c_t^{KV}=W^{DKV}h_t,\qquad c_t^{KV}\in\mathbb{R}^{d_c}.
+            \bar c_t^{KV}=W^{DKV}h_t,\qquad \bar c_t^{KV}\in\mathbb{R}^{d_c}.
             \]
-            各头内容 key/value 由上投影得到
+            论文主公式可把它直接记为 \(c_t^{KV}\)；训练细节与发布 checkpoint 在压缩 latent 后施加额外 RMSNorm，可写为
+            \(c_t^{KV}=\operatorname{RMSNorm}(\bar c_t^{KV})\)。各头内容 key/value 由上投影得到
             \[
             k_{t,i}^{C}=W_i^{UK}c_t^{KV},\qquad
             v_{t,i}=W_i^{UV}c_t^{KV}.
             \]
-            推理时缓存的是 \(c_t^{KV}\)，而不是全部 \(k_{t,i}^C,v_{t,i}\)。`
+            checkpoint 缓存的是归一化后的 \(c_t^{KV}\)，而不是全部 \(k_{t,i}^C,v_{t,i}\)；“原始线性 latent”与“实际缓存 latent”不可混称。`
         },
         {
           title: "解耦 RoPE 与缓存通式",
@@ -258,26 +259,32 @@
             k_{t,i}=[k_{t,i}^{C};k_t^{R}],\qquad
             q_{t,i}=[q_{t,i}^{C};q_{t,i}^{R}],
             \]
-            其中 \(q^R,k^R\) 应用 RoPE。于是每层每 token 的主要缓存宽度约为
+            其中 \(q^R,k^R\) 应用 RoPE，且
+            \(q_{t,i}^C,k_{s,i}^C\in\mathbb R^{d_h}\)、
+            \(q_{t,i}^R,k_s^R\in\mathbb R^{d_h^R}\)。注意力 logit 缩放为
             \[
-            d_c+d_R
+            \ell_{t,s,i}=\frac{q_{t,i}^{\top}k_{s,i}}{\sqrt{d_h+d_h^R}}.
             \]
-            而不是 MHA 的 \(2H_qd_h\)。精确布局以具体模型实现为准。`
+            §2.1.4 因而给出每层每 token 的总缓存宽度
+            \[
+            d_c+d_h^R
+            \]
+            而不是 MHA 的 \(2H_qd_h\)。`
         },
         {
-          title: "为什么能吸收到查询侧",
+          title: "decode 主路径为何能两侧吸收",
           body: R`内容分数中
             \[
             q_i^\top k_i^C=q_i^\top W_i^{UK}c^{KV}
             =\big((W_i^{UK})^\top q_i\big)^\top c^{KV}.
             \]
-            因此可预先把 \(W_i^{UK}\) 合并进查询投影，让注意力直接读取 latent；RoPE 部分因位置旋转而单独保留。`
+            因此可把 \(W_i^{UK}\) 合并进查询侧；同理 \(W_i^{UV}\) 可与输出投影合并。decode 直接对 latent 做 core attention，RoPE key 因位置旋转而单独保留；显式恢复 K/V 只是等价说明或训练实现选择。`
         }
       ],
-      warning: "DeepSeek-V2 报告中的“KV cache 减少 93.3%”同时包含 MLA、与 DeepSeek-67B 不同的层配置及平均 6-bit cache 量化；“吞吐提升 5.76×”也是整套系统相对指定基线的自报结果，二者都不是 MLA 算子的固定倍率。",
+      warning: "“KV cache 减少 93.3%”和“最大生成吞吐 5.76×”是 DeepSeek-V2 官方对指定 checkpoint、DeepSeek-67B 基线、层配置、量化与系统实现的自报结果，不是 MLA 算子的固定倍率；结构性缓存公式应单独写成 \(d_c+d_h^R\)。",
       exercises: [
         {
-          q: R`若 MHA 每 token 缓存 \(2H d_h=2\times32\times128\) 个元素，而 MLA 缓存 \(d_c+d_R=512+64\) 个元素，理论元素数比是多少？`,
+          q: R`若 MHA 每 token 缓存 \(2H d_h=2\times32\times128\) 个元素，而 MLA 缓存 \(d_c+d_h^R=512+64\) 个元素，理论元素数比是多少？`,
           hint: "用 8192/576。",
           answer: "约 14.22 倍。该比值未计布局、量化和临时工作区。"
         },
@@ -303,12 +310,12 @@
       category: "sparse",
       difficulty: "高阶",
       report: "DeepSeek-V3.2-Exp",
-      deck: "DSA 把昂贵的 core attention 拆成两阶段：低成本 Lightning Indexer 为每个 query 找 top-k 历史 token，随后只在这些 token 上运行高维 MLA 注意力。",
-      takeaway: "DSA 的核心不是预先固定窗口，而是内容驱动的 learned top-k：便宜地找候选，昂贵地精确读取。",
+      deck: "DSA 把 core attention 拆成两阶段：Lightning Indexer 为每个 query 选 top-k 历史位置，随后 MQA-mode MLA 直接在这些位置对应的 latent KV entries 上计算 core attention。",
+      takeaway: "DSA 的候选单位是 MLA 的 token-indexed latent entry；它没有论文定义中的额外局部窗口，短序列 masked-MHA 只是实现 DSA 的 kernel 路径。",
       motivation: [
         R`MLA 解决了每个 token 缓存过宽的问题，但 dense attention 仍要让每个 query 与所有历史位置做高维交互；上下文极长时，算量仍随 \(L^2\) 增长。`,
-        "DSA 引入 Lightning Indexer：用低维、低成本路径估计相关性，为每个 query 选择 k 个历史位置；core attention 只对选中 token 计算。",
-        "DeepSeek-V3.2-Exp 以接近 V3.1-Terminus 的训练配置验证稀疏化，官方称输出质量基本持平，并开源训练/推理 kernel。"
+        "DSA 引入 Lightning Indexer：用低维低精度路径估计相关性，为每个 query 选择 k 个历史位置；core 读取这些位置的 MLA latent \(c_s^{KV}\)，而非另造一套高维候选缓存。",
+        "DeepSeek-V3.2-Exp/V3.2 通过 continued training 加入 DSA；“质量基本持平”和部署成本曲线均属于官方 checkpoint/服务自报，报告也引用了部分独立长上下文评测。"
       ],
       constraints: [
         { label: "选择预算", title: "k 决定精度与成本", body: "k 太小会漏掉关键 token；太大则接近 dense attention。" },
@@ -320,52 +327,57 @@
         { label: "阶段 2", title: "打开原文", body: "Core attention 在候选 token 上做完整高维读取。" },
         { label: "不同于窗口", title: "远处也能被选中", body: "选择由内容相关性决定，不只依赖距离。" }
       ],
-      diagram: { type: "sparse", caption: "DSA：低成本索引器扫描历史，top-k 路由到高维 core attention。" },
+      diagram: { type: "sparse", caption: "DSA：Indexer 扫描历史并选 top-k token positions，core 以 MQA-mode MLA 读取对应 latent entries；没有额外滑窗分支。" },
       derivations: [
         {
           title: "Lightning Indexer 的正式评分",
-          body: R`设 Indexer 有 \(H^I\) 个 query 头，共享一条低维 key。官方评分为
+          body: R`设 Indexer 有 \(H^I\) 个 query 头，共享低维 key；pRoPE 先作用于 q/k 的指定子维，FP8 路径再对两侧施同一正交 Hadamard 变换 \(\mathcal H\)：
+            \[
+            \bar q^I_{t,j}=\mathcal H\,\operatorname{pRoPE}_t(q^I_{t,j}),\qquad
+            \bar k^I_s=\mathcal H\,\operatorname{pRoPE}_s(k^I_s).
+            \]
+            官方评分为
             \[
             I_{t,s}=\sum_{j=1}^{H^I}w^I_{t,j}
-            \operatorname{ReLU}\!\left((q^I_{t,j})^\top k^I_s\right),
+            \operatorname{ReLU}\!\left((\bar q^I_{t,j})^\top\bar k^I_s\right),
             \qquad
             \mathcal I_t=\operatorname{TopK}_s(I_{t,s},k).
             \]
-            高维核心注意力只在集合 \(\mathcal I_t\) 上计算
+            同一正交变换在精确算术下保持点积；其作用是改善低精度数值分布，不是 PE。core 只取
+            \(\{c_s^{KV}:s\in\mathcal I_t\}\)：
             \[
-            o_t=\sum_{j\in\mathcal I_t}
-            \operatorname{softmax}_{j\in\mathcal I_t}
-            \left(\frac{q_t^\top k_j}{\sqrt d}\right)v_j.
+            u_t=\operatorname{Attn}_{\mathrm{MLA\text{-}MQA}}
+            \!\left(h_t,\{c_s^{KV}:s\in\mathcal I_t\}\right).
             \]
-            top-k 后的 softmax 对候选集合重新归一化。V3.2 的公开配置为
+            top-k 后 core softmax 在候选 latent entries 上重算。V3.2 官方公开配置为
             \(H^I=64,d^I=128,k=2048\)，Indexer QK 路径使用 FP8。`
         },
         {
           title: "复杂度要分两条路径看",
-          body: R`若 indexer 维度为 \(d_I\)，core 头维为 \(d\)，则粗略有
+          body: R`若 indexer 有 \(H^I\) 头、每头维 \(d_I\)，core 有 \(H_q\) 个 query 头、其直接 latent 点积有效宽度记为 \(d_{\mathrm{core}}\)，则
             \[
-            C_{\mathrm{index}}\sim O(L^2d_I),\qquad
-            C_{\mathrm{core}}\sim O(Lkd).
+            C_{\mathrm{index}}=\Theta(L^2H^Id_I),\qquad
+            C_{\mathrm{core}}=\Theta(LkH_qd_{\mathrm{core}}).
             \]
-            DSA 的价值来自 \(d_I\ll d\)、低精度索引和 \(k\ll L\)。它不应被粗暴写成“所有部分都严格 \(O(Lk)\)”。`
+            常把固定头数/宽度省略后才写成 \(O(L^2)\) 与 \(O(Lk)\)。DSA 的价值来自低维低精度 Indexer 和 \(k\ll L\)，不是把整个模块都变成严格 \(O(Lk)\)。`
         },
         {
           title: "Indexer 用独立对齐目标训练",
-          body: R`Dense warm-up 阶段从主注意力聚合目标分布 \(p_{t,:}\)，训练
+          body: R`Dense warm-up 保留 full core attention，先把其各头的**概率权重**求和并沿完整历史轴 L1 归一化成 teacher \(p_{t,:}\)，再用完整 Indexer logits 训练
             \[
             \mathcal L^I=\sum_t D_{\mathrm{KL}}\!\left(
             p_{t,:}\,\|\,\operatorname{Softmax}(I_{t,:})\right).
             \]
-            稀疏阶段改为在选中集合上对齐。官方设计将 Indexer 输入从主模型计算图 detach：Indexer 由
+            不能把 teacher 写成“对主 logits 直接求和”，也不能在 warm-up 偷换成 top-k 归一化。稀疏阶段才把 teacher 与 logits 都限制到选中集合 \(\mathcal S_t\) 后对齐。官方设计将 Indexer 输入 detach：Indexer 由
             \(\mathcal L^I\) 优化，语言模型损失不穿过离散 top-k 直接反传。`
         }
       ],
-      warning: "内容稀疏注意力存在检索召回率风险：被 indexer 漏掉的 token 不会进入 core attention，后者再精确也无法补救。",
+      warning: "内容稀疏注意力存在召回风险：被 Indexer 漏掉的 latent entry 不会进入 core。DeepSeek 的“效率提升/质量持平”必须标作官方、checkpoint 与部署栈特定自报；DSA 论文并未定义一个可兜底的局部滑窗分支。",
       exercises: [
         {
           q: R`当 \(L=131072,k=2048\) 时，core attention 的位置对数量相对 dense 减少多少倍？`,
           hint: R`比较 \(L^2\) 与 \(Lk\)。`,
-          answer: R`理想比值为 \(L/k=64\) 倍。这里只比较 core 位置对，不包括 indexer、局部路径和系统开销。`
+          answer: R`理想比值为 \(L/k=64\) 倍。这里只比较 core 位置对，不包括带 \(H^Id_I\) 因子的全历史 Indexer 和系统开销；DSA 本身没有另加局部窗口。`
         },
         {
           q: "为什么 DSA 不能只用固定滑动窗口代替 indexer？",
@@ -389,11 +401,11 @@
       category: "sparse",
       difficulty: "前沿",
       report: "DeepSeek-V4 Technical Report",
-      deck: "CSA 先把相邻 token 学习式压成更短的 KV 序列，再让 Lightning Indexer 从压缩条目中选 top-k；局部滑窗保留近期未压缩细节。",
-      takeaway: "MLA 压“每条记录有多宽”，CSA 压“历史有多少条”并稀疏读取：先把 L 变成 L/m，再从中选 k。",
+      deck: R`CSA 分别生成宽度 \(c\) 的 compressed KV pool \(C^{Comp}\) 与宽度 \(c^I\) 的 compressed indexer-key pool \(K^{IComp}\)，再用后者选 top-k、用前者做共享-KV MQA；滑窗保留近期原始条目。`,
+      takeaway: R`CSA 压缩 token 轴：\(C^{Comp}\) 与 \(K^{IComp}\) 都从 \(L\) 变为约 \(L/m\)，但两者是不同宽度、不同用途的缓存，不能拿 MLA 的 \(d_c\) 代称。`,
       motivation: [
         "到百万 token，上下文条目数本身成为瓶颈：即使每条 KV 已被 MLA 压窄，逐 token 存储和检索仍很昂贵。",
-        "CSA 每 m 个 token 压成一个条目，再用 DSA Lightning Indexer 选 top-k 压缩条目，同时攻击 cache 长度与 core attention 读取量。",
+        R`CSA 每 \(m\) 个 token 前进一次输出；每个输出以联合 \(2m\)-位置、逐通道 softmax 形成 \(C^{Comp}\)，并以同型但独立参数形成 \(K^{IComp}\)，同时降低 cache 长度与 core 读取量。`,
         "压缩块只能在闭合后被因果读取，所以每层并联未压缩 sliding-window 分支，覆盖当前块与近期依赖。"
       ],
       constraints: [
@@ -406,34 +418,46 @@
         { label: "Select", title: "从摘要中搜索", body: "Indexer 选择相关压缩条目，而非原始 token。" },
         { label: "SWA", title: "桌面上的原件", body: "最近 token 保持未压缩，保证局部细节和因果覆盖。" }
       ],
-      diagram: { type: "compressed", mode: "csa", caption: "CSA：两路重叠学习式压缩把序列缩短 m 倍，再做 top-k；右侧滑窗保留原始近期 token。" },
+      diagram: { type: "compressed", mode: "csa", caption: "CSA：独立压缩出 \(C^{Comp}\)（宽 c）与 \(K^{IComp}\)（宽 \(c^I\)）；Indexer 用后者选 top-k，MQA 用前者读写，滑窗保留近期 token。" },
       derivations: [
         {
           title: "沿序列维做重叠学习式压缩",
-          body: R`CSA 产生两路 KV 流 \(C^a,C^b\) 与逐维门控 \(Z^a,Z^b\)。对第 \(i\) 个输出，把当前 a 块与前一 b 块的 \(2m\) 个位置逐维 softmax 加权：
+          body: R`CSA 产生两路 KV 流 \(C^a,C^b\in\mathbb R^{L\times c}\) 与 logits \(Z^a,Z^b\)。第 \(i\) 个输出先把当前 a 块与前一 b 块的 logits（含位置 bias）拼接，在联合 \(2m\) 行上逐通道归一化：
+            \[
+            [S^a_i;S^b_i]=\operatorname{Softmax}_{\rm row}
+            ([Z^a_{mi:m(i+1)}+B^a;Z^b_{m(i-1):mi}+B^b]).
+            \]
             \[
             C_i^{Comp}=
             \sum_{j=mi}^{m(i+1)-1}S_j^a\odot C_j^a+
             \sum_{j=m(i-1)}^{mi-1}S_j^b\odot C_j^b.
             \]
-            相邻输出有重叠，但步长仍为 \(m\)，所以历史长度从 \(L\) 变为约 \(L/m\)，不是 \(L/(2m)\)。`
+            两半不是各自 softmax 后相加。Indexer key 另用独立投影和同样压缩操作得到
+            \(K^{IComp}\in\mathbb R^{(L/m)\times c^I}\)；它不等于 \(C^{Comp}\)。步长为 \(m\)，故长度约为 \(L/m\)，不是 \(L/(2m)\)。`
         },
         {
           title: "Indexer、core 与 cache 要分别计算",
-          body: R`CSA 对每个 query 扫描 \(L/m\) 个压缩候选，再选择 \(k\) 个压缩条目：
+          body: R`CSA 对每个 query 扫描约 \(L/m\) 个 \(c^I\)-维 indexer candidates，再选择 \(k\) 个 \(c\)-维 compressed KV entries：
             \[
-            C_{\mathrm{index}}\sim O(L^2d_I/m),\qquad
-            C_{\mathrm{CSA,core}}\sim O(Lkd),\qquad
-            \mathrm{Cache}_{CSA}\sim O((L/m)d_c).
+            C_{\mathrm{index}}\sim O(L^2H^Ic^I/m),\qquad
+            C_{\mathrm{CSA,core}}\sim O(LkH_qc),
             \]
-            还需加窗口大小 \(w\) 的局部注意力 \(O(Lwd)\)。固定 \(m\) 时 Indexer 渐近仍是平方项，只是候选轴更短且使用低维低精度。`
+            \[
+            \mathrm{Cache}_{CSA}\sim O((L/m)(c+c^I)+L_{\rm win}c).
+            \]
+            还需滑窗分支。固定 \(m\) 时 Indexer 渐近仍为平方项；\(c,c^I\) 是 V4 报告宽度，不是 MLA query bottleneck \(d_c'\)。`
         },
         {
-          title: "报告中的正式配置",
-          body: R`DeepSeek-V4 使用 \(m=4,w=128\)，Indexer 为 64 头、头维 128，QK 路径使用 FP4。V4-Flash 的 top-k 为 512，V4-Pro 为 1024。这些是模型配置，不是 CSA 定义中的固定常数。`
+          title: "core normalization、sink 与正式配置",
+          body: R`core attention 前对每个 query head 与唯一 compressed-KV head 分别做 RMSNorm。若归一化 logit 为 \(\ell_{h,t,s}\)，每头 sink logit \(z'_h\) 令
+            \[
+            a_{h,t,s}=\frac{e^{\ell_{h,t,s}}}
+            {\sum_u e^{\ell_{h,t,u}}+e^{z'_h}},
+            \]
+            所以真实条目的权重和可小于 1。官方 checkpoint 配置为 \(m=4,w=128\)，Indexer 64 头×128 维且 QK 用 FP4；Flash/Pro 的 top-k 分别为 512/1024。这些都是官方模型配置。`
         }
       ],
-      warning: "DeepSeek-V4 是 2026 年预览技术报告。其百万上下文效率数字、FP4 indexer 和召回率均应标注为官方自报，并等待更广泛的独立复现。",
+      warning: "DeepSeek-V4 是 2026 预览报告。百万上下文 FLOPs/cache、FP4 Indexer、召回与吞吐数字都是官方且 checkpoint/实现特定的自报；结构描述还必须同时计 \(C^{Comp}\)、\(K^{IComp}\)、滑窗、RMSNorm 与 sink。",
       exercises: [
         {
           q: R`\(L=1{,}000{,}000\)，CSA 的 \(m=4\)、\(k=512\)。压缩池有多少条目？每个 query 的 core 只读其中多少比例？`,
@@ -458,11 +482,11 @@
       fullTitle: "Heavily Compressed Attention",
       zhTitle: "重压缩注意力：用粗粒度摘要换全局稠密视野",
       year: "2026",
-      category: "sparse",
+      category: "dense",
       difficulty: "前沿",
       report: "DeepSeek-V4 Technical Report §2.3.2",
-      deck: "HCA 把每 m′ 个 token 压成一个条目，压缩率远高于 CSA；由于历史已非常短，它取消 Indexer 与 top-k，直接稠密读取全部压缩条目。",
-      takeaway: "HCA 不做稀疏选择：把 key 轴从 L 重压到 L/m′，再运行 dense attention。它避免 top-k 漏召回，却承担更强的压缩损失。",
+      deck: "HCA 把每 m′ 个 token 压成一个宽度 c 的条目，取消 Indexer 与 top-k，并对所有因果可见的已完成压缩块做 dense MQA；它是 compressed-dense attention，不是 sparse attention。",
+      takeaway: R`HCA 的“dense”发生在压缩后的 key 轴：query \(t\) 读取全部 \(\lfloor t/m'\rfloor\) 个已完成块。它没有选择漏召回，但有重压缩损失。`,
       motivation: [
         "CSA 保留较细的摘要并依赖 learned top-k，适合内容检索，但 Indexer 仍要扫描候选且可能漏掉相关块。",
         "HCA 选择相反的极端：把每个大块压成一个 KV 条目，使全局摘要短到无需检索器即可全部读取。",
@@ -478,7 +502,7 @@
         { label: "Read", title: "完整阅读短目录", body: "没有 Indexer，也没有 top-k 选择遗漏。" },
         { label: "Trade-off", title: "不漏目录，但目录会丢细节", body: "选择误差消失，压缩误差变成主要风险。" }
       ],
-      diagram: { type: "compressed", mode: "hca", caption: "HCA：重压缩后的 key 轴足够短，可以 dense 读取全部摘要；局部滑窗保留近期原始 token。" },
+      diagram: { type: "compressed", mode: "hca", caption: "HCA（compressed-dense）：对全部因果已完成的宽 c 压缩条目做 dense MQA；局部滑窗覆盖当前未闭合块与近期 token。" },
       derivations: [
         {
           title: "非重叠重压缩",
@@ -490,29 +514,33 @@
             \[
             C_i^{Comp}=\sum_{j=m'i}^{m'(i+1)-1}S_j\odot C_j.
             \]
-            压缩历史长度为 \(\lfloor L/m'\rfloor\)。与 CSA 不同，HCA 没有两路重叠压缩。`
+            每个条目宽度为报告记号 \(c\)。整段最终可形成 \(\lfloor L/m'\rfloor\) 个块，但位置 \(t\) 的 query 只能读取
+            \(n_c(t)=\lfloor t/m'\rfloor\) 个已完成前序块。与 CSA 不同，HCA 没有两路重叠压缩。`
         },
         {
           title: "dense over compressed history",
-          body: R`HCA 对全部压缩条目与局部窗口做核心注意力：
+          body: R`HCA 对位置 \(t\) 的全部已完成压缩条目与局部窗口做核心注意力：
             \[
-            C_{\mathrm{HCA}}\sim O\!\left(L(L/m'+w)d\right),\qquad
-            \mathrm{Cache}_{HCA}\sim O((L/m')d_c+wd_c).
+            N_{\rm global}=\sum_{t=0}^{L-1}\left\lfloor\frac{t}{m'}\right\rfloor,\qquad
+            C_{\mathrm{HCA}}=\Theta\!\left(H_qc\,[N_{\rm global}+Lw]\right),
             \]
-            DeepSeek-V4 采用 \(m'=128,w=128\)。常数约降 128 倍，但固定 \(m'\) 时 prefill 的渐近阶仍是平方。`
+            \[
+            \mathrm{Cache}_{HCA}=\Theta((L/m')c+wc).
+            \]
+            当 \(L\gg m',w\) 时 \(N_{\rm global}=\Theta(L^2/m')\)。固定 \(m'\) 仍为 \(\Theta(L^2)\)；只有让 \(m'\) 随 \(L\) 增长等额外假设才可改写渐近阶。官方配置 \(m'=128,w=128\)。`
         }
       ],
-      warning: "HCA 不是稀疏注意力，也不是 mHC 超连接。它对压缩序列做 dense attention；没有 top-k 漏召回不等于没有信息损失。",
+      warning: "HCA 属于 compressed-dense attention（本站归入现有 dense 类），不是 sparse attention，也不是 mHC。它有 RMSNorm、partial/inverse RoPE、attention sink 与滑窗；V4 效率数字均为官方 checkpoint/系统特定自报。",
       exercises: [
         {
           q: R`当 \(L=1{,}048{,}576,m'=128,w=128\) 时，每个 HCA query 最多读取多少个全局摘要与局部 token？`,
           hint: "先算 L/m′。",
-          answer: "全局摘要 8192 条，再加 128 个局部 token，共 8320 个输入条目。"
+          answer: R`最后一个 query 的位置 \(t=L-1\)，只有 \(\lfloor(L-1)/128\rfloor=8191\) 个完整前序块可见；再加至多 128 个局部 token，共至多 8319 个输入条目。不能读取包含该 query 的尚未闭合块。`
         },
         {
           q: R`为什么 HCA 不能称为严格 \(O(L)\) attention？`,
           hint: "m′ 是固定常数，query 数仍为 L。",
-          answer: R`因为 key 数为 \(L/m'\)，所有 L 个 query 都 dense 读取它们，prefill 为 \(O(L^2/m')\)；固定 \(m'\) 不改变平方渐近阶。`
+          answer: R`严格 causal 计数为 \(\sum_t\lfloor t/m'\rfloor=\Theta(L^2/m')\)。固定 \(m'\) 只降低常数，不改变平方渐近阶；若明确令 \(m'=\Theta(L)\)，结论才会不同。`
         },
         {
           q: "为什么 V4 不全部使用 HCA？",
@@ -540,7 +568,7 @@
       motivation: [
         "softmax(QKᵀ)V 的计算顺序会显式形成长度平方的分数矩阵，极长序列训练和推理代价高。",
         "若相似度写成核内积 φ(q)ᵀφ(k)，利用结合律可先计算 Σφ(k)vᵀ，序列维被汇总到固定矩阵状态。",
-        "因果场景中该汇总可递推更新，因此线性 Transformer 同时具有并行训练形式与 RNN 式常数状态推理形式。"
+        "因果场景中该汇总可按 token 递推为常数状态。这个代数等价不等于声称 2020 原实现采用了后来流行的 prefix-scan 或 chunk 算法。"
       ],
       constraints: [
         { label: "核约束", title: "不再是精确 softmax", body: "必须选择可分解特征映射 φ；核的归纳偏置决定模型可表达的相似性。" },
@@ -581,7 +609,7 @@
             若特征维为 \(r\)、value 维为 \(d_v\)，状态大小为 \(O(rd_v+r)\)，与上下文长度无关。`
         }
       ],
-      warning: "“Linear Attention”是一个方法族，不是单一公式。不同论文可能用正特征核、随机特征、无归一化递推或门控状态；复杂度相同不代表性质相同。",
+      warning: "“Linear Attention”是方法族。2020 论文给出因果递推，但不要把后来的 prefix-scan/chunk 实现倒写成其原实现；因果输出对顺序敏感，而无衰减加法状态对同一组写入的最终汇总可交换，这两点并不矛盾。",
       exercises: [
         {
           q: R`取标量 \(\phi(q)=q,\phi(k)=k\)，依次写入 \((k_1,v_1)=(1,2)\)、\((k_2,v_2)=(3,4)\)。忽略归一化，q=2 时输出多少？`,
@@ -609,7 +637,7 @@
       category: "linear",
       difficulty: "前沿",
       report: "Gated Delta Networks · ICLR 2025",
-      deck: "普通线性注意力只会不断叠加写入，旧值与新值容易冲突。Delta rule 先读出当前预测，再只写入残差；Gated DeltaNet 再加入可学习遗忘。",
+      deck: R`普通线性注意力不断叠加写入；Delta rule 先读再写残差，Gated DeltaNet 再加入遗忘。论文用 \(F_t\in\mathbb R^{d_v\times d_k}\)，本站统一转置为 \(S_t=F_t^\top\in\mathbb R^{d_k\times d_v}\)。`,
       takeaway: "加法记忆是“追加”；Delta rule 是“按 key 修正”；gate 是“先清场再修正”。三者逐步减少固定状态中的干扰。",
       motivation: [
         "普通线性状态 S←S+kvᵀ 对相同或相近 key 反复写入时会累积冲突，无法像字典一样覆盖旧值。",
@@ -651,7 +679,7 @@
             \(\alpha_t\in(0,1)\) 是每头标量 gate；\(\beta_t\) 控制定点改写强度。`
         }
       ],
-      warning: "DeltaNet 的不同文献采用不同矩阵朝向、归一化与 update/read 顺序。比较公式时先核对 S 的形状以及 k、v 是列向量还是行向量。",
+      warning: R`Gated DeltaNet 论文写 \(F_t\in\mathbb R^{d_v\times d_k},\,o_t=F_tq_t\)；本站公式使用转置约定 \(S_t=F_t^\top,\,o_t=S_t^\top q_t\)。官方 block 只有 q/k/v 经过 ShortConv；\(\alpha,\beta\) 走直接线性投影，\(\beta=\sigma(W^\beta x)\)，实现还会把归一化后的 q 乘 \(d_k^{-1/2}\)。`,
       exercises: [
         {
           q: R`若 \(\|k\|=1,\beta=1\)，证明 delta 更新后 \(S_t^\top k=v\)。`,
@@ -661,7 +689,7 @@
         {
           q: R`若连续 100 步没有 delta 写入且 \(\alpha=0.99\)，旧状态幅度剩多少？`,
           hint: R`计算 \(0.99^{100}\)。`,
-          answer: "约 0.366。gate 相当于可学习的记忆半衰期控制。"
+          answer: "在没有新写入且 α 恒定的 decay-only 情形下约 0.366；数据依赖 gate 与后续 delta 写入会改变实际可检索寿命。"
         }
       ],
       sources: [
@@ -681,24 +709,24 @@
       category: "hybrid",
       difficulty: "前沿",
       report: "Kimi Linear Technical Report",
-      deck: "KDA 把 Gated DeltaNet 每头一个标量遗忘率升级为逐 key 通道的对角 gate，并把转移限制为高效的 diagonal-plus-rank-1 形式；Kimi Linear 再以 3:1 比例混合 KDA 与 MLA。",
-      takeaway: "不同记忆通道需要不同时间尺度。KDA 用 Diag(αt) 做细粒度衰减，用 rank-1 delta 做内容定点改写，再用周期性 MLA 恢复无压缩全局读取。",
+      deck: "KDA 把 Gated DeltaNet 每头一个标量遗忘率升级为逐 key 通道的对角 gate，并把转移限制为高效 diagonal-plus-rank-1；发布的 27 层 checkpoint 含 20 个 KDA 层和 7 个 MLA 层。",
+      takeaway: R`KDA 用 \(\operatorname{Diag}(\alpha_t)\) 做逐通道衰减、用 rank-1 delta 改写；周期性 MLA 保留 token-indexed、全局 dense softmax，但其每 token KV 仍是低秩缓存，不是“未压缩 MLA”。`,
       motivation: [
         "Gated DeltaNet 的 αt 是每头标量，头内所有 key 通道共享同一遗忘速度；这限制了同时追踪短期句法与长期主题的能力。",
-        "KDA 使用对角 gate Diag(αt)，每个 key 通道拥有独立衰减；随后使用 Householder 风格 rank-1 delta 变换修正键值关联。",
+        R`KDA 使用对角 gate \(\operatorname{Diag}(\alpha_t)\)，每个 key 通道有独立衰减；\(\beta_t=\sigma(W^\beta x_t)\) 由直接线性路径产生，ShortConv 只作用于 q/k/v。`,
         "一般 DPLR 转移表达力强但 chunk 并行昂贵。KDA 约束低秩项与 key 绑定，减少高精度二级 chunk 与额外 matmul，兼顾表达力和硬件效率。"
       ],
       constraints: [
         { label: "数值", title: "细粒度累积易不稳定", body: "逐通道衰减在长 chunk 的乘除中会产生精度问题，需要专门 UT/WY 形式。" },
         { label: "算子", title: "收益依赖定制 kernel", body: "简单 Python 递推无法体现 KDA 的吞吐优势；官方开源 FLA kernel 与 vLLM 实现。" },
-        { label: "容量", title: "仍需 global attention", body: "Kimi Linear 用 3 KDA : 1 MLA，而不是完全移除 full attention。" }
+        { label: "容量", title: "仍需 token-indexed global softmax", body: "Kimi Linear 周期插入 NoPE MLA：它全局读取每个历史 token 的低秩 MLA cache，而不是取消 cache 或使用未压缩 MHA。" }
       ],
       intuitions: [
-        { label: "Channel gate", title: "一排不同速度的沙漏", body: "每个通道选择自己的记忆半衰期。" },
+        { label: "Channel gate", title: "一排不同速度的沙漏", body: "每个通道有数据依赖衰减；恒定 gate 的半衰期只是一种局部诊断。" },
         { label: "Delta", title: "同地址定点覆盖", body: "rank-1 更新减少相似 key 之间的污染。" },
         { label: "Hybrid", title: "三次压缩记忆，一次全局翻档", body: "大部分层便宜递推，周期性 MLA 做精确全局纠偏。" }
       ],
-      diagram: { type: "kda", caption: "KDA 的 diagonal gate + rank-1 delta 转移，以及 Kimi Linear 的 3:1 KDA/MLA 混合。" },
+      diagram: { type: "kda", caption: "KDA 的 diagonal gate + rank-1 delta；发布 checkpoint 为 27 层尾部调度，共 20 KDA + 7 NoPE MLA。" },
       derivations: [
         {
           title: "KDA 的核心递推",
@@ -712,7 +740,7 @@
         },
         {
           title: "逐通道半衰期",
-          body: R`忽略 delta 项时，第 r 个 key 通道经历
+          body: R`仅作 decay-only 诊断：忽略 rank-1 delta，且假设第 r 个 gate 恒定时，
             \[
             S_{t,r}\approx \alpha_{t,r}S_{t-1,r}.
             \]
@@ -720,19 +748,23 @@
             \[
             \tau_{1/2,r}=\frac{\log 0.5}{\log \alpha_r}.
             \]
-            因而一个头内部可以并存多种时间尺度。`
+            该式描述单独乘法衰减的 e-fold/half-life，不是完整 KDA 记忆的保证；真实 \(\alpha_{t,r}\) 随 token 变化，delta 写入与通道耦合也会改变可检索寿命。`
         },
         {
-          title: "混合层的缓存直觉",
-          body: R`若每 4 层中 3 层 KDA 只保留固定状态，1 层 MLA 保留随 L 增长的 cache，则长上下文下，线性增长部分约只来自四分之一层。官方报告据此给出“KV cache 最多降低 75%”的自报结果；实际还包括状态与实现开销。`
+          title: "发布 checkpoint 的尾部调度与缓存",
+          body: R`发布的 27 层 Kimi-Linear-48B-A3B 配置以 1-based 层号列出：
+            \[
+            \mathrm{MLA}=\{4,8,12,16,20,24,27\},
+            \]
+            其余 20 层为 KDA。前 24 层近似 3:1，末层追加 MLA；因此精确总数是 20 KDA + 7 MLA，而非恰好四分之一。KDA 保存固定状态，7 个 MLA 层保存随 L 增长的 token-indexed low-rank cache。`
         }
       ],
-      warning: "Kimi Linear 报告中的“最高 6×/6.3× 解码吞吐、最多 75% KV cache 降低”取决于 1M 上下文、硬件、batch、kernel 和比较基线。网站将其视为官方测量，不泛化为固定承诺。",
+      warning: "“最高 6×/6.3× 吞吐、最多 75% KV cache 降低”是 Kimi 团队对指定 48B checkpoint、1M 上下文、硬件、batch、kernel 与 MLA 基线的官方自报。NoPE 只表示 MLA 层不显式加位置编码，不表示模型无顺序信息或 MLA 无 token 轴。",
       exercises: [
         {
           q: R`某通道 \(\alpha=0.999\)，近似半衰期是多少步？`,
           hint: R`用 \(\log(0.5)/\log(0.999)\)。`,
-          answer: "约 693 步。若另一通道 α=0.9，半衰期约 6.58 步，说明同一头可并存长期与短期记忆。"
+          answer: "decay-only、恒定 α 近似下约 693 步；α=0.9 时约 6.58 步。真实 KDA 的 α 随 token 变化且有 delta 写入，所以这些不是端到端可检索记忆寿命。"
         },
         {
           q: R`比较 \(A_t=(I-\beta kk^\top)\operatorname{Diag}(\alpha)\) 与一般 DPLR \(D-ab^\top\)。KDA 约束了什么？`,
@@ -740,15 +772,16 @@
           answer: "KDA 的低秩项不是自由 a、b，而与同一个 key k 及对角 gate 绑定；表达空间更受限，但 chunk 算法更稳定、高效。"
         },
         {
-          q: "为什么 Kimi Linear 的 3:1 不能理解成每个 block 内并行做 75% KDA、25% MLA？",
-          hint: "报告说 layerwise hybrid。",
-          answer: "它是层级交错：连续 3 个 KDA 层后有 1 个 MLA 层；不是同一层内按权重线性混合两种输出。"
+          q: "发布的 27 层 Kimi Linear checkpoint 如何实现约 3:1，它能否理解成层内 75% KDA、25% MLA？",
+          hint: "检查 1-based full-attention 层号与最后一层。",
+          answer: R`它是 layerwise：MLA 在 \(\{4,8,12,16,20,24,27\}\)，其余 20 层为 KDA。前 24 层重复 3 KDA + 1 MLA，末层再接 MLA；不是层内混合，精确总比为 20:7。`
         }
       ],
       sources: [
         { label: "Kimi Team (2025), Kimi Linear: An Expressive, Efficient Attention Architecture", url: "https://arxiv.org/abs/2510.26692" },
         { label: "MoonshotAI official Kimi-Linear repository", url: "https://github.com/MoonshotAI/Kimi-Linear" },
-        { label: "Flash Linear Attention official KDA kernels", url: "https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/kda" }
+        { label: "Flash Linear Attention official KDA kernels", url: "https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/kda" },
+        { label: "Released 48B checkpoint config (27 layers, 20 KDA + 7 MLA)", url: "https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Base/blob/main/config.json" }
       ]
     }
   ];
@@ -759,20 +792,26 @@
   var chapterEnhancements = {
     mha: {
       positionEncoding: {
-        title: "原始 MHA 使用加性正弦位置编码",
-        summary: "《Attention Is All You Need》在词嵌入进入编码器/解码器栈之前加入固定正弦位置编码（也报告了效果相近的 learned embedding）。MHA 算子本身并不强制这种选择；现代 MHA 常改用 RoPE、相对位置偏置或 ALiBi。",
+        title: "原始 Transformer：缩放 embedding + 加性正弦 PE",
+        summary: R`《Attention Is All You Need》把 token embedding 乘 \(\sqrt{d_{\text{model}}}\)，再加固定正弦位置编码；learned PE 只是对照实验且结果接近。每个 encoder/decoder sublayer 采用 post Add&Norm。MHA 算子本身不强制这些外围选择。`,
         equation: R`\[
+          x_p=\sqrt{d_{\text{model}}}\,E[\mathrm{token}_p]+\operatorname{PE}(p),
+          \qquad
           \operatorname{PE}(p,2i)=\sin\!\left(p/10000^{2i/d_{\text{model}}}\right),\qquad
           \operatorname{PE}(p,2i+1)=\cos\!\left(p/10000^{2i/d_{\text{model}}}\right).
+        \]
+        \[
+          \operatorname{SublayerOut}=\operatorname{LayerNorm}
+          \bigl(x+\operatorname{Dropout}(\operatorname{Sublayer}(x))\bigr).
         \]`,
         steps: [
-          { label: "原论文", title: "先加位置，再投影 Q/K/V", body: R`输入为 \(x_p=e_p+\operatorname{PE}(p)\in\mathbb R^{d_{\text{model}}}\)，随后各头用自己的 \(W_h^Q,W_h^K,W_h^V\) 投影。` },
-          { label: "作用点", title: "位置不属于 head-sharing 定义", body: "把正弦编码换成 learned absolute embedding 不会把 MHA 变成另一种头共享结构。" },
-          { label: "现代实现", title: "RoPE/相对偏置是后来的常见替代", body: R`现代解码器常旋转 \(q_p,k_p\) 或给 score 加 \(b_{p-s}\)；这是实现选择，不应倒写成 2017 原论文的机制。` }
+          { label: "Embedding", title: R`先乘 \(\sqrt{d_{\text{model}}}\)`, body: "原论文对 encoder/decoder 的 token embedding 都做幅度缩放后再加 PE；不能漏掉这个因子。" },
+          { label: "作用域", title: "编码器、解码器、交叉注意力不同", body: "编码器 self-attention 双向读源序列；decoder self-attention 有 causal mask；cross-attention 的 Q 来自 decoder、K/V 来自 encoder。三者都可用 MHA。" },
+          { label: "残差", title: "原论文是 post Add&Norm", body: "每个 attention/FFN sublayer 先计算子层并加残差，再做 LayerNorm；现代 pre-norm 不能倒写成 2017 结构。" }
         ],
-        caveat: "RoPE 长度扩展、频率缩放与插值属于具体模型配方；不能仅由“MHA”三个字推断。"
+        caveat: "正弦 PE、embedding 缩放与 post Add&Norm 属于原始 Transformer 配方，不是 MHA 数学定义；现代 pre-norm/RoPE 模型仍可使用 MHA。"
       },
-      derivationSourceFallback: "Vaswani et al. (2017), §3.2（attention）与 §3.5（positional encoding）",
+      derivationSourceFallback: "Vaswani et al. (2017), §3.1（encoder/decoder 与 Add&Norm）、§3.2（attention）、§3.4（embedding scale）与 §3.5（PE）",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "derivation", level: "foundation" }
@@ -845,20 +884,26 @@
 
     mqa: {
       positionEncoding: {
-        title: "MQA 不定义新的位置编码",
-        summary: "Shazeer 的改动是让全部 query 头共享一套 K/V；论文并未把某种位置编码写进 MQA 定义。原模型继承其 Transformer 基线的位置处理，现代 MQA 解码器则常与 RoPE 配套。",
+        title: "MQA 论文评测 learned absolute PE；机制仍与 PE 正交",
+        summary: "Shazeer 的 WMT 基线明确使用 learned positional embeddings，并把 encoder self-attention、decoder self-attention 和 cross-attention 全部替换为 MQA；decoder-only LM 也另行评测。MQA 定义只规定共享 K/V，不能虚构一个适用于所有 PE 的通用加性 \(B_{\rm pos}\)。",
         equation: R`\[
-          O_h=\operatorname{softmax}\!\left(
-          \frac{Q_hK^\top}{\sqrt{d_h}}+B_{\text{pos}}+M\right)V,
+          \text{absolute: }X_p=E[\mathrm{token}_p]+P_p,\quad
+          S_h=\frac{Q_hK^\top}{\sqrt{d_h}}+M;
+        \]
+        \[
+          \text{relative bias: }S_{h,t,s}=\frac{q_{h,t}^\top k_s}{\sqrt{d_h}}+b_{h,t,s}+M_{t,s};
+        \]
+        \[
+          \text{RoPE: }S_{h,t,s}=\frac{(R_tq_{h,t})^\top(R_sk_s)}{\sqrt{d_h}}+M_{t,s}.
         \]`,
         steps: [
-          { label: "不变量", title: "共享 K/V 不等于共享位置", body: R`无论 \(B_{\text{pos}}\) 来自加性 embedding、相对 bias 还是旋转后的 Q/K，MQA 的结构条件都只是 \(H_{kv}=1\)。` },
-          { label: "原论文", title: "只替换注意力投影布局", body: "Fast Transformer Decoding 的贡献是 one write-head；它没有提出名为 MQA 的专属 PE。" },
-          { label: "现代实现", title: "共享 key 只旋转一次", body: R`采用 RoPE 时，共享 \(k_s\) 可按位置 \(s\) 旋转一次，再被所有 \(Q_h\) 读取；query 头仍各自旋转。` }
+          { label: "原评测", title: "learned embedding 在 attention 前相加", body: "论文 §4.1 的 WMT encoder-decoder baseline 使用 learned positional embeddings；这与相对 score bias 不是同一种计算。" },
+          { label: "论文范围", title: "三类 encoder-decoder attention 都替换", body: "MQA 并非只在 decoder self-attention 上实验；但带宽收益最突出的是增量 decoder。" },
+          { label: "现代形式", title: "bias 与 RoPE 必须分别写", body: R`相对 bias 是 score 加项；RoPE 改写 Q/K 后再点积。二者不能统一伪装成一个没有来源与 head 轴定义的 \(B_{\rm pos}\)。` }
         ],
         caveat: "不能从“MQA”推断 RoPE base、缩放方法或是否使用相对 bias；这些都由具体 checkpoint 决定。"
       },
-      derivationSourceFallback: "Shazeer (2019), Multi-query attention 与 decoding-cost 相关章节",
+      derivationSourceFallback: "Shazeer (2019), §3（multi-query attention）与 §4.1（learned PE、三类 attention 的实验范围）",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "counterexample", level: "foundation" }
@@ -926,19 +971,19 @@
     gqa: {
       positionEncoding: {
         title: "GQA 与位置机制正交",
-        summary: "GQA 论文从 T5 checkpoint uptrain，沿用 T5 的桶化相对位置偏置；GQA 本身只规定 query-head 到 KV-head 的分组。现代 Llama 类 GQA 更常在每个 Q/K 头上使用 RoPE。",
+        summary: "GQA 论文从 T5.1.1 checkpoint uptrain；其 self-attention 沿用按 query head 索引的桶化相对位置偏置。实验把 GQA/MQA 用于 decoder self-attention 与 cross-attention，不改 encoder self-attention；cross-attention 不应被凭空补上同一桶化 bias。",
         equation: R`\[
           S_{h,t,s}=\frac{q_{h,t}^{\top}k_{g(h),s}}{\sqrt{d_h}}
-          +b_{\operatorname{bucket}(t-s)}+M_{t,s}.
+          +b_{h,\operatorname{bucket}(t-s)}+M_{t,s}.
         \]`,
         steps: [
-          { label: "原论文", title: "uptrain 继承 T5 相对偏置", body: R`位置项 \(b_{\operatorname{bucket}(t-s)}\) 与组映射 \(g(h)\) 是两条独立轴；池化 K/V 不要求池化相对偏置。` },
+          { label: "原论文", title: "T5 self-attention bias 按 query head 索引", body: R`位置项 \(b_{h,\operatorname{bucket}(t-s)}\) 保留 \(h\) 轴；均值池化的是 K/V heads，不是把 query-head position-bias 参数池化成 KV-group bias。该式描述有 T5 relative bias 的 self-attention。` },
           { label: "分组", title: "每个 KV 组仍保留位置索引", body: R`共享的是内容投影 \(W_g^K,W_g^V\)，不是把多个历史位置合并。` },
-          { label: "现代实现", title: "RoPE 常在共享前的头表示上应用", body: R`对组 \(g\)，旋转后的 \(R_s k_{g,s}\) 被组内所有 query 头读取；这不改变 \(H_q/H_{kv}\) 的 cache 比。` }
+          { label: "实验范围", title: "decoder self/cross，不改 encoder self", body: "这是 §3.1 的 T5.1.1 实验选择；decoder-only GQA 是合理后续用法，但不是该 encoder-decoder 实验的同一范围。" }
         ],
         caveat: "同为 GQA 的模型可能使用 T5 bias、RoPE、ALiBi 或其他方案；不能跨 checkpoint 搬用位置参数。"
       },
-      derivationSourceFallback: "Ainslie et al. (2023), §2（GQA 定义）与 §3（uptraining）",
+      derivationSourceFallback: "Ainslie et al. (2023), §2.1（MQA）、§2.2（GQA）与 §3.1（T5.1.1 uptraining/decoder scope）",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "code-shape", level: "intermediate" }
@@ -959,7 +1004,7 @@
             **张量形状。** 每个 \(W_i^K,W_i^V\in\mathbb R^{d_{\text{model}}\times d_h}\)，均值保持同形状；全体共享投影为
             \([d_{\text{model}},H_{kv}d_h]\)。**直观。** 均值是在参数 Frobenius 距离下最接近整组旧头的单一代表。**边界。**
             这不是函数输出的全局最优合并，因为 softmax 非线性且各头输入分布不同；论文因此还要继续 uptrain。`,
-          source: "Ainslie et al. (2023), §3.1（mean pooling initialization）"
+          source: "Ainslie et al. (2023), §3.1（T5.1.1 scope 与 mean-pooling uptraining）"
         },
         {
           title: "组映射的整除条件来自连续等大小分组",
@@ -971,7 +1016,7 @@
             个 query 头。**张量形状。** Q 为 \([B,H_q,L_q,d_h]\)，K/V 为
             \([B,H_{kv},L_k,d_h]\)，逻辑展开后的组索引为 \([H_q]\)。**直观。** 整除让每位资料员服务同样多的读者。**边界。**
             不等大小分组在数学上可行，但许多 fused kernel 与张量并行布局假设固定 \(r\)，所以工程接口通常要求整除。`,
-          source: "Ainslie et al. (2023), §2（grouped-query attention）"
+          source: "Ainslie et al. (2023), §2.2（grouped-query attention）"
         }
       ],
       exercises: [
@@ -1009,22 +1054,26 @@
     mla: {
       positionEncoding: {
         title: "MLA 原生使用 decoupled RoPE",
-        summary: "DeepSeek-V2 把可吸收的内容子空间与较小的 RoPE 子空间拆开：内容 K/V 来自共享 latent，位置 key 单独缓存。现代 DeepSeek MLA 实现通常保留这一原则，只可能改变 RoPE scaling、维度和 kernel。",
+        summary: R`DeepSeek-V2 把 \(d_h\) 维内容子空间与 \(d_h^R\) 维 RoPE 子空间拆开：缓存 \(c_s^{KV}\) 与共享 \(k_s^R\)，attention logit 除以 \(\sqrt{d_h+d_h^R}\)。\(c_t^Q\in\mathbb R^{d_c'}\) 是 query bottleneck，展开后的每头 \(q_{t,i}^C\in\mathbb R^{d_h}\)，两者不能混淆。`,
         equation: R`\[
           s_{t,s}^{(i)}=
-          (q_{t,i}^{C})^\top W_i^{UK}c_s^{KV}
-          +(R_tq_{t,i}^{R})^\top(R_sk_s^{R})
+          \frac{(q_{t,i}^{C})^\top W_i^{UK}c_s^{KV}
+          +(R_tq_{t,i}^{R})^\top(R_sk_s^{R})}
+          {\sqrt{d_h+d_h^R}}
+        \]
+        \[
           =(\widetilde q_{t,i}^{C})^\top c_s^{KV}
-          +(q_{t,i}^{R})^\top R_{s-t}k_s^{R}.
+          /\sqrt{d_h+d_h^R}
+          +(q_{t,i}^{R})^\top R_{s-t}k_s^{R}/\sqrt{d_h+d_h^R}.
         \]`,
         steps: [
-          { label: "内容通道", title: "固定上投影可被吸收", body: R`\(\widetilde q_{t,i}^{C}=(W_i^{UK})^\top q_{t,i}^{C}\)，所以 score 可直接与缓存 latent \(c_s^{KV}\) 点积。` },
+          { label: "内容通道", title: "decode 直接读 latent", body: R`\(\widetilde q_{t,i}^{C}=(W_i^{UK})^\top q_{t,i}^{C}\)，V 上投影也吸收到输出侧；这是 decode 主路径，不必显式重建多头 K/V。` },
           { label: "位置通道", title: "旋转依赖 token 位置", body: R`正交旋转满足 \(R_t^\top R_s=R_{s-t}\)，给出相对位移；但 \(R_sW_i^{UK}\) 不是可预先吸收的固定矩阵。` },
-          { label: "现代实现", title: "吸收式与重建式应数值等价", body: "训练可显式重建多头 K/V，decode 可把 K 上投影吸收到 Q 侧、V 上投影吸收到输出侧；两者只是计算图不同。" }
+          { label: "缓存与归一化", title: R`总宽度 \(d_c+d_h^R\)`, body: R`论文代数先定义原始 \(\bar c=W^{DKV}h\)；训练细节/发布 checkpoint 对 compressed latent 做 RMSNorm 并缓存归一化结果，再另存 \(k^R\)。` }
         ],
         caveat: "MLA cache 不是只有 latent：decoupled RoPE key 也必须保存；具体宽度和量化格式应以模型配置为准。"
       },
-      derivationSourceFallback: "DeepSeek-V2 Technical Report (2024), §2.1.1（MLA）",
+      derivationSourceFallback: "DeepSeek-V2 Technical Report (2024), §2.1.2–§2.1.4 与 Appendix C（完整 MLA 公式）",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "counterexample", level: "intermediate" }
@@ -1045,11 +1094,11 @@
             \]
             再把 \(W_i^{UV}\) 与该头对应的 \(W_i^O\) 合并，即
             \(W_i^Oo_{t,i}=(W_i^OW_i^{UV})\bar c_{t,i}\)。**张量形状。**
-            \(c_s\in\mathbb R^{d_c}\)、\(W_i^{UK}\in\mathbb R^{d_h^C\times d_c}\)、
+            \(c_s\in\mathbb R^{d_c}\)、\(W_i^{UK}\in\mathbb R^{d_h\times d_c}\)、
             \(W_i^{UV}\in\mathbb R^{d_v\times d_c}\)、\(\bar c_{t,i}\in\mathbb R^{d_c}\)。
             **直观。** K 的展开搬到 query 左侧，V 的展开搬到输出右侧，中间直接读紧凑 latent。**边界。**
             该恒等式依赖投影线性且 softmax 权重在 V 投影之前确定；RoPE 子空间因位置相关而不能并入同一个固定内容投影。`,
-          source: "DeepSeek-V2 Technical Report (2024), §2.1.1（low-rank KV compression 与 decoupled RoPE）"
+          source: "DeepSeek-V2 Technical Report (2024), §2.1.2（KV/query compression）、§2.1.3（decoupled RoPE）与 Appendix C"
         }
       ],
       exercises: [
@@ -1063,22 +1112,22 @@
         {
           kind: "code-shape",
           level: "advanced",
-          q: R`给定 \(c^{KV}\) 为 \([B,L,d_c]\)，每头 \(W_i^{UK}\) 为 \([d_h^C,d_c]\)。显式重建全部内容 key 后的形状是什么？吸收式 query 的形状又是什么？`,
-          hint: "重建多一个 head 轴；吸收后 query 落到 latent 维。",
-          answer: R`显式 key 为 \([B,H,L,d_h^C]\)。吸收式把每头 query 乘 \((W_i^{UK})^\top\)，得到 \([B,H,L_q,d_c]\)，它与缓存 \([B,1,L,d_c]\) 点积；这节省 cache，不保证 query-side 算量总更小。`
+          q: R`给定 \(c^Q\in\mathbb R^{d_c'}\)、每头内容 query \(q_i^C\in\mathbb R^{d_h}\)、\(c^{KV}\) 为 \([B,L,d_c]\)。写出展开 query、显式内容 key 与吸收式 query 的形状。`,
+          hint: "先区分 query bottleneck、每头内容维和 KV latent 维。",
+          answer: R`\(W^{UQ}c^Q\) 展开为 \([B,H,L_q,d_h]\)；显式内容 key 为 \([B,H,L,d_h]\)。吸收式再乘 \((W_i^{UK})^\top\) 得 \([B,H,L_q,d_c]\)，与缓存 \([B,1,L,d_c]\) 点积。\(d_c'\)、\(d_h\)、\(d_c\) 是三种不同宽度。`
         },
         {
           kind: "design",
           level: "advanced",
-          q: R`增大 \(d_c\) 与增大 \(d_R\) 分别主要改善什么，又分别增加什么成本？`,
+          q: R`增大 \(d_c\) 与增大 \(d_h^R\) 分别主要改善什么，又分别增加什么成本？`,
           hint: "一个控制内容低秩容量，一个控制位置子空间。",
-          answer: R`增大 \(d_c\) 提高 K/V 内容重建容量，但线性增加 latent cache 与吸收式点积宽度；增大 \(d_R\) 提高 RoPE 位置通道容量，却线性增加不可吸收的 position-key cache。两者应分别做质量—带宽消融。`
+          answer: R`增大 \(d_c\) 提高 K/V 内容重建容量，但线性增加 latent cache 与吸收式点积宽度；增大 \(d_h^R\) 提高 RoPE 位置通道容量，却线性增加不可吸收的 position-key cache。两者应分别做质量—带宽消融。`
         },
         {
           kind: "complexity",
           level: "intermediate",
-          q: R`若每 token 缓存 \(d_c+d_R=576\) 个 BF16 元素，40 层、长度 128K、batch 2 的 MLA cache 约多大？`,
-          hint: R`计算 \(BNL(d_c+d_R)b\)，这里 K/V 已联合进 latent，不能再乘 2。`,
+          q: R`若每 token 缓存 \(d_c+d_h^R=576\) 个 BF16 元素，40 层、长度 128K、batch 2 的 MLA cache 约多大？`,
+          hint: R`计算 \(BNL(d_c+d_h^R)b\)，这里 K/V 已联合进 latent，不能再乘 2。`,
           answer: R`\(2\times40\times131072\times576\times2=12{,}079{,}595{,}520\) 字节，约 11.25 GiB。该估算不含对齐、量化元数据与运行时工作区。`
         }
       ]
@@ -1086,16 +1135,19 @@
 
     dsa: {
       positionEncoding: {
-        title: "DSA 继承 MLA RoPE，并给 Indexer 部分旋转",
-        summary: "DeepSeek-V3.2 的 core attention 仍建立在 MLA 上；Lightning Indexer 的低维 Q/K 也只对指定 RoPE 子维应用旋转。Indexer 中用于低精度计算的正交 Hadamard 变换不是位置编码。",
+        title: "DSA：core 继承 MLA，Indexer 两侧 pRoPE + Hadamard",
+        summary: "DeepSeek-V3.2 的 core 以 MQA-mode MLA 读取选中的 latent entries。Lightning Indexer 对 q 与共享 k 的指定子维都施 pRoPE；FP8 实现再对两侧施同一正交 Hadamard rotation。只转一侧会改变点积。",
         equation: R`\[
-          q_{t,j}^{I}=[R_tq_{t,j}^{I,R};q_{t,j}^{I,N}],\qquad
-          k_s^{I}=[R_sk_s^{I,R};k_s^{I,N}],
+          \widehat q_{t,j}^{I}=\mathcal H[R_tq_{t,j}^{I,R};q_{t,j}^{I,N}],\qquad
+          \widehat k_s^{I}=\mathcal H[R_sk_s^{I,R};k_s^{I,N}],
+          \quad
+          (\widehat q_{t,j}^{I})^\top\widehat k_s^I
+          =(q_{t,j}^{I})_{\rm pRoPE}^\top(k_s^I)_{\rm pRoPE}.
         \]`,
         steps: [
           { label: "核心路径", title: "稀疏选择不改 MLA 位置定义", body: "top-k 只缩小被 core MLA 读取的位置集合；选中后的内容/位置 score 仍按 MLA 计算。" },
-          { label: "索引路径", title: "Indexer Q/K 使用 partial RoPE", body: R`只有 \(d_R\) 个子维旋转，其余 \(d_I-d_R\) 个子维保持内容表示；所有 head 共享 indexer key。` },
-          { label: "实现细节", title: "Hadamard rotation 不是 PE", body: R`若对 q、k 同施正交 \(H\)，则 \((Hq)^\top(Hk)=q^\top k\)；它服务 FP8 数值分布，不注入 token 位置。` }
+          { label: "索引路径", title: "pRoPE 同时作用 q 与 k", body: R`只有指定子维旋转，其余维保持内容表示；所有 indexer heads 共享 key，但每头 query 独立。` },
+          { label: "低精度", title: "Hadamard 必须在两侧配对", body: R`正交 \(\mathcal H\) 满足 \((\mathcal Hq)^\top(\mathcal Hk)=q^\top k\)；它服务 FP8 数值分布，不注入位置。BF16/FP32 端口可省略这对变换。` }
         ],
         caveat: "不同端口可能以 BF16 直接算 Indexer score 而省略 Hadamard/FP8 路径；只要投影、partial RoPE 与 score 定义一致，语义可保持。"
       },
@@ -1119,8 +1171,8 @@
             \quad
             \frac{\partial\mathcal L_t^I}{\partial I_{t,s}}=\widehat p_{t,s}-p_{t,s}.
             \]
-            \(p_t\) 由主 attention 各头重要性聚合后沿历史轴 L1 归一化。稀疏阶段把同一目标限制到选中集合
-            \(\mathcal S_t\) 上再做式 (4) 的对齐。**张量形状。** \(I,p,\widehat p\in\mathbb R^{B\times L_q\times L_k}\)，
+            \(p_t\) 由 full main-attention 的**概率权重**跨头求和后沿完整历史轴 L1 归一化；不是对未归一化 teacher logits 求和。warm-up 的 student softmax 也覆盖完整 \(I_{t,:}\)。稀疏阶段才把 teacher 与 Indexer logits 同时限制到
+            \(\mathcal S_t\) 上再做式 (4) 对齐。**张量形状。** \(I,p,\widehat p\in\mathbb R^{B\times L_q\times L_k}\)，
             top-k 索引为 \([B,L_q,k]\)。**直观。** Indexer 学的是“主 attention 会把概率放在哪里”，不是直接回归 value。**边界。**
             top-k 是离散路由，且报告将 Indexer 输入 detach；语言模型损失不经该选择直接训练 Indexer，漏召回只能由其独立 KL 信号与稀疏训练适配缓解。`,
           source: "DeepSeek-V3.2 Technical Report (2025), §2.1, Eqs. (3)–(4)"
@@ -1161,19 +1213,19 @@
     csa: {
       positionEncoding: {
         title: "CSA 使用 partial RoPE，并对输出 inverse RoPE",
-        summary: "DeepSeek-V4 的压缩条目同时充当 key 与 value。报告只旋转每个 query/KV entry 的末 64 维；由于 value 也携带旋转后的绝对位置，core 输出对应维还必须用 query 位置的逆旋转去除绝对相位。",
+        summary: R`DeepSeek-V4 的 \(C_s^{Comp}\) 同时充当 key 与 value。报告只旋转 query/KV entry 的末 64 维；compressed entry 使用实现给定的位置 \(\pi_s\)，输出再按原 query 位置 \(t\) 施 inverse RoPE。core 前还做 per-head RMSNorm，并在 softmax 分母加入 sink。`,
         equation: R`\[
-          R_{-t}\sum_{j\in\mathcal S_t}a_{t,j}R_jv_j^R
-          =\sum_{j\in\mathcal S_t}a_{t,j}R_{j-t}v_j^R.
+          R_{-t}\sum_{s\in\mathcal S_t}a_{t,s}R_{\pi_s}c_s^R
+          =\sum_{s\in\mathcal S_t}a_{t,s}R_{\pi_s-t}c_s^R.
         \]`,
         steps: [
-          { label: "Partial", title: "只旋转末 64 维", body: R`写成 \(c_j=[c_j^N;c_j^R]\)，仅对 \(c_j^R\in\mathbb R^{64}\) 应用 \(R_j\)，其余通道保持非旋转内容。` },
-          { label: "Inverse", title: "输出按 query 位置反旋转", body: R`对输出 RoPE slice 左乘 \(R_{-t}=R_t^\top\)，使条目 \(j\) 的贡献依赖相对位移 \(j-t\)。` },
-          { label: "现代实现", title: "不能套普通 QK-only RoPE", body: "因为同一压缩 entry 兼作 value，若只旋转 Q/K 而忘记 output inverse rotation，计算图就不再等价于报告定义。" }
+          { label: "Partial", title: "只旋转末 64 维", body: R`写成 \(c_s=[c_s^N;c_s^R]\)，仅对 \(c_s^R\in\mathbb R^{64}\) 应用 \(R_{\pi_s}\)，其余通道保持非旋转内容。` },
+          { label: "Inverse", title: "输出按原 query 位置反旋转", body: R`对输出 RoPE slice 左乘 \(R_{-t}=R_t^\top\)，使条目 \(s\) 的贡献依赖 \(\pi_s-t\)，而不是擅自把 compressed index \(s\) 当 raw-token 位置。` },
+          { label: "Core", title: "RMSNorm 与 sink 不能省略", body: "query heads 和唯一 compressed-KV head 在 core 前 RMSNorm；每头 sink logit 加入 softmax 分母，使真实 entry 权重和可小于 1。" }
         ],
-        caveat: "压缩条目的索引与原 token 位置不是一一对应；必须使用实现规定的 compressed-position 序列与 RoPE scaling，不能擅自改成块中心。"
+        caveat: R`压缩索引 \(s\) 与 raw-token 位置不一一对应；必须使用实现规定的 \(\pi_s\) 与 RoPE scaling，不能擅自设成 \(s\)、块中心或块末端。`
       },
-      derivationSourceFallback: "DeepSeek-V4 Technical Report (2026), §2.3.1（CSA）",
+      derivationSourceFallback: "DeepSeek-V4 Technical Report (2026), §2.3.1（Eqs. 9–19）与 §2.3.3（RMSNorm、partial/inverse RoPE、sink Eq. 27）",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "derivation", level: "intermediate" }
@@ -1183,19 +1235,19 @@
           title: "inverse RoPE 把 value 的绝对相位变成相对相位",
           body: R`**原式。** CSA 的旋转 value slice 产生
             \[
-            o_t^R=\sum_{j\in\mathcal S_t}a_{t,j}R_jv_j^R.
+            o_t^R=\sum_{s\in\mathcal S_t}a_{t,s}R_{\pi_s}c_s^R.
             \]
             **补全代数。** 报告在 query 位置 \(t\) 应用逆旋转：
             \[
             \widetilde o_t^R=R_{-t}o_t^R
-            =\sum_ja_{t,j}R_t^\top R_jv_j^R
-            =\sum_ja_{t,j}R_{j-t}v_j^R.
+            =\sum_sa_{t,s}R_t^\top R_{\pi_s}c_s^R
+            =\sum_sa_{t,s}R_{\pi_s-t}c_s^R.
             \]
-            **张量形状。** 每个压缩 entry \(c_j\in\mathbb R^{d_c}\)，RoPE slice
-            \(v_j^R,o_t^R\in\mathbb R^{64}\)，权重 \(a_t\in\mathbb R^k\)。**直观。**
-            先随资料条目的位置旋转，汇总后再站到 query 的坐标系观察，于是只剩相对距离。**边界。**
+            **张量形状。** 每个压缩 entry \(c_s\in\mathbb R^{c}\)，RoPE slice
+            \(c_s^R,o_t^R\in\mathbb R^{64}\)，权重 \(a_t\in\mathbb R^k\)。**直观。**
+            先随 compressed position \(\pi_s\) 旋转，汇总后再站到 raw query 位置 \(t\) 的坐标系观察，于是只剩相对位移。**边界。**
             该恒等式要求同频率旋转且 \(R_{-t}=R_t^\top\)；只对 Q/K 旋转、漏掉输出逆旋转，或给压缩条目使用不一致的位置表都会破坏它。`,
-          source: "DeepSeek-V4 Technical Report (2026), §2.3.3, Eq. (26)"
+          source: "DeepSeek-V4 Technical Report (2026), §2.3.3（Partial Rotary Positional Embedding；Eq. 26 是 HCA core，不是 inverse-RoPE 恒等式）"
         }
       ],
       exercises: [
@@ -1209,9 +1261,9 @@
         {
           kind: "code-shape",
           level: "advanced",
-          q: R`输入 H 为 \([B,L,d]\)，压缩率 \(m=4\)，压缩宽度 \(d_c\)。写出两路 \(C^a,C^b,Z^a,Z^b\) 与最终压缩池的典型形状。`,
-          hint: "两路投影仍保留 token 轴；沿每个 2m 覆盖窗口逐通道归一化后，每 m 步产出一个 entry。",
-          answer: R`投影流通常都是 \([B,L,d_c]\)。窗口权重在覆盖轴上逐通道 softmax；步长为 4，因此完整块部分的输出约为 \([B,\lfloor L/4\rfloor,d_c]\)。边界 remainder、cache carry 与 overlap 的具体条目数需按实现处理。`
+          q: R`输入 H 为 \([B,L,d]\)，压缩率 \(m=4\)，报告宽度为 \(c\)、Indexer 宽度为 \(c^I\)。写出 \(C^a,C^b,Z^a,Z^b,C^{Comp},K^{IComp}\) 的典型形状。`,
+          hint: "KV compressor 与 Indexer compressor 独立；前者逐通道联合归一化 2m 行。",
+          answer: R`\(C^a,C^b,Z^a,Z^b\) 为 \([B,L,c]\)，联合 \(2m\)-row softmax 后 \(C^{Comp}\) 约为 \([B,\lfloor L/m\rfloor,c]\)。独立 Indexer compressor 产出 \(K^{IComp}\approx[B,\lfloor L/m\rfloor,c^I]\)。边界 carry 与 overlap 条目数按实现处理。`
         },
         {
           kind: "design",
@@ -1233,20 +1285,20 @@
     hca: {
       positionEncoding: {
         title: "HCA 与 CSA 共享 partial/inverse RoPE",
-        summary: "HCA 虽取消 Indexer 和 top-k，位置处理没有退化为普通 dense RoPE：压缩 KV entry 兼作 value，末 64 维做 partial RoPE，attention 输出同一 slice 再按 query 位置做 inverse RoPE。",
+        summary: R`HCA 是 compressed-dense MQA，不是 sparse attention。宽度 \(c\) 的压缩 KV entry 兼作 value，末 64 维按 compressed position \(\pi_j\) 做 partial RoPE，输出同一 slice 按 raw query 位置 \(t\) inverse RoPE；core 同样使用 RMSNorm 与 sink。`,
         equation: R`\[
           \widetilde o_t^R
-          =R_{-t}\sum_{j=1}^{\lfloor L/m'\rfloor}a_{t,j}R_jc_j^R
-          =\sum_ja_{t,j}R_{j-t}c_j^R.
+          =R_{-t}\sum_{j=0}^{\lfloor t/m'\rfloor-1}a_{t,j}R_{\pi_j}c_j^R
+          =\sum_ja_{t,j}R_{\pi_j-t}c_j^R.
         \]`,
         steps: [
-          { label: "压缩位置", title: "每个重压缩条目仍有序号", body: R`HCA 把 \(m'\) 个 token 合成一个 entry，但压缩序列仍按因果顺序编号并进入 RoPE。` },
-          { label: "全局读取", title: "dense 只表示不做 top-k", body: "全部压缩条目参与 softmax，并不意味着忽略相对位置。" },
-          { label: "输出坐标", title: "逆旋转保留相对贡献", body: R`用 \(R_{-t}\) 把混合后的 RoPE value slice 拉回 query 坐标系；这是 V4 报告的专门步骤。` }
+          { label: "压缩位置", title: R`使用实现定义的 \(\pi_j\)`, body: R`HCA 把 \(m'\) 个 token 合成一个 entry；其 RoPE position 不能简单写成压缩索引 \(j\)。` },
+          { label: "因果 dense", title: R`只读 \(\lfloor t/m'\rfloor\) 个已完成块`, body: "dense 表示没有 top-k；当前未闭合块不进入全局分支，由滑窗覆盖。" },
+          { label: "输出坐标", title: "逆旋转、RMSNorm 与 sink", body: R`用 \(R_{-t}\) 得到 \(\pi_j-t\)；core 前归一化 query/KV，sink logit 加在 softmax 分母。` }
         ],
         caveat: "HCA 还并联未压缩滑窗；全局压缩分支与局部分支的位置索引/频率配置必须按官方实现对齐。"
       },
-      derivationSourceFallback: "DeepSeek-V4 Technical Report (2026), §2.3.2（HCA）",
+      derivationSourceFallback: "DeepSeek-V4 Technical Report (2026), §2.3.2（HCA）、§2.3.3（RMSNorm/RoPE/sink/SWA）与 §2.3.4（efficiency）",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "derivation", level: "intermediate" },
@@ -1264,24 +1316,26 @@
             \]
             **补全代数。** softmax 给出 \(s_{j,r}\ge0\) 且
             \(\sum_{j\in\mathcal B_i}s_{j,r}=1\)，故每个输出通道位于该块对应输入通道值的凸包内。
-            **张量形状。** 块输入 \(C_i,Z_i\in\mathbb R^{m'\times d_c}\)，权重
-            \(S_i\in\mathbb R^{m'\times d_c}\)，输出 \(c_i^{Comp}\in\mathbb R^{d_c}\)。
+            **张量形状。** 块输入 \(C_i,Z_i\in\mathbb R^{m'\times c}\)，权重
+            \(S_i\in\mathbb R^{m'\times c}\)，输出 \(c_i^{Comp}\in\mathbb R^{c}\)。
             **直观。** 不同通道可从块内不同 token 摘要信息，而不是全向量共用一个标量权重。**边界。**
             凸组合性质只针对投影后的 C 通道；前后线性层仍可产生块外数值范围，且 128→1 仍不可逆。`,
-          source: "DeepSeek-V4 Technical Report (2026), §2.3.2, Eq. (22)"
+          source: "DeepSeek-V4 Technical Report (2026), §2.3.2, Eqs. (20)–(23)"
         },
         {
           title: "重压缩 dense attention 的精确位置对计数",
-          body: R`**原式。** 完整闭合块数 \(n_c=\lfloor L/m'\rfloor\)，每个 query 还看至多 \(w\) 个局部 token。**补全代数。**
+          body: R`**原式。** 0-based query \(t\) 只能看块号 \(j<\lfloor t/m'\rfloor\)，故已闭合块数
+            \(n_c(t)=\lfloor t/m'\rfloor\)，另看至多 \(w\) 个局部 token。**补全代数。**
             \[
-            N_{\text{pairs}}\le L(n_c+w)
-            =L\left(\left\lfloor\frac L{m'}\right\rfloor+w\right).
+            N_{\text{pairs}}\le
+            \sum_{t=0}^{L-1}\left(\left\lfloor\frac t{m'}\right\rfloor+w\right)
+            =\Theta(L^2/m'+Lw).
             \]
-            因 \(\lfloor L/m'\rfloor\le L/m'\)，得到上界 \(L^2/m'+Lw\)。**张量形状。**
-            全局 score 为 \([B,H,L,n_c]\)，局部 score 逻辑上为 \([B,H,L,w]\)。**直观。**
+            可用 padded 矩形上界 \(L\lfloor L/m'\rfloor+Lw\)，但它不是精确 causal count。**张量形状。**
+            padded 全局 score 可写 \([B,H,L,\lfloor L/m'\rfloor]\)，mask 后每行有效宽度不同；局部 score 逻辑上为 \([B,H,L,w]\)。**直观。**
             HCA 完整读一份短目录，再查最近原文。**边界。** 当前未闭合块不能提前进入全局摘要；实际 causal 有效 pair 少于矩形上界，固定
-            \(m'\) 时主项仍为 \(\Theta(L^2)\)。`,
-          source: "DeepSeek-V4 Technical Report (2026), §2.3.2 与 §2.3.4"
+            \(m'\) 时主项仍为 \(\Theta(L^2)\)，只有明确让 \(m'\) 随 L 增长才可改变渐近阶。`,
+          source: "DeepSeek-V4 Technical Report (2026), §2.3.2（HCA）、§2.3.3（causal sliding window）与 §2.3.4（efficiency）"
         }
       ],
       exercises: [
@@ -1302,9 +1356,9 @@
         {
           kind: "derivation",
           level: "advanced",
-          q: R`证明对正交 RoPE 矩阵 \(R_t\)，输出逆旋转把 \(R_j\) 变成相对旋转 \(R_{j-t}\)。`,
+          q: R`证明对正交 RoPE 矩阵，输出逆旋转把 compressed position \(R_{\pi_j}\) 变成相对旋转 \(R_{\pi_j-t}\)。`,
           hint: R`使用 \(R_{-t}=R_t^\top\) 和旋转群 \(R_aR_b=R_{a+b}\)。`,
-          answer: R`\(R_{-t}R_j=R_{-t+j}=R_{j-t}\)，故 \(R_{-t}\sum_ja_jR_jv_j=\sum_ja_jR_{j-t}v_j\)。若不同位置使用不一致频率，群关系不再成立。`
+          answer: R`\(R_{-t}R_{\pi_j}=R_{\pi_j-t}\)，故 \(R_{-t}\sum_ja_jR_{\pi_j}c_j=\sum_ja_jR_{\pi_j-t}c_j\)。若把 \(\pi_j\) 擅自换成 compressed index j，或不同位置使用不一致频率，等价关系会被破坏。`
         }
       ]
     },
@@ -1312,14 +1366,14 @@
     linear: {
       positionEncoding: {
         title: "核线性化不自动提供位置编码",
-        summary: "《Transformers are RNNs》的核心贡献是核分解与因果状态递推，不是新的显式 PE。因果前缀使状态随时间更新，但无衰减的加法状态对同一前缀内写入顺序可交换；现代线性模型常另加 ShortConv、decay/gate 或专门的相对核。",
+        summary: "《Transformers are RNNs》的核心是核分解与因果递推，不是 prefix-scan/chunk 实现。整个 causal 输出序列对顺序敏感，因为每个时刻看到的前缀不同；但给定同一组写入，无衰减加法状态的最终汇总对排列不敏感，限制了状态内部编码顺序的能力。",
         equation: R`\[
           S_t=S_{t-1}+\phi(k_t)v_t^\top,\qquad
           y_t=\frac{\phi(q_t)^\top S_t}{\phi(q_t)^\top z_t+\varepsilon}.
         \]`,
         steps: [
-          { label: "原论文", title: "位置不是核技巧的一部分", body: "该算子可以接收已含位置特征的输入，但不能从 kernel linear attention 名称推断 RoPE 或某种固定 embedding。" },
-          { label: "因果顺序", title: "prefix 边界提供弱顺序信号", body: R`时刻 \(t\) 只能读 \(j\le t\)，但 \(\sum_{j\le t}\phi(k_j)v_j^\top\) 对这些项的排列可交换。` },
+          { label: "原论文", title: "递推公式不等于 scan/chunk 声明", body: "论文可用逐步 recurrence 计算 causal attention；本站不把后来的并行 prefix-scan 或 chunk kernel 归于其 2020 原实现。" },
+          { label: "因果顺序", title: "输出轨迹敏感，终态汇总可交换", body: R`交换 token 会改变各时刻的可见前缀和输出；但若只比较写入同一组 \((k,v)\) 后的终态，\(\sum_j\phi(k_j)v_j^\top\) 不记录排列。` },
           { label: "现代实现", title: "ShortConv/decay 是架构扩展", body: "后续 gated linear attention、DeltaNet 等用局部卷积和有序状态转移增强位置感；不应把这些倒写进 2020 原式。" }
         ],
         caveat: "直接给核特征套标准 RoPE 未必保持可结合的非负核与归一化性质；必须针对具体线性 attention 公式验证。"
@@ -1359,8 +1413,7 @@
             \]
             dense attention 为 \(\Theta(L^2d_h)\)。**张量形状。** 批量 H 头状态为
             \([B,H,r,d_v]\)，与 L 无关；并行训练的 Q/K/V 仍为 \([B,H,L,\cdot]\)。**直观。**
-            用固定宽统计量换掉位置轴。**边界。** “关于 L 线性”假设 \(r,d_v\) 不随 L 增长；若为逼近 softmax 而让
-            \(r=\Theta(L)\)，则成本重新变成平方级。`,
+            用固定宽统计量换掉位置轴。该复杂度来自 recurrence/结合律，不声称原实现用了 prefix scan 或 chunk。**边界。** “关于 L 线性”假设 \(r,d_v\) 不随 L 增长；若为逼近 softmax 而让 \(r=\Theta(L)\)，则成本重新变成平方级。`,
           source: "Katharopoulos et al. (2020), §3.4 与 complexity discussion"
         }
       ],
@@ -1399,20 +1452,27 @@
     "gated-delta": {
       positionEncoding: {
         title: "DeltaNet/Gated DeltaNet 依赖 ShortConv 与有序状态",
-        summary: "原始 DeltaNet/Gated DeltaNet token mixer 不给线性层 Q/K 套 RoPE；Q/K/V 投影后经过短因果卷积，递推更新和 gate 又使早晚写入产生不同状态。现代混合模型可在另外的 attention 层使用 RoPE，但这不等于 linear 层也使用 RoPE。",
+        summary: R`Gated DeltaNet 不给 q/k 套 RoPE。只有 q/k/v 走 ShortConv+SiLU；\(\alpha,\beta\) 都由 hidden state 直接线性投影，\(\beta=\sigma(W^\beta x)\)。q/k L2Norm 后，官方/主流 kernel 还把 q 乘 \(d_k^{-1/2}\)。`,
         equation: R`\[
-          q_t,k_t=\operatorname{L2Norm}\!\left(
-          \operatorname{SiLU}(\operatorname{ShortConv}(Wx)_{t})\right),\qquad
+          q_t=d_k^{-1/2}\operatorname{L2Norm}(\operatorname{SiLU}(\operatorname{ShortConv}(W^qx)_t)),
+          \quad
+          k_t=\operatorname{L2Norm}(\operatorname{SiLU}(\operatorname{ShortConv}(W^kx)_t)),
+        \]
+        \[
+          v_t=\operatorname{SiLU}(\operatorname{ShortConv}(W^vx)_t),\qquad
+          \beta_t=\sigma(W^\beta x_t),
+        \]
+        \[
           S_t=\alpha_t(I-\beta_tk_tk_t^\top)S_{t-1}+\beta_tk_tv_t^\top.
         \]`,
         steps: [
-          { label: "局部顺序", title: "ShortConv 看最近若干 token", body: "因果 depthwise 卷积让同一 token 在不同局部排列下生成不同 q/k/v，是显式 RoPE 之外的局部次序通道。" },
+          { label: "路径边界", title: "ShortConv 只在 q/k/v", body: R`\(\alpha,\beta\) 使用 linear-only gate path；给 \(\beta\) 加 ShortConv 会变成另一种参数化。` },
           { label: "全局顺序", title: "状态转移不可交换", body: R`一般 \(A_tA_s\ne A_sA_t\)，其中 \(A_t=\alpha_t(I-\beta_tk_tk_t^\top)\)，所以写入顺序影响最终记忆。` },
-          { label: "现代混合", title: "分层区分 PE", body: "例如混合架构中的 full/sliding-attention 层可使用其自己的 RoPE；Gated DeltaNet 层仍按 ShortConv+state 工作。" }
+          { label: "矩阵约定", title: R`本站 \(S=F^\top\)`, body: R`论文常写 \(F_t\in\mathbb R^{d_v\times d_k},o_t=F_tq_t\)；本站转置为 \(S_t\in\mathbb R^{d_k\times d_v},o_t=S_t^\top q_t\)。` }
         ],
         caveat: "不要为解释位置感而虚构一项 additive PE：论文消融明确把 ShortConv、gate 和状态动力学作为组成部分。"
       },
-      derivationSourceFallback: "Schlag et al. (2021), delta-rule章节；Yang et al. (2025), §3（Gated DeltaNet）",
+      derivationSourceFallback: "Schlag et al. (2021), delta-rule；Yang et al. (2025), Eq. (10)、token-mixer block 与 official implementation",
       existingExerciseMeta: [
         { kind: "derivation", level: "intermediate" },
         { kind: "complexity", level: "foundation" }
@@ -1424,7 +1484,7 @@
             \[
             \ell_t(S)=\frac12\|S^\top k_t-v_t\|_2^2.
             \]
-            **补全代数。** 令误差 \(e=S^\top k_t-v_t\in\mathbb R^{d_v}\)。微分
+            **约定。** Gated DeltaNet 论文状态为 \(F\in\mathbb R^{d_v\times d_k}\)；这里令 \(S=F^\top\)。**补全代数。** 令误差 \(e=S^\top k_t-v_t\in\mathbb R^{d_v}\)。微分
             \[
             d\ell=e^\top d(S^\top k_t)
             =e^\top(dS)^\top k_t
@@ -1492,20 +1552,27 @@
     kda: {
       positionEncoding: {
         title: "Kimi Linear 用 NoPE；KDA 自己承担位置感",
-        summary: "Kimi Linear 报告明确让全局 MLA 层也使用 NoPE。位置与 recency 主要来自 KDA 的数据依赖逐通道 decay、有序 DPLR 转移和 Q/K/V 前 ShortConv，而不是显式 RoPE。",
+        summary: "Kimi Linear 报告明确让全局 MLA 层使用 NoPE：不添加显式 RoPE/absolute PE，但仍对每个历史 token 的 low-rank MLA cache 做 causal global softmax。位置与 recency 主要来自 KDA 的数据依赖逐通道 decay、有序转移和 q/k/v ShortConv。",
         equation: R`\[
           S_t=(I-\beta_tk_tk_t^\top)\operatorname{Diag}(\alpha_t)S_{t-1}
           +\beta_tk_tv_t^\top,\qquad
-          \alpha_t\in[0,1]^{d_k}.
+          \beta_t=\sigma(W^\beta x_t),
+        \]
+        \[
+          \log\alpha_{t,h,r}
+          =-\exp(A^{\log}_h)\,
+          \operatorname{softplus}\!\left(
+          [W_\alpha^\uparrow W_\alpha^\downarrow x_t]_{h,r}
+          +b^{\Delta}_{h,r}\right).
         \]`,
         steps: [
-          { label: "局部", title: "ShortConv 编码邻域次序", body: "Q/K/V 的短因果卷积对局部排列敏感，不需要额外虚构绝对位置向量。" },
+          { label: "参数路径", title: R`q/k/v 卷积，\(\beta\) 直接线性`, body: R`q/k/v 使用 ShortConv+Swish（q/k 再 L2Norm）；\(\beta=\sigma(W^\beta x)\) 不经过 ShortConv。` },
           { label: "长程", title: "逐通道乘积形成可学习距离衰减", body: R`从位置 \(s\) 到 \(t\) 的某通道保留量包含 \(\prod_{u=s+1}^{t}\alpha_{u,r}\)，天然依赖经过的有序步数与内容。` },
-          { label: "原报告", title: "周期性 MLA 也采用 NoPE", body: "Kimi Linear 把位置责任交给 KDA，NoPE MLA 提供全局无位置内容读取；这与 DeepSeek MLA 的 decoupled RoPE 配方不同。" }
+          { label: "发布配置", title: "20 KDA + 7 NoPE MLA", body: "27 层 checkpoint 的 MLA 层为 1-based {4,8,12,16,20,24,27}；NoPE 表示这些层无显式 PE，不表示它们没有 causal token index 或 low-rank KV cache。" }
         ],
         caveat: "后续采用 KDA 的模型可以选择不同混合层位置方案；但不能把后续实现的 RoPE 反推为 Kimi Linear 原报告的 KDA 机制。"
       },
-      derivationSourceFallback: "Kimi Linear Technical Report (2025), §2.2–§3（KDA）",
+      derivationSourceFallback: "Kimi Linear Technical Report (2025), §2.2–§3 与 released Kimi-Linear-48B-A3B config/modeling code",
       existingExerciseMeta: [
         { kind: "complexity", level: "foundation" },
         { kind: "derivation", level: "advanced" },

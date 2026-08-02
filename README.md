@@ -20,7 +20,7 @@ CSA 与 HCA 是两章独立内容。全站共 10 章、40 个推导和 60 道练
 - `positionEncoding` 必须包含标题、摘要、公式、实现边界，以及恰好 3 个带 `label/title/body` 的步骤。
 - 数学推导为 4–6 个；每个推导都必须有 `title/body/source`。
 - 每章恰好 6 道练习；每题都必须有 `kind/level/q/hint/answer`。
-- `diagram` 配置必须能由 `assets/diagrams.js` 构建出非空 SVG、编号导读和一句话记忆。
+- `diagram` 配置必须能由 `assets/diagrams.js` 构建出非空 SVG、编号导读和一句话记忆；图中每个结构块都要映射到有效的实现块。
 - 每章 id 必须在 `assets/implementations.js` 中有同名 PyTorch 实现记录。
 
 ### 位置编码与时序注入
@@ -30,6 +30,8 @@ CSA 与 HCA 是两章独立内容。全站共 10 章、40 个推导和 60 道练
 ## PyTorch 教学实现
 
 `pytorch/` 是实现源码的唯一真源。每个文件用 `# [Block NN] 标题` 与 `# [/Block NN]` 标出连续编号的教学块；生成器把完整源码、块标题、代码和真实行号同步到浏览器资源。
+
+章节页把架构图和代码放在同一个交互工作台：点击或键盘激活任一 SVG 结构块，会在 JetBrains Mono IDE 面板中跳转到对应 PyTorch 实现。面板支持 Prism Python 语法高亮、块级跳转、完整源码模式、真实行号高亮、复制与下载；CDN 不可用时会退化为安全的纯文本代码。
 
 架构与实现块映射如下：
 
@@ -60,7 +62,7 @@ python3 tools/sync_pytorch_examples.py --check
 
 ## 校验与测试
 
-内容校验器仅使用 Node 内置模块。它在隔离的 `vm` context 中执行浏览器 IIFE，检查章节契约、图解、首页链接与统计、源码块行号，以及生成 bundle 的同步状态：
+内容校验器仅使用 Node 内置模块。它在隔离的 `vm` context 中执行浏览器 IIFE，检查章节契约、全部架构—代码交互节点、首页链接与统计、源码块行号、富文本渲染入口，以及生成 bundle 的同步状态：
 
 ```bash
 node tools/validate_content.mjs
@@ -91,7 +93,7 @@ python3 -m http.server 8000
 - `assets/chapters.js`：十章教学内容、位置机制、推导、练习与来源
 - `assets/diagrams.js`：十套技术报告级 Attention Block SVG 与编号导读
 - `assets/implementations.js`：由 `pytorch/` 确定性生成的浏览器代码 bundle
-- `assets/course.js`：章节渲染、图解、代码块、进度与计算器
+- `assets/course.js`：章节渲染、图解—代码交互工作台、进度与计算器
 - `assets/styles.css`：响应式 editorial-academic 设计系统
 - `pytorch/`：可导入、可测试的 PyTorch 教学实现
 - `tools/`：实现同步器与内容校验器

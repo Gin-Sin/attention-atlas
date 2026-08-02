@@ -26,7 +26,7 @@ class CausalDepthwiseConv1d(nn.Module):
             channels,
             kernel_size=kernel_size,
             groups=channels,
-            bias=True,
+            bias=False,
         )
 
     def forward(
@@ -76,7 +76,7 @@ def gated_delta_recurrence(
         v: ``[B,T,H,Dv]``.
         alpha: ``[B,T,H]``, one forget scalar per head and token.
         beta: ``[B,T,H]``, one delta step size per head and token.
-        memory: optional ``S [B,H,Dk,Dv]``.
+        memory: optional tutorial state ``S [B,H,Dk,Dv]``.
 
     The update is written in a prediction-error form:
 
@@ -85,6 +85,10 @@ def gated_delta_recurrence(
 
     With unit-norm keys this expands to
     ``alpha_t (I - beta_t k_t k_t^T) S + beta_t k_t v_t^T``.
+
+    The paper commonly stores a value-by-key fast-weight matrix ``F``.  This
+    tutorial stores the transpose ``S = F^T`` so keys index rows and the code
+    can share the ``[Dk,Dv]`` state orientation used by the other chapters.
     """
 
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
@@ -128,14 +132,14 @@ def gated_delta_recurrence(
 
 # [Block 03] Importable Gated Delta module
 class GatedDeltaState(NamedTuple):
-    """Streaming state for the recurrent memory and causal-conv history."""
+    """Streaming memory plus the independent q/k/v ShortConv histories."""
 
     memory: Tensor  # [B,H,Dh,Dh]
-    conv_cache: Tensor  # [B,K-1,C]
+    conv_cache: Tuple[Tensor, Tensor, Tensor]  # q, k, v: each [B,K-1,C]
 
 
 class GatedDeltaAttention(nn.Module):
-    """Short-conv -> normalized delta memory -> output-gated projection."""
+    """Paper-shaped q/k/v ShortConv paths with scalar GDN retention."""
 
     def __init__(
         self,
@@ -150,18 +154,20 @@ class GatedDeltaAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
 
-        self.short_conv = CausalDepthwiseConv1d(d_model, conv_kernel_size)
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.alpha_proj = nn.Linear(d_model, num_heads)
-        self.beta_proj = nn.Linear(d_model, num_heads)
-        self.output_gate_proj = nn.Linear(d_model, d_model)
+        self.q_conv1d = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.k_conv1d = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.v_conv1d = CausalDepthwiseConv1d(d_model, conv_kernel_size)
+        self.alpha_proj = nn.Linear(d_model, num_heads, bias=False)
+        self.beta_proj = nn.Linear(d_model, num_heads, bias=False)
+        self.output_gate_proj = nn.Linear(d_model, d_model, bias=False)
+        self.A_log = nn.Parameter(torch.zeros(num_heads))
+        # softplus(-2.25) is close to 0.1, hence alpha starts near exp(-0.1).
+        self.alpha_bias = nn.Parameter(torch.full((num_heads,), -2.25))
+        self.output_norm = nn.RMSNorm(self.head_dim)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
-
-        # Start with fairly persistent memory and a moderate delta step.
-        nn.init.constant_(self.alpha_proj.bias, 2.0)
-        nn.init.zeros_(self.beta_proj.bias)
 
     def _heads(self, x: Tensor) -> Tensor:
         batch, length, _ = x.shape
@@ -176,34 +182,45 @@ class GatedDeltaAttention(nn.Module):
 
         if x.ndim != 3 or x.shape[-1] != self.d_model:
             raise ValueError(f"x must have shape [B, T, {self.d_model}]")
-        conv_cache = None if state is None else state.conv_cache
         memory = None if state is None else state.memory
-        mixed, new_cache = self.short_conv(x, cache=conv_cache)
+        q_cache, k_cache, v_cache = (
+            (None, None, None) if state is None else state.conv_cache
+        )
 
-        q = self._heads(self.q_proj(mixed))
-        k = self._heads(self.k_proj(mixed))
-        v = self._heads(self.v_proj(mixed))
-        alpha = torch.sigmoid(self.alpha_proj(mixed))  # [B,T,H], scalar/head
-        beta = torch.sigmoid(self.beta_proj(mixed))  # [B,T,H]
+        q, new_q_cache = self.q_conv1d(self.q_proj(x), cache=q_cache)
+        k, new_k_cache = self.k_conv1d(self.k_proj(x), cache=k_cache)
+        v, new_v_cache = self.v_conv1d(self.v_proj(x), cache=v_cache)
+        q = self._heads(F.silu(q))
+        k = self._heads(F.silu(k))
+        v = self._heads(F.silu(v))
+
+        # Gates deliberately bypass ShortConv and read the original token x.
+        alpha_logits = self.alpha_proj(x)
+        log_alpha = -torch.exp(self.A_log)[None, None, :] * F.softplus(
+            alpha_logits + self.alpha_bias
+        )
+        alpha = torch.exp(log_alpha)  # [B,T,H], one retention scalar per head
+        beta = torch.sigmoid(self.beta_proj(x))  # [B,T,H], direct write gate
 
         y, new_memory = gated_delta_recurrence(
             q, k, v, alpha, beta, memory=memory
         )
-        output_gate = torch.sigmoid(self.output_gate_proj(mixed))
+        output_gate = F.silu(self.output_gate_proj(x))
         output_gate = self._heads(output_gate)  # [B,T,H,Dh]
-        y = y * output_gate
+        y = self.output_norm(y) * output_gate
 
         batch, length, _, _ = y.shape
         y = self.out_proj(y.reshape(batch, length, self.d_model))
-        return y, GatedDeltaState(new_memory, new_cache)
+        new_conv_cache = (new_q_cache, new_k_cache, new_v_cache)
+        return y, GatedDeltaState(new_memory, new_conv_cache)
 # [/Block 03]
 
 
 # [Block 04] Reference simplifications
 REFERENCE_SIMPLIFICATIONS = (
     "The recurrence uses a Python loop rather than a WY/scan chunk kernel.",
-    "A single depthwise convolution stands in for production local mixing.",
-    "Gates and projections are pedagogical parameterizations, not checkpoint-compatible.",
+    "Projection widths are kept equal to d_model instead of using production expansions.",
+    "Gate equations follow GDN, but initialization is simplified and not checkpoint-compatible.",
     "No fused kernels, tensor-parallel layout, mixed-precision policy, or custom backward is used.",
 )
 # [/Block 04]
