@@ -2,21 +2,22 @@
   "use strict";
 
   var P = {
-    ink: "#10243b",
-    muted: "#718096",
-    rule: "#d9d6ce",
-    dense: "#285f8f",
-    denseSoft: "#eaf2f8",
-    sparse: "#8b5d12",
-    sparseSoft: "#f8f0df",
-    linear: "#39704f",
-    linearSoft: "#eaf3ed",
-    hybrid: "#684b91",
-    hybridSoft: "#f0ebf7",
-    cache: "#b6531b",
-    cacheSoft: "#fbecdc",
-    paper: "#ffffff",
-    paper2: "#faf9f5"
+    ink: "var(--ink)",
+    muted: "var(--muted)",
+    rule: "var(--rule)",
+    dense: "var(--dense)",
+    denseSoft: "var(--dense-soft)",
+    sparse: "var(--sparse)",
+    sparseSoft: "var(--sparse-soft)",
+    linear: "var(--linear)",
+    linearSoft: "var(--linear-soft)",
+    hybrid: "var(--hybrid)",
+    hybridSoft: "var(--hybrid-soft)",
+    cache: "var(--cache)",
+    cacheInk: "var(--orange-ink)",
+    cacheSoft: "var(--cache-soft)",
+    paper: "var(--paper)",
+    paper2: "var(--off-white)"
   };
 
   var guides = {
@@ -87,15 +88,15 @@
       ["2024 大模型参数化", "WQ/WK/WV 投影后，q/k/v 分别经过 causal ShortConv 与 SiLU；q/k 再做 L2Norm。"],
       ["q/k 做归一化", "单位 key 使 rank-1 擦除的几何意义稳定，也便于精确覆盖证明。"],
       ["α 是全局遗忘", "Gated DeltaNet 先把旧状态整体乘 α，快速清理不相关上下文。"],
-      ["β 控制定点改写", "先擦除状态对 k 的旧预测，再写入 βkvᵀ；不是无条件累加。"],
+      ["β 控制定点改写", "先擦除状态对 k 的旧预测，再写入 βkv^T；不是无条件累加。"],
       ["读写共用快权重状态", "更新后的 S 被 q 读取；Gated DeltaNet 再经 RMSNorm、独立 SiLU output gate 与 WO。"],
       ["训练与推理两张脸", "训练用 chunkwise WY/scan；decode 只保留 recurrent S 和短卷积缓存。"]
     ],
     kda: [
       ["逐通道 α", "低秩 gate 投影产生 dk 维 α；状态每一行可以拥有不同记忆半衰期。"],
-      ["受约束 DPLR", "转移是 (I−βkkᵀ)Diag(α)，即 diagonal decay 加绑定到 k 的 rank-1 修正。"],
+      ["受约束 DPLR", "转移是 (I−βkk^T)Diag(α)，即 diagonal decay 加绑定到 k 的 rank-1 修正。"],
       ["完整输入支路", "WQ/WK/WV 后分别做 ShortConv；另有 channel gate α、write gate β 和低秩 output gate g。"],
-      ["完整输出支路", "o=Sᵀq 后做 RMSNorm，与 sigmoid(g) 相乘，再经 WO 写回 residual stream。"],
+      ["完整输出支路", "o=S^Tq 后做 RMSNorm，与 sigmoid(g) 相乘，再经 WO 写回 residual stream。"],
       ["chunkwise 不改变数学", "UT/WY 把一个 chunk 的 rank-1 更新打包成 matmul，只是训练执行图不同。"],
       ["Kimi Linear 是层级混合", "模型按 KDA→KDA→KDA→全局 MLA(NoPE) 周期堆叠，不是在单层内混合 heads。"]
     ]
@@ -117,97 +118,85 @@
   function defs(id) {
     return (
       '<defs>' +
-      '<marker id="' + id + '-arrow" viewBox="0 0 8 8" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="6.6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#718096"/></marker>' +
-      '<pattern id="' + id + '-cache" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#fbecdc"/><line x1="0" y1="0" x2="0" y2="8" stroke="#b6531b" stroke-width="3"/></pattern>' +
+      '<marker id="' + id + '-arrow" viewBox="0 0 8 8" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="6.6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="' + P.muted + '"/></marker>' +
+      '<pattern id="' + id + '-cache" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="9" height="9" fill="' + P.cacheSoft + '"/><line x1="0" y1="0" x2="0" y2="9" stroke="' + P.cache + '" stroke-opacity=".42" stroke-width="2"/></pattern>' +
       '</defs>'
     );
   }
 
-  function superScript(base, script) {
-    return base + '<tspan baseline-shift="super" font-size="8">' + script + "</tspan>";
+  function escapeText(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
-  function subScript(base, script) {
-    return base + '<tspan baseline-shift="sub" font-size="8">' + script + "</tspan>";
+  function M(tex, fallback) {
+    return {
+      tex: tex,
+      fallback: fallback || tex
+    };
   }
 
-  function svgLabel(value) {
-    var exact = {
-      "cₜKV": 'c<tspan baseline-shift="sub" font-size="8">t</tspan><tspan baseline-shift="super" font-size="8">KV</tspan>',
-      "cₜQ": 'c<tspan baseline-shift="sub" font-size="8">t</tspan><tspan baseline-shift="super" font-size="8">Q</tspan>',
-      "WᴰKV": superScript("W", "DKV"),
-      "WᴰQ": superScript("W", "DQ"),
-      "WᵁK": superScript("W", "UK"),
-      "WᵁV": superScript("W", "UV"),
-      "WᵁQ": superScript("W", "UQ")
-    };
-    var text = String(value);
-    Object.keys(exact).forEach(function (token) {
-      text = text.split(token).join(exact[token]);
-    });
-    var replacements = {
-      cKV: superScript("c", "KV"),
-      cQ: superScript("c", "Q"),
-      kR: superScript("k", "R"),
-      qI: superScript("q", "I"),
-      kI: superScript("k", "I"),
-      Hkv: subScript("H", "kv"),
-      Hq: subScript("H", "q"),
-      Lq: subScript("L", "q"),
-      Lk: subScript("L", "k"),
-      dk: subScript("d", "k"),
-      dv: subScript("d", "v"),
-      dh: subScript("d", "h"),
-      dc: subScript("d", "c"),
-      dR: subScript("d", "R"),
-      WUK: superScript("W", "UK"),
-      WUV: superScript("W", "UV"),
-      WOA: superScript("W", "OA"),
-      WOB: superScript("W", "OB"),
-      WKR: superScript("W", "KR"),
-      WQR: superScript("W", "QR"),
-      WIUQ: superScript("W", "IUQ"),
-      WIK: superScript("W", "IK"),
-      WQ: subScript("W", "Q"),
-      WK: subScript("W", "K"),
-      WV: subScript("W", "V"),
-      WO: subScript("W", "O")
-    };
-    return text.replace(/\b(cKV|cQ|kR|qI|kI|Hkv|Hq|Lq|Lk|dk|dv|dh|dc|dR|WUK|WUV|WOA|WOB|WKR|WQR|WIUQ|WIK|WQ|WK|WV|WO)\b/g, function (token) {
-      return replacements[token];
-    });
+  function textLabel(x, y, value, fontSize, color, weight) {
+    return '<text x="' + x + '" y="' + (y + fontSize * 0.34) + '" text-anchor="middle" font-family="JetBrains Mono" font-size="' + fontSize + '" font-weight="' + (weight || 400) + '" fill="' + color + '">' + escapeText(value) + '</text>';
+  }
+
+  function mathLabel(x, y, width, height, value, fontSize, color, weight) {
+    var fallback = escapeText(value.fallback);
+    var aria = escapeText(value.fallback);
+    var tex = escapeText(value.tex);
+    var left = x - width / 2;
+    var top = y - height / 2;
+    return (
+      '<switch class="svg-math-switch" role="img" aria-label="' + aria + '">' +
+      '<foreignObject class="svg-math-label-wrap" x="' + left + '" y="' + top + '" width="' + width + '" height="' + height + '" requiredExtensions="http://www.w3.org/1999/xhtml">' +
+      '<div xmlns="http://www.w3.org/1999/xhtml" class="svg-math-label" style="color:' + color + ';font-size:' + fontSize + 'px;font-weight:' + (weight || 400) + '"><span aria-hidden="true">\\(' + tex + '\\)</span></div>' +
+      '</foreignObject>' +
+      '<text class="svg-math-fallback" x="' + x + '" y="' + (y + fontSize * 0.34) + '" text-anchor="middle" font-family="JetBrains Mono" font-size="' + fontSize + '" font-weight="' + (weight || 400) + '" fill="' + color + '">' + fallback + '</text>' +
+      '</switch>'
+    );
+  }
+
+  function labelMarkup(x, y, width, height, value, fontSize, color, weight) {
+    if (value && typeof value === "object" && value.tex) {
+      return mathLabel(x, y, width, height, value, fontSize, color, weight);
+    }
+    return textLabel(x, y, value, fontSize, color, weight);
   }
 
   function zone(x, y, w, h, title, color) {
     return (
-      '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="10" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-dasharray="7 5"/>' +
+      '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="14" fill="none" stroke="' + color + '" stroke-opacity=".64" stroke-width="1.2" stroke-dasharray="7 6"/>' +
       '<rect x="' + (x + 12) + '" y="' + (y - 9) + '" width="' + Math.max(120, title.length * 9) + '" height="20" fill="' + P.paper2 + '"/>' +
-      '<text x="' + (x + 20) + '" y="' + (y + 5) + '" font-size="11" font-weight="600" fill="' + color + '">' + title + '</text></g>'
+      '<text x="' + (x + 20) + '" y="' + (y + 5) + '" font-family="JetBrains Mono" font-size="11" font-weight="600" fill="' + color + '">' + escapeText(title) + '</text></g>'
     );
   }
 
-  function box(x, y, w, h, title, sub, color, fill, n, cached) {
+  function box(x, y, w, h, title, sub, color, fill, n, cachePatternId) {
     var number = n
-      ? '<circle cx="' + (x + 13) + '" cy="' + (y + 13) + '" r="9" fill="' + color + '"/><text x="' + (x + 13) + '" y="' + (y + 17) + '" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">' + n + '</text>'
+      ? '<circle cx="' + (x + 13) + '" cy="' + (y + 13) + '" r="9" fill="' + P.ink + '"/>' + textLabel(x + 13, y + 13, n, 9, P.paper, 700)
       : "";
+    var titleY = y + h / 2 - (sub ? 5 : 0);
     return (
-      '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="6" fill="' + (cached ? 'url(#diagram-cache)' : fill) + '" stroke="' + color + '" stroke-width="1.4"/>' +
+      '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="9" fill="' + (cachePatternId ? 'url(#' + cachePatternId + '-cache)' : fill) + '" stroke="' + color + '" stroke-opacity=".9" stroke-width="1.25"/>' +
       number +
-      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 - (sub ? 3 : -4)) + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + P.ink + '">' + svgLabel(title) + '</text>' +
-      (sub ? '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 + 15) + '" text-anchor="middle" font-size="9" fill="' + P.muted + '">' + svgLabel(sub) + '</text>' : "") +
+      labelMarkup(x + w / 2, titleY, w - 20, 30, title, 12, P.ink, 600) +
+      (sub ? labelMarkup(x + w / 2, y + h / 2 + 15, w - 18, 22, sub, 9, P.muted, 400) : "") +
       '</g>'
     );
   }
 
   function cacheBox(id, x, y, w, h, title, sub, n) {
     var number = n
-      ? '<circle cx="' + (x + 13) + '" cy="' + (y + 13) + '" r="9" fill="' + P.cache + '"/><text x="' + (x + 13) + '" y="' + (y + 17) + '" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">' + n + '</text>'
+      ? '<circle cx="' + (x + 13) + '" cy="' + (y + 13) + '" r="9" fill="' + P.cacheInk + '"/>' + textLabel(x + 13, y + 13, n, 9, P.paper, 700)
       : "";
     return (
-      '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="6" fill="url(#' + id + '-cache)" stroke="' + P.cache + '" stroke-width="1.5"/>' +
+      '<g><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="9" fill="url(#' + id + '-cache)" stroke="' + P.cache + '" stroke-width="1.35"/>' +
       number +
-      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 - 3) + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + P.ink + '">' + svgLabel(title) + '</text>' +
-      '<text x="' + (x + w / 2) + '" y="' + (y + h / 2 + 15) + '" text-anchor="middle" font-size="9" fill="' + P.cache + '">' + svgLabel(sub) + '</text></g>'
+      labelMarkup(x + w / 2, y + h / 2 - 5, w - 20, 30, title, 12, P.ink, 600) +
+      labelMarkup(x + w / 2, y + h / 2 + 15, w - 18, 22, sub, 9, P.cache, 500) + '</g>'
     );
   }
 
@@ -216,14 +205,14 @@
       '<g><path d="' + d + '" fill="none" stroke="' + (color || P.muted) + '" stroke-width="1.5" ' +
       (dashed ? 'stroke-dasharray="6 5" ' : "") +
       'marker-end="url(#' + id + '-arrow)"/>' +
-      (label ? '<text x="' + label[0] + '" y="' + label[1] + '" text-anchor="middle" font-size="9" fill="' + (color || P.muted) + '">' + svgLabel(label[2]) + '</text>' : "") +
+      (label ? labelMarkup(label[0], label[1], label[3] || 180, 22, label[2], 9, color || P.muted, 500) : "") +
       '</g>'
     );
   }
 
   function baseSvg(id, height, body, label) {
     return (
-      '<svg viewBox="0 0 1100 ' + height + '" role="img" aria-label="' + label + '" xmlns="http://www.w3.org/2000/svg">' +
+      '<svg viewBox="0 0 1100 ' + height + '" role="img" aria-label="' + escapeText(label) + '" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono">' +
       defs(id) +
       '<rect width="1100" height="' + height + '" fill="' + P.paper2 + '"/>' +
       body +
@@ -233,28 +222,31 @@
 
   function fullHeadAttention(mode) {
     var id = "full-" + mode;
-    var kv = mode === "mha" ? "Hkv = Hq" : mode === "mqa" ? "Hkv = 1" : "1 < Hkv < Hq";
-    var mapping = mode === "mha" ? "一一对应" : mode === "mqa" ? "全部 Q 读取同一 KV" : "组内共享 KV";
+    var routing = mode === "mha"
+      ? M("\\text{one-to-one}\\;\\cdot\\;H_{kv}=H_q", "一一对应 · Hkv = Hq")
+      : mode === "mqa"
+        ? M("\\text{all Q share one KV}\\;\\cdot\\;H_{kv}=1", "全部 Q 读取同一 KV · Hkv = 1")
+        : M("\\text{grouped KV}\\;\\cdot\\;1<H_{kv}<H_q", "组内共享 KV · 1 < Hkv < Hq");
     var body = "";
     body += zone(18, 58, 344, 540, "PROJECT & RESHAPE", P.dense);
     body += zone(382, 58, 344, 540, "POSITION, CACHE & ROUTING", P.cache);
     body += zone(746, 58, 336, 540, "SCORE, MIX & WRITE BACK", P.hybrid);
 
-    body += box(34, 270, 120, 66, "X / Norm(X)", "[B,Lq,d] · profile-dependent", P.ink, P.paper, 1);
-    body += box(188, 92, 152, 68, "WQ → Q heads", "[B,Hq,Lq,D]", P.dense, P.denseSoft, 2);
-    body += box(188, 270, 152, 68, "WK → Knew", "[B,Hkv,Lq,D]", P.dense, P.denseSoft, 2);
-    body += box(188, 448, 152, 68, "WV → Vnew", "[B,Hkv,Lq,D]", P.dense, P.denseSoft, 2);
+    body += box(34, 270, 120, 66, M("X\\,/\\,\\operatorname{Norm}(X)", "X / Norm(X)"), M("[B,L_q,d]", "[B,Lq,d] · profile-dependent"), P.ink, P.paper, 1);
+    body += box(188, 92, 152, 68, M("W_Q\\to Q\\;\\text{heads}", "WQ → Q heads"), M("[B,H_q,L_q,D]", "[B,Hq,Lq,D]"), P.dense, P.denseSoft, 2);
+    body += box(188, 270, 152, 68, M("W_K\\to K_{\\mathrm{new}}", "WK → Knew"), M("[B,H_{kv},L_q,D]", "[B,Hkv,Lq,D]"), P.dense, P.denseSoft, 2);
+    body += box(188, 448, 152, 68, M("W_V\\to V_{\\mathrm{new}}", "WV → Vnew"), M("[B,H_{kv},L_q,D]", "[B,Hkv,Lq,D]"), P.dense, P.denseSoft, 2);
 
-    body += box(402, 92, 142, 68, "Position(Q)", "RoPE · modern profile", P.hybrid, P.hybridSoft, 3);
-    body += box(402, 244, 142, 68, "Position(K)", "RoPE · modern profile", P.hybrid, P.hybridSoft, 3);
-    body += cacheBox(id, 568, 226, 138, 116, "Append KV cache", "2×[B,Hkv,Lk,D]", 4);
-    body += box(402, 420, 304, 74, "Logical head routing", mapping + " · " + kv, P.dense, P.denseSoft, 5);
+    body += box(402, 92, 142, 68, M("\\operatorname{Position}(Q)", "Position(Q)"), "RoPE · modern profile", P.hybrid, P.hybridSoft, 3);
+    body += box(402, 244, 142, 68, M("\\operatorname{Position}(K)", "Position(K)"), "RoPE · modern profile", P.hybrid, P.hybridSoft, 3);
+    body += cacheBox(id, 568, 226, 138, 116, "Append KV cache", M("2\\times[B,H_{kv},L_k,D]", "2×[B,Hkv,Lk,D]"), 4);
+    body += box(402, 420, 304, 74, "Logical head routing", routing, P.dense, P.denseSoft, 5);
 
-    body += box(766, 106, 296, 94, "S = QKᵀ/√D + mask + position bias", "[B,Hq,Lq,Lk] · before softmax", P.hybrid, P.hybridSoft, 6);
-    body += box(766, 246, 296, 76, "A = softmax over key axis", "exact attention weights", P.hybrid, P.paper, 6);
-    body += box(766, 366, 296, 70, "Oheads = A · V", "[B,Hq,Lq,D]", P.linear, P.linearSoft, 7);
-    body += box(766, 474, 142, 72, "Concat → WO", "Hq·D → d", P.linear, P.paper, 8);
-    body += box(930, 474, 132, 72, "Residual output", "[B,Lq,d]", P.ink, P.paper, 9);
+    body += box(766, 106, 296, 94, M("S=QK^{\\mathsf T}/\\sqrt D+M+B_{\\mathrm{pos}}", "S = QK^T/√D + mask + position bias"), M("[B,H_q,L_q,L_k]", "[B,Hq,Lq,Lk] · before softmax"), P.hybrid, P.hybridSoft, 6);
+    body += box(766, 246, 296, 76, M("A=\\operatorname{softmax}_{k}(S)", "A = softmax over key axis"), "exact attention weights", P.hybrid, P.paper, 6);
+    body += box(766, 366, 296, 70, M("O_{\\mathrm{heads}}=AV", "Oheads = A · V"), M("[B,H_q,L_q,D]", "[B,Hq,Lq,D]"), P.linear, P.linearSoft, 7);
+    body += box(766, 474, 142, 72, M("\\operatorname{Concat}\\to W_O", "Concat → WO"), M("H_qD\\to d", "Hq·D → d"), P.linear, P.paper, 8);
+    body += box(930, 474, 132, 72, "Residual output", M("[B,L_q,d]", "[B,Lq,d]"), P.ink, P.paper, 9);
 
     body += edge(id, "M154 303C172 303 172 126 188 126");
     body += edge(id, "M154 303H188");
@@ -268,7 +260,7 @@
     body += edge(id, "M706 457C738 430 742 190 766 153");
     body += edge(id, "M914 200V246");
     body += edge(id, "M914 322V366");
-    body += edge(id, "M706 284C740 300 744 394 766 401", [734, 290, "cached V"]);
+    body += edge(id, "M706 284C740 300 744 394 766 401", [734, 290, M("\\text{cached }V", "cached V")]);
     body += edge(id, "M914 436C914 456 860 456 837 474");
     body += edge(id, "M908 510H930");
     return baseSvg(id, 630, body, mode.toUpperCase() + " 完整 causal self-attention block");
@@ -281,23 +273,23 @@
     b += zone(528, 74, 390, 548, "JOINT KV LATENT & CACHE", P.cache);
     b += zone(936, 74, 146, 548, "ATTENTION CORE", P.hybrid);
 
-    b += box(340, 642, 420, 54, "Input hidden hₜ", "[B,1,d] · shared source", P.ink, P.paper, 1);
+    b += box(340, 642, 420, 54, M("\\text{Input hidden }h_t", "Input hidden h_t"), M("[B,1,d]", "[B,1,d] · shared source"), P.ink, P.paper, 1);
 
-    b += box(138, 526, 252, 66, "WᴰQ → RMSNorm → latent cₜQ", "dq · query low-rank bottleneck", P.dense, P.denseSoft, 2);
-    b += box(42, 394, 186, 64, "WᵁQ → qᶜ heads", "content query · H × dh", P.dense, P.paper, 3);
-    b += box(264, 394, 220, 64, "WQR → RoPE(qᴿ)", "position query · H × dR", P.hybrid, P.hybridSoft, 4);
-    b += box(92, 258, 350, 68, "concat [qᶜ ; qᴿ]", "complete multi-head query", P.dense, P.denseSoft, 5);
+    b += box(138, 526, 252, 66, M("W^{DQ}\\to\\operatorname{RMSNorm}\\to c_t^Q", "W^DQ → RMSNorm → latent c_t^Q"), M("d_q\\;\\text{query bottleneck}", "dq · query low-rank bottleneck"), P.dense, P.denseSoft, 2);
+    b += box(42, 394, 186, 64, M("W^{UQ}\\to q^C\\;\\text{heads}", "W^UQ → q^C heads"), M("H\\times d_h", "content query · H × dh"), P.dense, P.paper, 3);
+    b += box(264, 394, 220, 64, M("W^{QR}\\to\\operatorname{RoPE}(q^R)", "W^QR → RoPE(q^R)"), M("H\\times d_R", "position query · H × dR"), P.hybrid, P.hybridSoft, 4);
+    b += box(92, 258, 350, 68, M("\\operatorname{concat}[q^C;q^R]", "concat [q^C ; q^R]"), "complete multi-head query", P.dense, P.denseSoft, 5);
 
-    b += cacheBox(id, 598, 526, 270, 66, "WᴰKV → RMSNorm → latent cₜKV", "CACHED · dc · joint K/V bottleneck", 2);
-    b += box(544, 394, 156, 64, "WᵁK → kᶜ heads", "content key · H × dh", P.cache, P.paper, 3);
-    b += box(724, 394, 156, 64, "WᵁV → v heads", "value · H × dv", P.cache, P.paper, 3);
-    b += cacheBox(id, 724, 286, 156, 72, "WKR(hₜ) → RoPE(kᴿ)", "CACHED · shared dR", 4);
-    b += box(544, 258, 156, 68, "concat [kᶜ ; kᴿ]", "complete key heads", P.cache, P.cacheSoft, 5);
+    b += cacheBox(id, 598, 526, 270, 66, M("W^{DKV}\\to\\operatorname{RMSNorm}\\to c_t^{KV}", "W^DKV → RMSNorm → latent c_t^KV"), M("d_c\\;\\text{joint K/V bottleneck}", "CACHED · dc · joint K/V bottleneck"), 2);
+    b += box(544, 394, 156, 64, M("W^{UK}\\to k^C\\;\\text{heads}", "W^UK → k^C heads"), M("H\\times d_h", "content key · H × dh"), P.cache, P.paper, 3);
+    b += box(724, 394, 156, 64, M("W^{UV}\\to v\\;\\text{heads}", "W^UV → v heads"), M("H\\times d_v", "value · H × dv"), P.cache, P.paper, 3);
+    b += cacheBox(id, 724, 286, 156, 72, M("W^{KR}h_t\\to\\operatorname{RoPE}(k^R)", "W^KR(h_t) → RoPE(k^R)"), M("d_R\\;\\text{shared}", "CACHED · shared dR"), 4);
+    b += box(544, 258, 156, 68, M("\\operatorname{concat}[k^C;k^R]", "concat [k^C ; k^R]"), "complete key heads", P.cache, P.cacheSoft, 5);
 
-    b += box(948, 112, 122, 86, "Scaled QKᵀ", "+ causal mask", P.hybrid, P.hybridSoft, 6);
+    b += box(948, 112, 122, 86, M("QK^{\\mathsf T}/\\sqrt D", "Scaled QK^T"), M("+\\;M_{\\mathrm{causal}}", "+ causal mask"), P.hybrid, P.hybridSoft, 6);
     b += box(948, 238, 122, 64, "Softmax", "over cached history", P.hybrid, P.paper, 6);
-    b += box(948, 350, 122, 68, "A · V", "per-head output", P.hybrid, P.hybridSoft, 7);
-    b += box(948, 474, 122, 68, "Concat → WO → uₜ", "write residual", P.ink, P.paper, 8);
+    b += box(948, 350, 122, 68, M("A\\,V", "A · V"), "per-head output", P.hybrid, P.hybridSoft, 7);
+    b += box(948, 474, 122, 68, M("\\operatorname{Concat}\\to W_O\\to u_t", "Concat → WO → u_t"), "write residual", P.ink, P.paper, 8);
 
     b += edge(id, "M460 642C410 624 330 610 264 592");
     b += edge(id, "M640 642C690 624 760 610 733 592");
@@ -314,7 +306,7 @@
     b += edge(id, "M700 292C800 230 880 180 948 155");
     b += edge(id, "M1009 198V238");
     b += edge(id, "M1009 302V350");
-    b += edge(id, "M880 426C916 426 930 384 948 384", [918, 414, "V"]);
+    b += edge(id, "M880 426C916 426 930 384 948 384", [918, 414, M("V", "V")]);
     b += edge(id, "M1009 418V474");
     return baseSvg(id, 720, b, "MLA 完整低秩、解耦 RoPE 与推理缓存结构");
   }
@@ -325,19 +317,19 @@
     b += zone(18, 48, 390, 544, "LIGHTNING INDEXER · CHEAP SEARCH", P.sparse);
     b += zone(426, 48, 310, 544, "MLA CACHE & GATHER", P.cache);
     b += zone(754, 48, 328, 544, "HIGH-DIMENSION CORE", P.hybrid);
-    b += box(34, 488, 126, 60, "hₜ", "query token", P.ink, P.paper, 1);
-    b += box(188, 420, 92, 54, "shared cQ", "MLA WᴰQ + RMSNorm", P.sparse, P.sparseSoft, 2);
-    b += box(298, 420, 92, 54, "WᴵUQ → qᴵ", "64 × 128", P.sparse, P.paper, 2);
-    b += box(188, 314, 92, 54, "Ww", "head weights", P.sparse, P.sparseSoft, 2);
-    b += box(298, 314, 92, 54, "wᴵ", "64 weights", P.sparse, P.paper, 2);
-    b += cacheBox(id, 34, 168, 160, 72, "WᴵK(h₁…hₗ) → kᴵ", "LN+pRoPE+Hadamard · FP8", 3);
-    b += box(220, 168, 170, 72, "Σ wⱼ ReLU(qⱼ·kₛ)", "one score per position", P.sparse, P.sparseSoft, 4);
-    b += box(126, 70, 188, 64, "Top-k selector", "indices 𝓘ₜ · k=2048", P.sparse, P.paper, 5);
-    b += cacheBox(id, 446, 344, 270, 92, "MLA latent cache", "cKV + kR · full history", 3);
-    b += box(446, 188, 270, 76, "Gather cache[𝓘ₜ]", "selected latent entries only", P.cache, P.cacheSoft, 6);
-    b += box(774, 382, 132, 64, "MLA query", "qC + qR", P.dense, P.denseSoft, 6);
+    b += box(34, 488, 126, 60, M("h_t", "h_t"), "query token", P.ink, P.paper, 1);
+    b += box(188, 420, 92, 54, M("\\text{shared }c^Q", "shared c^Q"), M("W^{DQ}+\\operatorname{RMSNorm}", "MLA W^DQ + RMSNorm"), P.sparse, P.sparseSoft, 2);
+    b += box(298, 420, 92, 54, M("W^{IUQ}\\to q^I", "W^IUQ → q^I"), M("64\\times128", "64 × 128"), P.sparse, P.paper, 2);
+    b += box(188, 314, 92, 54, M("W_w", "Ww"), "head weights", P.sparse, P.sparseSoft, 2);
+    b += box(298, 314, 92, 54, M("w^I", "w^I"), "64 weights", P.sparse, P.paper, 2);
+    b += cacheBox(id, 34, 168, 160, 72, M("W^{IK}(h_{1:L})\\to k^I", "W^IK(h_1…h_L) → k^I"), "LN + pRoPE + Hadamard · FP8", 3);
+    b += box(220, 168, 170, 72, M("\\sum_j w_j\\operatorname{ReLU}(q_j\\cdot k_s)", "Σ_j w_j ReLU(q_j·k_s)"), "one score per position", P.sparse, P.sparseSoft, 4);
+    b += box(126, 70, 188, 64, M("\\operatorname{TopK}", "Top-k selector"), M("\\mathcal I_t,\\;k=2048", "indices I_t · k=2048"), P.sparse, P.paper, 5);
+    b += cacheBox(id, 446, 344, 270, 92, "MLA latent cache", M("c^{KV}+k^R\\;\\text{over full history}", "cKV + kR · full history"), 3);
+    b += box(446, 188, 270, 76, M("\\operatorname{Gather}(\\mathrm{cache},\\mathcal I_t)", "Gather cache[I_t]"), "selected latent entries only", P.cache, P.cacheSoft, 6);
+    b += box(774, 382, 132, 64, "MLA query", M("q^C+q^R", "qC + qR"), P.dense, P.denseSoft, 6);
     b += box(926, 270, 136, 82, "Sparse MLA core", "exact softmax on k", P.hybrid, P.hybridSoft, 7);
-    b += box(926, 416, 136, 64, "WO → output", "residual write", P.ink, P.paper, 8);
+    b += box(926, 416, 136, 64, M("W_O\\to\\text{output}", "WO → output"), "residual write", P.ink, P.paper, 8);
     b += box(774, 82, 288, 70, "KL index loss · training only", "align index scores to main-attention target", P.sparse, P.paper, 9);
     b += edge(id, "M160 518C174 518 174 447 188 447");
     b += edge(id, "M160 518C174 518 174 341 188 341");
@@ -363,24 +355,24 @@
     b += zone(18, 42, 482, 558, "OVERLAPPING SEQUENCE COMPRESSOR", P.sparse);
     b += zone(518, 42, 272, 558, "INDEX & CACHE", P.cache);
     b += zone(808, 42, 274, 558, "LOCAL + GLOBAL CORE", P.hybrid);
-    b += box(34, 492, 120, 60, "Hidden H", "[B,L,d]", P.ink, P.paper, 1);
-    b += box(184, 434, 126, 58, "WaKV / WbKV", "two value streams", P.sparse, P.sparseSoft, 2);
-    b += box(184, 522, 126, 48, "WaZ / WbZ", "channel gates", P.sparse, P.sparseSoft, 2);
-    b += box(336, 434, 144, 58, "Ca / Cb", "current + previous block", P.sparse, P.paper, 3);
-    b += box(336, 522, 144, 48, "Za+Ba / Zb+Bb", "position-biased logits", P.sparse, P.paper, 3);
-    b += box(184, 312, 296, 76, "row-softmax over 2m positions", "per-channel weighted merge · stride m", P.sparse, P.sparseSoft, 4);
-    b += box(184, 186, 132, 68, "CComp", "core compressed KV", P.sparse, P.paper, 5);
-    b += box(348, 186, 132, 68, "IComp", "compressed index key", P.sparse, P.paper, 5);
-    b += cacheBox(id, 538, 180, 232, 82, "compressed pools", "RMSNorm + block pRoPE · L/m", 6);
-    b += box(538, 354, 108, 58, "qᴵ,wᴵ", "low-rank query", P.sparse, P.sparseSoft, 6);
-    b += box(662, 354, 108, 58, "Top-k", "k · checkpoint config", P.sparse, P.paper, 7);
-    b += box(538, 476, 232, 64, "Gather selected CComp", "global summaries", P.cache, P.cacheSoft, 7);
-    b += cacheBox(id, 828, 448, 112, 78, "SWA cache", "recent w=128 · pRoPE", 6);
-    b += box(958, 448, 104, 78, "query q", "Hq heads · pRoPE", P.dense, P.denseSoft, 6);
-    b += box(828, 284, 234, 86, "shared K=V MQA + sink", "selected summaries ∪ local raw KV", P.hybrid, P.hybridSoft, 8);
-    b += box(828, 220, 234, 48, "inverse RoPE(−t)", "output trailing 64 dims", P.hybrid, P.paper, 9);
-    b += box(828, 140, 234, 54, "Grouped WᴼA → concat → WᴼB", "low-rank head groups → d", P.linear, P.linearSoft, 9);
-    b += box(828, 68, 234, 54, "Output hidden", "[B,L,d]", P.ink, P.paper, 10);
+    b += box(34, 492, 120, 60, "Hidden H", M("[B,L,d]", "[B,L,d]"), P.ink, P.paper, 1);
+    b += box(184, 434, 126, 58, M("W_a^{KV}\\,/\\,W_b^{KV}", "WaKV / WbKV"), "two value streams", P.sparse, P.sparseSoft, 2);
+    b += box(184, 522, 126, 48, M("W_a^Z\\,/\\,W_b^Z", "WaZ / WbZ"), "channel gates", P.sparse, P.sparseSoft, 2);
+    b += box(336, 434, 144, 58, M("C^a\\,/\\,C^b", "Ca / Cb"), "current + previous block", P.sparse, P.paper, 3);
+    b += box(336, 522, 144, 48, M("Z^a+B^a\\,/\\,Z^b+B^b", "Za+Ba / Zb+Bb"), "position-biased logits", P.sparse, P.paper, 3);
+    b += box(184, 312, 296, 76, M("\\operatorname{softmax}_{2m}\\;\\text{per channel}", "row-softmax over 2m positions"), M("\\text{weighted merge}\\;\\cdot\\;\\operatorname{stride}=m", "per-channel weighted merge · stride m"), P.sparse, P.sparseSoft, 4);
+    b += box(184, 186, 132, 68, M("C^{\\mathrm{Comp}}", "CComp"), "core compressed KV", P.sparse, P.paper, 5);
+    b += box(348, 186, 132, 68, M("I^{\\mathrm{Comp}}", "IComp"), "compressed index key", P.sparse, P.paper, 5);
+    b += cacheBox(id, 538, 180, 232, 82, "compressed pools", M("\\operatorname{RMSNorm}+\\operatorname{pRoPE}\\;\\cdot\\;L/m", "RMSNorm + block pRoPE · L/m"), 6);
+    b += box(538, 354, 108, 58, M("q^I,w^I", "qI,wI"), "low-rank query", P.sparse, P.sparseSoft, 6);
+    b += box(662, 354, 108, 58, M("\\operatorname{TopK}", "Top-k"), "k · checkpoint config", P.sparse, P.paper, 7);
+    b += box(538, 476, 232, 64, M("\\operatorname{Gather}(C^{\\mathrm{Comp}})", "Gather selected CComp"), "global summaries", P.cache, P.cacheSoft, 7);
+    b += cacheBox(id, 828, 448, 112, 78, "SWA cache", M("w=128\\;\\cdot\\;\\operatorname{pRoPE}", "recent w=128 · pRoPE"), 6);
+    b += box(958, 448, 104, 78, "query q", M("H_q\\;\\text{heads}\\;\\cdot\\;\\operatorname{pRoPE}", "Hq heads · pRoPE"), P.dense, P.denseSoft, 6);
+    b += box(828, 284, 234, 86, M("K=V\\;\\text{ shared MQA + sink}", "shared K=V MQA + sink"), M("\\text{summaries}\\cup\\text{local raw KV}", "selected summaries ∪ local raw KV"), P.hybrid, P.hybridSoft, 8);
+    b += box(828, 220, 234, 48, M("\\operatorname{RoPE}^{-1}(-t)", "inverse RoPE(-t)"), "output trailing 64 dims", P.hybrid, P.paper, 9);
+    b += box(828, 140, 234, 54, M("W^{OA}\\to\\operatorname{concat}\\to W^{OB}", "Grouped W^OA → concat → W^OB"), M("\\text{low-rank groups}\\to d", "low-rank head groups → d"), P.linear, P.linearSoft, 9);
+    b += box(828, 68, 234, 54, "Output hidden", M("[B,L,d]", "[B,L,d]"), P.ink, P.paper, 10);
     b += edge(id, "M154 522H184");
     b += edge(id, "M154 522C164 522 174 546 184 546");
     b += edge(id, "M310 463H336");
@@ -391,7 +383,7 @@
     b += edge(id, "M420 312V254");
     b += edge(id, "M250 186C330 150 460 150 538 210");
     b += edge(id, "M414 186C470 160 500 180 538 210");
-    b += edge(id, "M654 262C654 318 592 326 592 354", [634, 310, "scan L/m"]);
+    b += edge(id, "M654 262C654 318 592 326 592 354", [634, 310, M("\\operatorname{scan}(L/m)", "scan L/m")]);
     b += edge(id, "M646 383H662");
     b += edge(id, "M716 412V476");
     b += edge(id, "M770 508C800 508 800 327 828 327");
@@ -409,20 +401,20 @@
     b += zone(18, 46, 466, 532, "HEAVY NON-OVERLAPPING COMPRESSOR", P.sparse);
     b += zone(502, 46, 286, 532, "COMPRESSED GLOBAL CACHE", P.cache);
     b += zone(806, 46, 276, 532, "DENSE COMPRESSED CORE", P.hybrid);
-    b += box(34, 454, 120, 60, "Hidden H", "[B,L,d]", P.ink, P.paper, 1);
-    b += box(184, 404, 112, 56, "WKV", "content stream", P.sparse, P.sparseSoft, 2);
-    b += box(184, 494, 112, 46, "WZ + B", "channel logits", P.sparse, P.sparseSoft, 2);
-    b += box(326, 404, 138, 56, "C block", "m′=128 tokens", P.sparse, P.paper, 3);
+    b += box(34, 454, 120, 60, "Hidden H", M("[B,L,d]", "[B,L,d]"), P.ink, P.paper, 1);
+    b += box(184, 404, 112, 56, M("W^{KV}", "WKV"), "content stream", P.sparse, P.sparseSoft, 2);
+    b += box(184, 494, 112, 46, M("W^Z+B", "WZ + B"), "channel logits", P.sparse, P.sparseSoft, 2);
+    b += box(326, 404, 138, 56, "C block", M("m'=128\\;\\text{tokens}", "m'=128 tokens"), P.sparse, P.paper, 3);
     b += box(326, 494, 138, 46, "Z block", "non-overlap", P.sparse, P.paper, 3);
-    b += box(184, 276, 280, 76, "row-softmax over m′", "per-channel weighted compression", P.sparse, P.sparseSoft, 4);
-    b += box(254, 154, 210, 70, "CComp", "one summary / 128 tokens", P.sparse, P.paper, 5);
-    b += cacheBox(id, 522, 154, 246, 88, "all compressed entries", "RMSNorm + block pRoPE · L/m′", 6);
-    b += cacheBox(id, 522, 388, 118, 82, "SWA cache", "recent 128 raw · pRoPE", 6);
-    b += box(658, 388, 110, 82, "query q", "Hq heads · pRoPE", P.dense, P.denseSoft, 6);
-    b += box(826, 304, 236, 90, "Dense shared K=V MQA + sink", "all CComp ∪ local SWA", P.hybrid, P.hybridSoft, 7);
-    b += box(826, 250, 236, 42, "inverse RoPE(−t)", "output trailing 64 dims", P.hybrid, P.paper, 8);
-    b += box(826, 168, 236, 56, "Grouped WᴼA → concat → WᴼB", "low-rank head groups → d", P.linear, P.linearSoft, 8);
-    b += box(826, 76, 236, 56, "Output hidden", "[B,L,d]", P.ink, P.paper, 9);
+    b += box(184, 276, 280, 76, M("\\operatorname{softmax}_{m'}\\;\\text{per channel}", "row-softmax over m′"), "per-channel weighted compression", P.sparse, P.sparseSoft, 4);
+    b += box(254, 154, 210, 70, M("C^{\\mathrm{Comp}}", "CComp"), "one summary / 128 tokens", P.sparse, P.paper, 5);
+    b += cacheBox(id, 522, 154, 246, 88, "all compressed entries", M("\\operatorname{RMSNorm}+\\operatorname{pRoPE}\\;\\cdot\\;L/m'", "RMSNorm + block pRoPE · L/m′"), 6);
+    b += cacheBox(id, 522, 388, 118, 82, "SWA cache", M("w=128\\;\\cdot\\;\\operatorname{pRoPE}", "recent 128 raw · pRoPE"), 6);
+    b += box(658, 388, 110, 82, "query q", M("H_q\\;\\text{heads}\\;\\cdot\\;\\operatorname{pRoPE}", "Hq heads · pRoPE"), P.dense, P.denseSoft, 6);
+    b += box(826, 304, 236, 90, M("K=V\\;\\text{ dense MQA + sink}", "Dense shared K=V MQA + sink"), M("C^{\\mathrm{Comp}}\\cup\\text{local SWA}", "all CComp ∪ local SWA"), P.hybrid, P.hybridSoft, 7);
+    b += box(826, 250, 236, 42, M("\\operatorname{RoPE}^{-1}(-t)", "inverse RoPE(-t)"), "output trailing 64 dims", P.hybrid, P.paper, 8);
+    b += box(826, 168, 236, 56, M("W^{OA}\\to\\operatorname{concat}\\to W^{OB}", "Grouped W^OA → concat → W^OB"), M("\\text{low-rank groups}\\to d", "low-rank head groups → d"), P.linear, P.linearSoft, 8);
+    b += box(826, 76, 236, 56, "Output hidden", M("[B,L,d]", "[B,L,d]"), P.ink, P.paper, 9);
     b += edge(id, "M154 484C170 484 170 432 184 432");
     b += edge(id, "M154 484C170 484 170 517 184 517");
     b += edge(id, "M296 432H326");
@@ -446,21 +438,21 @@
     b += zone(18, 46, 410, 518, "TOKEN PROJECTIONS", P.linear);
     b += zone(446, 46, 360, 518, "ASSOCIATIVE MEMORY", P.cache);
     b += zone(824, 46, 258, 518, "READ & OUTPUT", P.hybrid);
-    b += box(34, 258, 110, 60, "xₜ", "[B,1,d]", P.ink, P.paper, 1);
-    b += box(176, 82, 100, 54, "WQ", "query", P.linear, P.linearSoft, 2);
-    b += box(176, 252, 100, 54, "WK", "key", P.linear, P.linearSoft, 2);
-    b += box(176, 422, 100, 54, "WV", "value", P.linear, P.linearSoft, 2);
-    b += box(306, 82, 102, 54, "φ(qₜ)", "feature map", P.linear, P.paper, 3);
-    b += box(306, 252, 102, 54, "φ(kₜ)", "feature map", P.linear, P.paper, 3);
-    b += box(306, 422, 102, 54, "vₜ", "dv", P.linear, P.paper, 3);
-    b += cacheBox(id, 466, 128, 150, 92, "Sₜ₋₁", "r × dv state", 4);
-    b += cacheBox(id, 636, 128, 150, 92, "zₜ₋₁", "r normalizer", 4);
-    b += box(466, 300, 150, 82, "Sₜ=Sₜ₋₁+φ(k)vᵀ", "outer-product update", P.cache, P.cacheSoft, 5);
-    b += box(636, 300, 150, 82, "zₜ=zₜ₋₁+φ(k)", "normalizer update", P.cache, P.cacheSoft, 5);
-    b += box(844, 126, 218, 74, "φ(q)ᵀSₜ", "numerator", P.hybrid, P.hybridSoft, 6);
-    b += box(844, 256, 218, 74, "φ(q)ᵀzₜ + ε", "denominator", P.hybrid, P.hybridSoft, 6);
-    b += box(844, 384, 218, 66, "normalize → WO", "yₜ + residual", P.linear, P.linearSoft, 7);
-    b += box(844, 488, 218, 54, "Output hidden", "[B,1,d]", P.ink, P.paper, 8);
+    b += box(34, 258, 110, 60, M("x_t", "x_t"), M("[B,1,d]", "[B,1,d]"), P.ink, P.paper, 1);
+    b += box(176, 82, 100, 54, M("W_Q", "WQ"), "query", P.linear, P.linearSoft, 2);
+    b += box(176, 252, 100, 54, M("W_K", "WK"), "key", P.linear, P.linearSoft, 2);
+    b += box(176, 422, 100, 54, M("W_V", "WV"), "value", P.linear, P.linearSoft, 2);
+    b += box(306, 82, 102, 54, M("\\phi(q_t)", "φ(q_t)"), "feature map", P.linear, P.paper, 3);
+    b += box(306, 252, 102, 54, M("\\phi(k_t)", "φ(k_t)"), "feature map", P.linear, P.paper, 3);
+    b += box(306, 422, 102, 54, M("v_t", "v_t"), M("d_v", "dv"), P.linear, P.paper, 3);
+    b += cacheBox(id, 466, 128, 150, 92, M("S_{t-1}", "S_t-1"), M("r\\times d_v\\;\\text{state}", "r × dv state"), 4);
+    b += cacheBox(id, 636, 128, 150, 92, M("z_{t-1}", "z_t-1"), "r normalizer", 4);
+    b += box(466, 300, 150, 82, M("S_t=S_{t-1}+\\phi(k_t)v_t^{\\mathsf T}", "S_t=S_t-1+φ(k_t)v_t^T"), "outer-product update", P.cache, P.cacheSoft, 5);
+    b += box(636, 300, 150, 82, M("z_t=z_{t-1}+\\phi(k_t)", "z_t=z_t-1+φ(k_t)"), "normalizer update", P.cache, P.cacheSoft, 5);
+    b += box(844, 126, 218, 74, M("\\phi(q_t)^{\\mathsf T}S_t", "φ(q_t)^T S_t"), "numerator", P.hybrid, P.hybridSoft, 6);
+    b += box(844, 256, 218, 74, M("\\phi(q_t)^{\\mathsf T}z_t+\\varepsilon", "φ(q_t)^T z_t + ε"), "denominator", P.hybrid, P.hybridSoft, 6);
+    b += box(844, 384, 218, 66, M("\\operatorname{normalize}\\to W_O", "normalize → WO"), M("y_t+\\text{residual}", "y_t + residual"), P.linear, P.linearSoft, 7);
+    b += box(844, 488, 218, 54, "Output hidden", M("[B,1,d]", "[B,1,d]"), P.ink, P.paper, 8);
     b += edge(id, "M144 288C160 288 160 109 176 109");
     b += edge(id, "M144 288H176");
     b += edge(id, "M144 288C160 288 160 449 176 449");
@@ -479,7 +471,8 @@
     b += edge(id, "M953 200V256");
     b += edge(id, "M953 330V384");
     b += edge(id, "M953 450V488");
-    b += '<text x="520" y="524" font-size="10" fill="' + P.muted + '">TRAIN: chunk / prefix-scan parallelization</text><text x="520" y="544" font-size="10" fill="' + P.cache + '">DECODE: recurrent S,z only · constant state</text>';
+    b += textLabel(670, 524, "TRAIN: chunk / prefix-scan parallelization", 10, P.muted, 500);
+    b += mathLabel(670, 544, 360, 22, M("\\text{DECODE: recurrent }S,z\\text{ only}\\;\\cdot\\;\\text{constant state}", "DECODE: recurrent S,z only · constant state"), 10, P.cache, 500);
     return baseSvg(id, 600, b, "Kernelized Linear Attention 完整投影、状态更新与归一化 block");
   }
 
@@ -490,20 +483,20 @@
     b += zone(366, 54, 374, 540, "2 · PREDICT, ERASE & REWRITE", P.cache);
     b += zone(758, 54, 324, 540, "3 · READOUT", P.hybrid);
 
-    b += box(38, 480, 116, 58, "Input xₜ", "[B,1,d]", P.ink, P.paper, 1);
-    b += box(176, 470, 152, 78, "Parallel projections", "WQ/WK/WV/Wα/Wβ/Wg", P.linear, P.linearSoft, 2);
-    b += box(58, 330, 124, 72, "q/k paths", "ShortConv→SiLU→L2Norm", P.linear, P.paper, 3);
-    b += box(204, 330, 124, 72, "v and β paths", "ShortConv→SiLU / sigmoid", P.linear, P.paper, 3);
-    b += box(58, 186, 124, 82, "GDN scalar α", "Wα→log-decay · DeltaNet=1", P.hybrid, P.hybridSoft, 4);
-    b += box(204, 186, 124, 82, "output gate g", "Wg→SiLU · GDN profile", P.hybrid, P.hybridSoft, 4);
+    b += box(38, 480, 116, 58, M("\\text{Input }x_t", "Input x_t"), M("[B,1,d]", "[B,1,d]"), P.ink, P.paper, 1);
+    b += box(176, 470, 152, 78, "Parallel projections", M("W_Q/W_K/W_V/W_\\alpha/W_\\beta/W_g", "WQ/WK/WV/Wα/Wβ/Wg"), P.linear, P.linearSoft, 2);
+    b += box(58, 330, 124, 72, M("q/k\\;\\text{paths}", "q/k paths"), M("\\operatorname{ShortConv}\\to\\operatorname{SiLU}\\to\\operatorname{L2Norm}", "ShortConv→SiLU→L2Norm"), P.linear, P.paper, 3);
+    b += box(204, 330, 124, 72, M("v,\\beta\\;\\text{paths}", "v and β paths"), M("\\operatorname{ShortConv}\\to\\operatorname{SiLU}/\\sigma", "ShortConv→SiLU / sigmoid"), P.linear, P.paper, 3);
+    b += box(58, 186, 124, 82, M("\\text{GDN scalar }\\alpha_t", "GDN scalar α"), M("W_\\alpha\\to\\log\\text{-decay}", "Wα→log-decay · DeltaNet=1"), P.hybrid, P.hybridSoft, 4);
+    b += box(204, 186, 124, 82, M("\\text{output gate }g_t", "output gate g"), M("W_g\\to\\operatorname{SiLU}", "Wg→SiLU · GDN profile"), P.hybrid, P.hybridSoft, 4);
 
-    b += cacheBox(id, 482, 96, 142, 76, "Sₜ₋₁", "[B,H,dk,dv]", 5);
-    b += box(398, 236, 310, 118, "Sₜ = αSₜ₋₁ + βk(v−(αSₜ₋₁)ᵀk)ᵀ", "decay → predict old value → error-controlled rewrite", P.cache, P.cacheSoft, 6);
-    b += cacheBox(id, 482, 442, 142, 76, "Sₜ", "fixed recurrent state", 7);
+    b += cacheBox(id, 482, 96, 142, 76, M("S_{t-1}", "S_t-1"), M("[B,H,d_k,d_v]", "[B,H,dk,dv]"), 5);
+    b += box(398, 236, 310, 118, M("S_t=\\alpha_tS_{t-1}+\\beta_tk_t\\!\\left(v_t-(\\alpha_tS_{t-1})^{\\mathsf T}k_t\\right)^{\\mathsf T}", "S_t = αS_t-1 + βk(v-(αS_t-1)^T k)^T"), "decay → predict old value → error-controlled rewrite", P.cache, P.cacheSoft, 6);
+    b += cacheBox(id, 482, 442, 142, 76, M("S_t", "S_t"), "fixed recurrent state", 7);
 
-    b += box(788, 112, 264, 72, "oₜ = Sₜᵀ(qₜ/√dk)", "query-dependent state read", P.hybrid, P.hybridSoft, 8);
-    b += box(788, 236, 264, 72, "RMSNorm(oₜ) × SiLU(g)", "Gated DeltaNet output gate", P.hybrid, P.paper, 9);
-    b += box(788, 360, 264, 64, "WO + residual", "attention-block output", P.ink, P.paper, 10);
+    b += box(788, 112, 264, 72, M("o_t=S_t^{\\mathsf T}(q_t/\\sqrt{d_k})", "o_t = S_t^T(q_t/√dk)"), "query-dependent state read", P.hybrid, P.hybridSoft, 8);
+    b += box(788, 236, 264, 72, M("\\operatorname{RMSNorm}(o_t)\\times\\operatorname{SiLU}(g_t)", "RMSNorm(o_t) × SiLU(g)"), "Gated DeltaNet output gate", P.hybrid, P.paper, 9);
+    b += box(788, 360, 264, 64, M("W_O+\\text{residual}", "WO + residual"), "attention-block output", P.ink, P.paper, 10);
     b += box(788, 488, 264, 66, "TRAIN: decay-aware UT / WY", "chunk boundary state + intra-chunk parallel read", P.linear, P.linearSoft);
 
     b += edge(id, "M154 509H176");
@@ -512,9 +505,9 @@
     b += edge(id, "M252 470C220 390 152 304 120 268");
     b += edge(id, "M252 470C300 390 290 304 266 268");
     b += edge(id, "M553 172V236");
-    b += edge(id, "M182 366C300 366 340 300 398 300", [286, 356, "q,k"]);
-    b += edge(id, "M328 366C360 350 380 322 398 312", [354, 340, "v,β"]);
-    b += edge(id, "M182 227C300 190 350 246 398 270", [300, 194, "α"]);
+    b += edge(id, "M182 366C300 366 340 300 398 300", [286, 356, M("q_t,k_t", "q,k")]);
+    b += edge(id, "M328 366C360 350 380 322 398 312", [354, 340, M("v_t,\\beta_t", "v,β")]);
+    b += edge(id, "M182 227C300 190 350 246 398 270", [300, 194, M("\\alpha_t", "α")]);
     b += edge(id, "M553 354V442");
     b += edge(id, "M624 480C720 480 730 148 788 148");
     b += edge(id, "M920 184V236");
@@ -530,20 +523,20 @@
     b += zone(366, 54, 374, 540, "2 · UPDATE CHANNEL-WISE STATE", P.cache);
     b += zone(758, 54, 324, 540, "3 · READ & PLACE IN HYBRID STACK", P.hybrid);
 
-    b += box(38, 480, 116, 58, "Input xₜ", "[B,1,d]", P.ink, P.paper, 1);
-    b += box(176, 470, 152, 78, "Parallel projections", "WQ/WK/WV/Wα/Wβ/Wg", P.linear, P.linearSoft, 2);
-    b += box(58, 330, 124, 72, "q/k paths", "ShortConv→SiLU→L2Norm", P.linear, P.paper, 3);
-    b += box(204, 330, 124, 72, "v and β paths", "ShortConv→SiLU / sigmoid", P.linear, P.paper, 3);
-    b += box(58, 186, 124, 82, "channel α", "W↓α→W↑α→log-decay", P.hybrid, P.hybridSoft, 4);
-    b += box(204, 186, 124, 82, "output gate g", "W↓g→W↑g→sigmoid", P.hybrid, P.hybridSoft, 4);
+    b += box(38, 480, 116, 58, M("\\text{Input }x_t", "Input x_t"), M("[B,1,d]", "[B,1,d]"), P.ink, P.paper, 1);
+    b += box(176, 470, 152, 78, "Parallel projections", M("W_Q/W_K/W_V/W_\\alpha/W_\\beta/W_g", "WQ/WK/WV/Wα/Wβ/Wg"), P.linear, P.linearSoft, 2);
+    b += box(58, 330, 124, 72, M("q/k\\;\\text{paths}", "q/k paths"), M("\\operatorname{ShortConv}\\to\\operatorname{SiLU}\\to\\operatorname{L2Norm}", "ShortConv→SiLU→L2Norm"), P.linear, P.paper, 3);
+    b += box(204, 330, 124, 72, M("v,\\beta\\;\\text{paths}", "v and β paths"), M("\\operatorname{ShortConv}\\to\\operatorname{SiLU}/\\sigma", "ShortConv→SiLU / sigmoid"), P.linear, P.paper, 3);
+    b += box(58, 186, 124, 82, M("\\text{channel }\\alpha_t", "channel α"), M("W_\\alpha^\\downarrow\\to W_\\alpha^\\uparrow\\to\\log\\text{-decay}", "W↓α→W↑α→log-decay"), P.hybrid, P.hybridSoft, 4);
+    b += box(204, 186, 124, 82, M("\\text{output gate }g_t", "output gate g"), M("W_g^\\downarrow\\to W_g^\\uparrow\\to\\sigma", "W↓g→W↑g→sigmoid"), P.hybrid, P.hybridSoft, 4);
 
-    b += cacheBox(id, 482, 96, 142, 76, "Sₜ₋₁", "[B,H,dk,dv]", 5);
-    b += box(398, 236, 310, 118, "(I−βkkᵀ)Diag(α)Sₜ₋₁ + βkvᵀ", "channel decay → directional erase → delta write", P.cache, P.cacheSoft, 6);
-    b += cacheBox(id, 482, 442, 142, 76, "Sₜ", "fixed recurrent state", 7);
+    b += cacheBox(id, 482, 96, 142, 76, M("S_{t-1}", "S_t-1"), M("[B,H,d_k,d_v]", "[B,H,dk,dv]"), 5);
+    b += box(398, 236, 310, 118, M("(I-\\beta_tk_tk_t^{\\mathsf T})\\operatorname{Diag}(\\alpha_t)S_{t-1}+\\beta_tk_tv_t^{\\mathsf T}", "(I-βkk^T)Diag(α)S_t-1 + βkv^T"), "channel decay → directional erase → delta write", P.cache, P.cacheSoft, 6);
+    b += cacheBox(id, 482, 442, 142, 76, M("S_t", "S_t"), "fixed recurrent state", 7);
 
-    b += box(788, 112, 264, 72, "oₜ = Sₜᵀ(qₜ/√dk)", "query-dependent state read", P.hybrid, P.hybridSoft, 8);
-    b += box(788, 236, 264, 72, "RMSNorm(oₜ) × sigmoid(g)", "low-rank output gate", P.hybrid, P.paper, 9);
-    b += box(788, 360, 264, 64, "WO + residual", "KDA block output", P.ink, P.paper, 10);
+    b += box(788, 112, 264, 72, M("o_t=S_t^{\\mathsf T}(q_t/\\sqrt{d_k})", "o_t = S_t^T(q_t/√dk)"), "query-dependent state read", P.hybrid, P.hybridSoft, 8);
+    b += box(788, 236, 264, 72, M("\\operatorname{RMSNorm}(o_t)\\times\\sigma(g_t)", "RMSNorm(o_t) × sigmoid(g)"), "low-rank output gate", P.hybrid, P.paper, 9);
+    b += box(788, 360, 264, 64, M("W_O+\\text{residual}", "WO + residual"), "KDA block output", P.ink, P.paper, 10);
     b += box(788, 488, 56, 66, "KDA", "L1", P.linear, P.linearSoft);
     b += box(852, 488, 56, 66, "KDA", "L2", P.linear, P.linearSoft);
     b += box(916, 488, 56, 66, "KDA", "L3", P.linear, P.linearSoft);
@@ -555,15 +548,15 @@
     b += edge(id, "M252 470C220 390 152 304 120 268");
     b += edge(id, "M252 470C300 390 290 304 266 268");
     b += edge(id, "M553 172V236");
-    b += edge(id, "M182 366C300 366 340 300 398 300", [286, 356, "q,k"]);
-    b += edge(id, "M328 366C360 350 380 322 398 312", [354, 340, "v,β"]);
-    b += edge(id, "M182 227C300 190 350 246 398 270", [300, 194, "α"]);
+    b += edge(id, "M182 366C300 366 340 300 398 300", [286, 356, M("q_t,k_t", "q,k")]);
+    b += edge(id, "M328 366C360 350 380 322 398 312", [354, 340, M("v_t,\\beta_t", "v,β")]);
+    b += edge(id, "M182 227C300 190 350 246 398 270", [300, 194, M("\\alpha_t", "α")]);
     b += edge(id, "M553 354V442");
     b += edge(id, "M624 480C720 480 730 148 788 148");
     b += edge(id, "M920 184V236");
     b += edge(id, "M920 308V360");
     b += edge(id, "M920 424V488");
-    b += '<text x="788" y="468" font-size="10" font-weight="600" fill="' + P.hybrid + '">KIMI LINEAR · KDA → KDA → KDA → MLA(NoPE)</text>';
+    b += mathLabel(920, 466, 280, 24, M("\\text{KIMI LINEAR}\\;\\cdot\\;\\mathrm{KDA}\\to\\mathrm{KDA}\\to\\mathrm{KDA}\\to\\mathrm{MLA(NoPE)}", "KIMI LINEAR · KDA → KDA → KDA → MLA(NoPE)"), 10, P.hybrid, 600);
     return baseSvg(id, 630, b, "KDA 参数生成、通道级 DPLR 更新、输出门与 3:1 层栈");
   }
 
