@@ -521,8 +521,18 @@ button { font: inherit; }
   border-radius: 16px;
   background: var(--paper-2);
 }
-.diagram svg { display: block; width: 100%; height: auto; }
+.diagram > svg,
+.diagram-canvas > svg { display: block; width: 100%; height: auto; }
 .diagram text { font-family: "JetBrains Mono"; }
+
+/* KaTeX draws radicals/wide accents with tiny inner SVGs; keep site-wide
+   diagram sizing rules away from them so the glyph tails stay clipped. */
+.svg-math-label svg {
+  display: inline;
+  width: auto;
+  height: inherit;
+  min-width: 0;
+}
 .figcaption { margin: 0 0 34px; color: var(--muted); text-align: center; font: italic 13px/1.5 var(--serif); }
 .report-figure {
   width: min(1440px, calc(100vw - 48px));
@@ -591,7 +601,7 @@ button { font: inherit; }
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
-.diagram-canvas svg {
+.diagram-canvas > svg {
   min-width: 980px;
   padding: 0;
 }
@@ -669,7 +679,7 @@ body.diagram-is-open { overflow: hidden; }
   background: var(--paper);
   box-shadow: 0 0 0 100vmax rgb(48 54 58 / 58%);
 }
-.report-figure.is-expanded .diagram-canvas svg { min-width: 1240px; }
+.report-figure.is-expanded .diagram-canvas > svg { min-width: 1240px; }
 .report-figure.is-expanded .diagram-guide {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   padding-bottom: 20px;
@@ -881,13 +891,15 @@ body.diagram-is-open { overflow: hidden; }
 .code-full-source[open] > summary,
 .implementation-source[open] > summary { color: var(--green-ink); }
 
-/* Integrated architecture / implementation workbench */
+/* Integrated architecture / implementation workbench.
+   Stacked (diagram above full-width IDE) by default; side-by-side only when
+   the viewport is wide enough for a readable diagram (>=1500px, screen). */
 .architecture-workbench {
   width: min(1440px, calc(100vw - 48px));
   margin: 30px 0 34px 50%;
   transform: translateX(-50%);
   display: grid;
-  grid-template-columns: minmax(0, 1.12fr) minmax(500px, .88fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
   font-family: var(--sans);
@@ -933,8 +945,21 @@ body.diagram-is-open { overflow: hidden; }
   scrollbar-color: #aeb7b9 transparent;
   scrollbar-width: thin;
 }
-.architecture-pane .diagram-canvas svg {
-  min-width: 720px;
+.architecture-pane .diagram-canvas > svg {
+  min-width: 820px;
+}
+/* Stacked mode: the IDE spans full width, so give the editor more height. */
+.architecture-workbench .code-ide__editor {
+  height: clamp(420px, 48vh, 480px);
+}
+@media screen and (min-width: 1500px) {
+  .architecture-workbench {
+    /* Diagram column gets >=840px of the 1440px workbench at 1500px+. */
+    grid-template-columns: minmax(840px, 1.18fr) minmax(460px, .82fr);
+  }
+  .architecture-workbench .code-ide__editor {
+    height: clamp(300px, 32vh, 500px);
+  }
 }
 
 .code-ide {
@@ -1563,15 +1588,6 @@ details p { margin-bottom: 0; }
   text-transform: uppercase;
 }
 
-@media (max-width: 1180px) {
-  .architecture-workbench {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .architecture-pane .diagram-canvas svg {
-    min-width: 820px;
-  }
-}
-
 @media (max-width: 900px) {
   .hero { min-height: auto; grid-template-columns: 1fr; }
   .hero-map { max-width: 560px; }
@@ -1638,7 +1654,7 @@ details p { margin-bottom: 0; }
   .report-figure.is-expanded .diagram-guide { grid-template-columns: 1fr; }
   .architecture-pane,
   .code-ide { border-radius: 12px; }
-  .architecture-pane .diagram-canvas svg { min-width: 720px; }
+  .architecture-pane .diagram-canvas > svg { min-width: 720px; }
   .code-ide__titlebar {
     gap: 9px;
     padding: 0 10px;
@@ -1658,8 +1674,9 @@ details p { margin-bottom: 0; }
   .code-ide__button {
     flex: 0 0 auto;
   }
-  .code-ide__editor {
-    height: 400px;
+  .code-ide__editor,
+  .architecture-workbench .code-ide__editor {
+    height: 420px;
   }
   pre[data-code-block],
   pre:has(> code[data-code-block]),
@@ -1717,7 +1734,7 @@ details p { margin-bottom: 0; }
     border-radius: 0;
     box-shadow: none;
   }
-  .architecture-pane .diagram-canvas svg { min-width: 0; }
+  .architecture-pane .diagram-canvas > svg { min-width: 0; }
   .code-ide {
     color: #222;
     background: white;
@@ -1725,7 +1742,8 @@ details p { margin-bottom: 0; }
   }
   .code-ide__titlebar,
   .code-ide__toolbar { display: none !important; }
-  .code-ide__editor {
+  .code-ide__editor,
+  .architecture-workbench .code-ide__editor {
     height: auto;
     overflow: visible;
     color: #222;
@@ -1750,7 +1768,7 @@ details p { margin-bottom: 0; }
     filter: none;
   }
   .diagram-canvas { overflow: visible; }
-  .diagram-canvas svg { min-width: 0; }
+  .diagram-canvas > svg { min-width: 0; }
   .position-steps,
   .position-step-grid,
   .position-grid { grid-template-columns: repeat(3, 1fr); }

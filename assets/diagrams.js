@@ -25,68 +25,87 @@
 
   var guides = {
     mha: [
-      ["原论文入口", "词嵌入先乘模型维度平方根，再加固定正弦位置编码；Q/K/V 投影发生在其后。"],
-      ["完整子层", "缩放点积可选 decoder causal mask，多头拼接与输出投影之后才做 residual Add & Norm。"],
-      ["现代缓存只是叠加层", "2017 训练图没有 KV cache；玫瑰色框与带标签虚线只说明现代增量解码。"],
-      ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；青色是公式注释，橙色是论文边界。"]
+      ["原论文入口", "词嵌入先乘 sqrt(d_model)，再加固定正弦位置编码；Q/K/V 投影发生在其后。"],
+      ["独立多头投影", "每个头有独立 W_h^Q / W_h^K / W_h^V，Hkv = Hq = H，三路形状均为 [B,H,L,dh]。"],
+      ["精确注意力", "S_h = Q_h K_h^T / sqrt(dh) + M；causal mask 只出现在 decoder，encoder 自注意力省略 M；softmax 后精确乘 V_h。"],
+      ["写回与残差", "Concat(O_h) W^O 之后才做 Add & Norm；这是 2017 的 post-LN 顺序，残差取自 Q/K/V 投影之前的 X。"],
+      ["现代缓存只是叠加层", "2017 训练图没有 KV cache；虚线玫瑰框表示现代增量解码把 K_{1:t} / V_{1:t} 追加进缓存，softmax 本身不变。"],
+      ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；虚线只表示可选或现代叠加路径。"]
     ],
     mqa: [
-      ["论文剖面", "Shazeer 基线使用 learned input positions；MQA 的创新是保留多 Q，只写一套共享 K/V。"],
-      ["广播不是复制", "绿色路由表示 Hq 个 query 逻辑读取同一 K/V；高效实现不 materialize repeat。"],
-      ["缓存收益", "玫瑰色历史状态形状为两份 [B,1,L,dh]，softmax 本身仍然精确。"],
-      ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；青/橙分别标注公式与年代边界。"]
+      ["论文剖面", "Shazeer 2019 基线使用 learned input positions；MQA 的创新只是共享一套 K/V，不是新的位置编码。"],
+      ["多 Q 单 KV", "保留 Hq 个独立 query 头 [B,Hq,L,dh]；K/V 只有一份，形状 2 × [B,1,L,dh]。"],
+      ["广播不是复制", "绿色 broadcast 框表示 Hq 个头 stride-0 逻辑读取同一份 K/V；高效实现不 materialize repeat。"],
+      ["精确 softmax", "S_h = Q_h K^T / sqrt(dh) + M 逐头计算；共享 K/V 只减少搬运，不引入任何近似。"],
+      ["缓存收益", "玫瑰色缓存只有两份 [B,1,L,dh]；解码时历史搬运量随 Hkv=1 大幅下降。"],
+      ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；橙色标注论文年代边界。"]
     ],
     gqa: [
-      ["T5 论文剖面", "原 GQA uptraining 继承 T5 的按 query head 相对位置偏置，而不是现代 Llama RoPE。"],
-      ["显式组映射", "g(h)=floor(h/r)，r=Hq/Hkv；每个 Q 头只读取所属组的 K/V。"],
-      ["Uptraining", "虚线训练 inset 表示组内 K/V 权重均值池化初始化，再继续训练；它不是推理路径。"],
+      ["T5 论文剖面", "原 GQA uptraining 继承 T5 的按 query head 相对位置偏置 b_{h,bucket(t-s)}，而不是现代 Llama RoPE。"],
+      ["显式组映射", "r = Hq / Hkv，g(h) = floor(h/r)；每个 Q 头只逻辑读取所属组的 K/V，不做物理 repeat。"],
+      ["分组打分与读取", "S_h = Q_h K_{g(h)}^T / sqrt(dh) + b_h + M；softmax 后乘 V_{g(h)}，每个 query 头一份输出。"],
+      ["缓存形状", "分组缓存为 2 × [B,Hkv,L,dh]，容量介于 MHA 与 MQA 之间。"],
+      ["Uptraining 配方", "组内 K/V 权重均值池化初始化，再继续约 5% 预训练；虚线 inset 只属训练，不是推理路径。"],
       ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；虚线只表示训练或可选路径。"]
     ],
     mla: [
-      ["Decode 主路径", "缓存只含 cKV 与 kR；内容分数把 WUK 吸收到 query 侧，value 混合把 WUV 吸收到输出侧。"],
-      ["正确缩放", "即使内容 query 被吸收到 dc 维，注意力仍按原始完整 head 宽度 sqrt(dh+dhR) 缩放。"],
-      ["重建仅为等价解释", "虚线 inset 中的 kC/v 是训练或概念重建，不是 decode 主路径，也不是缓存内容。"],
-      ["归一化边界", "图把原始下投影 latent 与 checkpoint 可选 RMSNorm 分开，避免把实现配方写成 MLA 定义。"],
-      ["视觉语义", "玫瑰=持久状态，蓝=投影/attention，绿=可选控制，薰衣草=latent gather/write；青/橙为注释。"]
+      ["Decode 主路径", "缓存只含 c^KV 与 k^R；图中主干就是吸收式解码，历史 k^C / v 从不显式重建。"],
+      ["两次下投影", "c^Q = W^DQ h_t 与 c^KV = W^DKV h_t；解耦 RoPE 键 k^R = RoPE(W^KR h_t) 直接来自 h_t，是全头共享的位置切片。"],
+      ["吸收技巧", "内容分数把 W^UK 吸收到 query 侧：q~_i = (W_i^UK)^T q_i^C；输出侧把 W^UV 吸收进写回，一次投影完成。"],
+      ["正确缩放", "即使内容 query 落在 dc 维 latent 空间，分数仍按完整 head 宽度 sqrt(dh + dh^R) 缩放。"],
+      ["可选 RMSNorm", "DeepSeek 检查点会对 c^Q / c^KV 加 RMSNorm；那是实现配方而非 MLA 定义，图中保持原始下投影、此处说明。"],
+      ["重建仅为等价解释", "虚线橙框 k^C = W^UK c、v = W^UV c 是训练/概念等价视角，不是 decode 路径，也不进缓存。"],
+      ["视觉语义", "玫瑰=持久 latent 缓存，蓝=投影/attention，薰衣草=聚合/写回；橙色虚线=明确可选的概念视角。"]
     ],
     dsa: [
       ["两条清晰车道", "上方 Indexer 生成 qI、kI、wI、全历史 logits 与 TopK；下方从 MLA latent cache gather 后运行候选 MLA。"],
       ["低精度对称路径", "qI 与 kI 都经过 partial RoPE、Hadamard 与 FP8；Hadamard 服务数值范围，不是位置编码。"],
       ["没有固定局部窗", "DSA 原型由内容 TopK 选择候选；图中不添加 local-window 捷径。"],
+      ["候选内精确注意力", "gather 出的原始 c^KV / k^R 交给高维 MLA query；softmax 只在选中集合内重新归一化，随后 W^O 写回残差。"],
       ["训练监督", "teacher full logits 与 KL 仅通过带标签虚线连接，detach 后不属于推理图。"],
       ["视觉语义", "绿=TopK/路由，玫瑰=历史 cache，薰衣草=Gather；青/橙为精度和训练注释。"]
     ],
     csa: [
-      ["双压缩器、双缓存", "core compressor 产生 CComp；独立 index compressor 产生 KIComp，二者参数和缓存职责不能合并。"],
-      ["地址到内容", "KIComp 只负责打分与 TopK；索引垂直下传给 Gather，从 CComp cache 取候选。"],
-      ["三路进入同一核心", "选中全局摘要、独立 SWA lane 与 query lane 汇入一次 shared-KV MQA + sink normalization。"],
-      ["输出坐标", "partial-RoPE value 混合后先 inverse RoPE，再按组 WOA→concat→WOB。"],
+      ["双压缩器、双缓存", "core compressor 产生 CComp；独立 index compressor 产生 KIComp（theta_I ≠ theta_C），参数与缓存职责不能合并。"],
+      ["重叠压缩内部", "两路 a/b 投影对 2m 重叠窗口做 per-channel softmax 加权求和，得到一个压缩条目。"],
+      ["地址到内容", "KIComp 只负责打分与 TopK（V4-Flash / Pro 配置）；地址下传给 Gather，从 CComp cache 取候选内容。"],
+      ["三路进入同一核心", "选中全局摘要、独立 SWA lane 与 query lane 汇入一次 shared-KV MQA；sink、global、SWA 在同一个 softmax 中归一化。"],
+      ["输出坐标", "partial-RoPE 值混合后先 inverse RoPE(-t) 回到 query 坐标，再按组 W^OA → Concat → W^OB 写回残差。"],
       ["视觉语义", "蓝=计算，绿=选择，玫瑰=两类 cache，薰衣草=Gather/写回；青/橙为位置与因果注释。"]
     ],
     hca: [
-      ["只压缩、不索引", "非重叠 compressor 只发布已完成块到 CComp cache；HCA 没有 indexer 或 TopK。"],
-      ["Dense 读取短历史", "全部 completed CComp、独立 SWA lane 与 query lane 进入 shared-KV dense MQA + sink。"],
-      ["位置与输出", "压缩和局部 entry 使用 partial RoPE；输出 inverse RoPE 后按组写回。"],
+      ["只压缩、不索引", "非重叠重压缩器（m'=128）只发布已完成块到 CComp cache；HCA 没有 indexer 或 TopK。"],
+      ["压缩器内部", "块内 per-channel softmax(Z+B) ⊙ C 加权求和，把 128 个位置压成一个摘要条目。"],
+      ["因果发布门", "绿色 gate 保证只有 m'(i+1) ≤ t 的已关闭块可见，避免泄露未来信息。"],
+      ["Dense 读取短历史", "全部 completed CComp、独立 SWA lane 与 query lane 进入 shared-KV dense MQA；sink、all-CComp、SWA 一次归一化。"],
+      ["位置与输出", "压缩与局部 entry 使用 partial RoPE；输出先 inverse RoPE(-t)，再按组 W^OA → Concat → W^OB 写回。"],
       ["视觉语义", "蓝=计算，绿=因果完成控制，玫瑰=cache，薰衣草=汇合/写回；青/橙为位置和边界注释。"]
     ],
     linear: [
-      ["原始特征映射", "2020 Linear Transformer 使用 phi(x)=ELU(x)+1，使核可结合且非负。"],
-      ["两份固定状态", "S 累积 phi(k)v^T，z 累积 phi(k)；query 分别读取分子和分母。"],
-      ["训练表述保持克制", "原论文给出因果递推及自定义 GPU 实现；图不把后来的并行 scan/chunk kernel 冒充官方实现。"],
-      ["视觉语义", "蓝=投影/读取，玫瑰=递推状态，薰衣草=归一化写回；橙色注释标明执行边界。"]
+      ["原始特征映射", "2020 Linear Transformer 使用 phi(x) = ELU(x) + 1，使核可结合且非负；phi 同时作用在 q 与 k。"],
+      ["一个循环单元", "按原论文的 RNN 视角，整个历史折进固定大小状态：S 累积 phi(k) v^T（r×dv），z 累积 phi(k)（r 维）。"],
+      ["单一反馈环", "右侧自环表示 S_{t-1} / z_{t-1} 进入下一步；解码状态大小与序列长度无关。"],
+      ["读取即归一化", "y_t = phi(q)^T S_t / (phi(q)^T z_t + eps)：分子读值、分母归一化，再经 W^O 写回残差。"],
+      ["训练表述保持克制", "原论文给出因果递推及自定义 CUDA 实现；图不把后来的并行 scan / chunk kernel 冒充官方实现。"],
+      ["视觉语义", "蓝=投影/读取，玫瑰=递推状态单元与反馈环，薰衣草=归一化写回；橙色注释标明执行边界。"]
     ],
     delta: [
-      ["参数路径必须分开", "只有 q/k/v 经过 causal ShortConv；alpha、beta、output gate g 直接由当前 hidden 投影。"],
-      ["转置状态约定", "图用 F=S^T，形状 dv×dk；因此预测和读取写成 Fk、Fq。"],
-      ["五步更新", "先 decay，再 predict，再形成 error，再 rank-1 write，最后用 q read；顺序决定语义。"],
-      ["视觉语义", "蓝=特征计算，绿=gate/control，玫瑰=F 状态，薰衣草=write/read；虚线只标训练执行。"]
+      ["参数路径必须分开", "只有 q/k/v 经过 causal ShortConv（q/k 再 SiLU + L2Norm，v 只 SiLU）；alpha、beta、output gate g 直接由当前 hidden 投影。"],
+      ["转置状态约定", "图用 F = S^T，形状 dv×dk；因此预测和读取写成 Fk、Fq。"],
+      ["单一更新方程", "F_t = alpha_t F_{t-1}(I - beta_t k_t k_t^T) + beta_t v_t k_t^T：先 decay 再 delta 纠写，与论文块图一致。"],
+      ["五步展开", "等价展开为 decay → predict → error → write → read：e_t = v_t - (alpha_t F_{t-1}) k_t，误差基于衰减后的状态，顺序决定语义。"],
+      ["读取与门控", "o_t = F_t (q_t / sqrt(dk))；输出 W_O [RMSNorm(o_t) ⊙ SiLU(g_t)]，g 是 direct 投影门。"],
+      ["训练执行", "训练用 decay-aware chunkwise WY/UT 变换；解码只保留 F 和三份 ShortConv 状态。"],
+      ["视觉语义", "蓝=特征计算，绿=gate/control，玫瑰=F 状态单元与反馈环，薰衣草=读取/写回。"]
     ],
     kda: [
-      ["逐通道衰减", "alpha 是 dk 维 direct gate；在转置约定 F=S^T 下，decay 写成 F Diag(alpha)。"],
-      ["DPLR 次序不可交换", "列向量原式严格为 (I-beta kk^T)Diag(alpha)S + beta kv^T。"],
-      ["参数路径", "q/k/v 各走 ShortConv；alpha、beta、g 直接投影，避免把 gate 错接到卷积支路。"],
-      ["Checkpoint 尾部", "图按官方尾部写出六个 3:1 周期，再接 KDA×2→MLA-NoPE。"],
-      ["视觉语义", "蓝=计算，绿=逐通道控制，玫瑰=状态，薰衣草=写回/层栈；橙色标注精确层序。"]
+      ["逐通道衰减", "alpha 是 dk 维 direct 低秩门（W 降维 → SiLU → W 升维 → log-decay）；在 F = S^T 约定下 decay 写成 F·Diag(alpha)。"],
+      ["单一更新方程", "F_t = F_{t-1} Diag(alpha_t)(I - beta_t k_t k_t^T) + beta_t v_t k_t^T：通道 decay 在 rank-1 纠写之前。"],
+      ["DPLR 次序不可交换", "列向量原式严格为 S_t = (I - beta k k^T) Diag(alpha) S_{t-1} + beta k v^T；rank-1 因子作用在 decay 之后。"],
+      ["参数路径", "q/k/v 各走 causal ShortConv；alpha、beta、g 直接投影且不接卷积支路；g 为低秩、读出处用 sigmoid。"],
+      ["读取与门控", "o_t = F_t (q_t / sqrt(dk))；输出 W_O [RMSNorm(o_t) ⊙ sigma(g_t)] 写回残差。"],
+      ["Checkpoint 尾部", "官方层序为 (KDA×3 → MLA-NoPE)×6 → KDA×2 → MLA-NoPE；MLA 变体不带位置编码，逐层交错而非混头。"],
+      ["视觉语义", "蓝=计算，绿=逐通道控制，玫瑰=状态单元与反馈环，薰衣草=写回；橙色标注精确层序。"]
     ]
   };
 
@@ -98,8 +117,8 @@
     dsa: "DSA：低维 FP8 Indexer 选地址，Gather 再把原始 MLA latent 交给精确候选 attention。",
     csa: "CSA：KIComp 负责找地址，CComp 提供内容；再与 SWA 一起进入唯一的 MQA+sink 核心。",
     hca: "HCA：只缓存已完成的重压缩块，不做 TopK；全部摘要与 SWA 一起 dense 读取。",
-    linear: "Linear Transformer：ELU+1 把历史折进 S/z，query 用分子除以分母读取固定状态。",
-    delta: "GDN：q/k/v 走 ShortConv，direct gates 控制 F=S^T 的 decay→predict→error→write→read。",
+    linear: "Linear Transformer：ELU+1 把历史折进 S/z 循环单元，query 用分子除以分母读取固定状态。",
+    delta: "GDN：q/k/v 走 ShortConv，direct gates 控制单一循环单元 F_t=αF(I-βkkᵀ)+βvkᵀ，再 Fq 读出。",
     kda: "KDA：逐 key-channel decay 后做 delta 纠写，并按精确 checkpoint 尾部与 NoPE MLA 交错。"
   };
 
@@ -278,8 +297,16 @@
     );
   }
 
-  // Static SVG-coordinate guard: every connector is axis-aligned and may touch
-  // node boundaries only at its endpoints; no segment may traverse a node.
+  // Static SVG-coordinate guard:
+  //  1. every connector is axis-aligned and may touch node boundaries only at
+  //     its endpoints; no segment may traverse a node interior;
+  //  2. no two different edges may share a rail: collinear (or nearly
+  //     collinear, within RAIL_GAP px) parallel segments from different edges
+  //     must not overlap for more than OVERLAP_LIMIT px. The only exception is
+  //     shared source fan-out: the first segments of two edges that leave the
+  //     exact same start point may run together;
+  //  3. dashed edges must carry a label, and every data-code-block id must
+  //     exist in the chapter's implementation blocks.
   function validateStaticGeometry(svg, diagramKey) {
     function attributes(tag) {
       var result = {};
@@ -341,15 +368,54 @@
       });
     }
 
+    var edges = [];
     var edgeMatch;
     var edgePattern = /<path d="([^"]+)"[^>]*marker-end/g;
     while ((edgeMatch = edgePattern.exec(svg))) {
-      var d = edgeMatch[1];
-      var points = pathPoints(d);
-      for (var i = 1; i < points.length; i += 1) {
+      edges.push({ d: edgeMatch[1], points: pathPoints(edgeMatch[1]) });
+    }
+
+    edges.forEach(function (item) {
+      for (var i = 1; i < item.points.length; i += 1) {
         for (var j = 0; j < boxes.length; j += 1) {
-          if (crossesInterior(points[i - 1], points[i], boxes[j])) {
-            throw new Error(diagramKey + ": connector traverses node: " + d);
+          if (crossesInterior(item.points[i - 1], item.points[i], boxes[j])) {
+            throw new Error(diagramKey + ": connector traverses node: " + item.d);
+          }
+        }
+      }
+    });
+
+    // Collinear rail-overlap check between different edges.
+    var RAIL_GAP = 3.5;
+    var OVERLAP_LIMIT = 6;
+    function sharedSpan(a1, a2, b1, b2) {
+      return Math.min(Math.max(a1, a2), Math.max(b1, b2)) -
+        Math.max(Math.min(a1, a2), Math.min(b1, b2));
+    }
+    for (var ei = 0; ei < edges.length; ei += 1) {
+      for (var ej = ei + 1; ej < edges.length; ej += 1) {
+        var A = edges[ei].points;
+        var B = edges[ej].points;
+        var sharedSource = A[0].x === B[0].x && A[0].y === B[0].y;
+        for (var si = 1; si < A.length; si += 1) {
+          for (var sj = 1; sj < B.length; sj += 1) {
+            if (sharedSource && si === 1 && sj === 1) continue;
+            var a0 = A[si - 1];
+            var a1 = A[si];
+            var b0 = B[sj - 1];
+            var b1 = B[sj];
+            var overlap = -1;
+            if (a0.x === a1.x && b0.x === b1.x &&
+                Math.abs(a0.x - b0.x) <= RAIL_GAP) {
+              overlap = sharedSpan(a0.y, a1.y, b0.y, b1.y);
+            } else if (a0.y === a1.y && b0.y === b1.y &&
+                Math.abs(a0.y - b0.y) <= RAIL_GAP) {
+              overlap = sharedSpan(a0.x, a1.x, b0.x, b1.x);
+            }
+            if (overlap > OVERLAP_LIMIT) {
+              throw new Error(diagramKey + ": overlapping rails between edges: " +
+                edges[ei].d + " | " + edges[ej].d);
+            }
           }
         }
       }
@@ -381,254 +447,224 @@
 
   function mhaDiagram(rootId) {
     var b = "";
-    b += panel(24, 52, 526, 548, "2017 TRANSFORMER INPUT & MULTI-HEAD SUBLAYER", "compute");
-    b += panel(568, 52, 508, 548, "EXACT ATTENTION, WRITE-BACK & MODERN OVERLAY", "gather");
 
-    b += box(40, 254, 128, 72, M("E_{\\mathrm{token}}", "Token embedding"),
+    b += box(470, 84, 160, 60, M("E_{\\mathrm{token}}", "Token embedding"),
       M("[B,L,d_{\\mathrm{model}}]", "[B,L,dmodel]"), "compute", 1, "03");
-    b += box(202, 254, 154, 72, M("\\sqrt{d_{\\mathrm{model}}}\\,E", "Scale embedding"),
-      "2017 input scaling", "compute", 2, "03");
-    b += box(202, 104, 154, 72, M("\\operatorname{PE}_{\\sin/\\cos}(p)", "Sinusoidal PE"),
-      "fixed absolute position", "compute", 3, "01");
-    b += box(392, 226, 142, 92, M("X=\\sqrt d\\,E+\\operatorname{PE}", "Add position"),
-      "shared Q/K/V source", "gather", 4, "03");
+    b += box(470, 176, 160, 60, M("\\sqrt{d_{\\mathrm{model}}}\\,E", "Scale embedding"),
+      null, "compute", 2, "03");
+    b += box(240, 176, 170, 60, M("\\operatorname{PE}_{\\sin/\\cos}(p)", "Sinusoidal PE"),
+      null, "compute", 3, "01");
+    b += box(470, 268, 160, 64, M("X=\\sqrt d\\,E+\\operatorname{PE}", "X = scaled E + PE"),
+      null, "gather", 4, "03");
 
-    b += box(584, 92, 174, 66, M("Q_h=XW_h^Q", "Independent Q heads"),
+    b += box(250, 384, 180, 64, M("Q_h=XW_h^Q", "Q heads"),
       M("h=1,\\ldots,H", "h = 1…H"), "compute", null, "04");
-    b += box(584, 218, 174, 66, M("K_h=XW_h^K", "Independent K heads"),
-      M("H_{kv}=H_q=H", "Hkv = Hq = H"), "compute", null, "04");
-    b += box(584, 344, 174, 66, M("V_h=XW_h^V", "Independent V heads"),
-      "one value space / head", "compute", null, "04");
-    b += box(584, 476, 174, 66, M("M_{\\mathrm{causal}}", "Decoder causal mask"),
-      "optional · decoder only", "control", null, "06", { dashed: true });
+    b += box(470, 384, 160, 64, M("K_h=XW_h^K", "K heads"),
+      M("H_{kv}=H", "Hkv = H"), "compute", null, "04");
+    b += box(680, 384, 180, 64, M("V_h=XW_h^V", "V heads"),
+      M("[B,H,L,d_h]", "[B,H,L,dh]"), "compute", null, "04");
+    b += cacheBox(880, 384, 140, 64, "KV cache",
+      M("K_{1:t},V_{1:t}", "modern decode"), null, "05", { dashed: true, titleSize: 10.6 });
 
-    b += box(794, 92, 266, 92,
+    b += box(60, 500, 180, 68, M("M_{\\mathrm{causal}}", "Causal mask"),
+      "decoder only", "control", null, "06", { dashed: true });
+    b += box(400, 500, 300, 68,
       M("S_h=Q_hK_h^{\\mathsf T}/\\sqrt{d_h}+M", "Scaled dot-product scores"),
-      "M omitted in encoder self-attention", "compute", 5, "06");
-    b += box(794, 234, 266, 82,
+      null, "compute", 5, "06");
+    b += box(400, 610, 300, 64,
       M("O_h=\\operatorname{softmax}(S_h)V_h", "Exact softmax × V"),
-      "one output per head", "compute", 6, "06");
-    b += box(794, 362, 126, 72, M("\\operatorname{Concat}(O_h)W^O", "Concat → WO"),
-      M("Hd_h\\to d", "H·dh → d"), "gather", 7, "07", { titleSize: 10.6 });
-    b += box(934, 362, 126, 72, "Add & Norm",
+      null, "compute", 6, "06");
+    b += box(400, 716, 190, 60, M("\\operatorname{Concat}(O_h)W^O", "Concat → WO"),
+      null, "gather", 7, "07", { titleSize: 10.2 });
+    b += box(640, 716, 160, 60, "Add & Norm",
       "post-norm · 2017", "gather", 8, "07");
 
-    b += cacheBox(794, 490, 266, 70, "Modern decode KV cache",
-      M("K_{1:t},V_{1:t}\\;\\text{only}", "solid rose · K/V only"), null, "05", { dashed: true });
-
-    b += edge(rootId, ortho(168, 290, 202, 290), null, "compute");
-    b += edge(rootId, ortho(356, 290, 392, 272), null, "gather");
-    b += edge(rootId, ortho(279, 176, 463, 226, "y", 202), null, "compute");
-    b += edge(rootId, ortho(534, 272, 584, 125), null, "compute");
-    b += edge(rootId, ortho(534, 272, 584, 251), null, "compute");
-    b += edge(rootId, ortho(534, 272, 584, 377), null, "compute");
-    b += edge(rootId, ortho(758, 125, 794, 138), null, "compute");
-    b += edge(rootId, ortho(758, 251, 794, 138), null, "compute");
-    b += edge(rootId, ortho(671, 476, 794, 166, "x", 776),
-      [748, 462, "OPTIONAL · decoder mask", 176], "control", true);
-    b += edge(rootId, ortho(927, 184, 927, 234), null, "compute");
-    b += edge(rootId, ortho(758, 377, 794, 275), null, "compute");
-    b += edge(rootId, ortho(927, 316, 857, 362), null, "gather");
-    b += edge(rootId, ortho(920, 398, 934, 398), null, "gather");
-    b += edge(rootId, "M104 326V582H1070V398H1060",
-      [522, 584, "residual stream · right rail", 214], "gather");
-    b += edge(rootId, "M758 251H780V466H827V490",
-      [714, 448, "OPTIONAL · modern K append", 214], "state", true);
-    b += edge(rootId, ortho(671, 410, 1027, 490, "y", 466),
-      [886, 460, "OPTIONAL · modern V append", 214], "state", true);
-    return baseSvg(rootId, "mha", 630, b,
-      "2017 MHA with scaled embedding, sinusoidal positions, post Add and Norm, and optional modern cache overlay");
+    b += edge(rootId, ortho(550, 144, 550, 176), null, "compute");
+    b += edge(rootId, ortho(550, 236, 550, 268), null, "compute");
+    b += edge(rootId, "M410 206H440V300H470", null, "compute");
+    b += edge(rootId, "M510 332V358H340V384", null, "compute");
+    b += edge(rootId, ortho(550, 332, 550, 384), null, "compute");
+    b += edge(rootId, "M590 332V358H770V384", null, "compute");
+    b += edge(rootId, "M340 448V474H460V500", null, "compute");
+    b += edge(rootId, ortho(550, 448, 550, 500), null, "compute");
+    b += edge(rootId, ortho(240, 534, 400, 534),
+      [320, 552, "OPTIONAL · decoder mask", 150], "control", true);
+    b += edge(rootId, ortho(550, 568, 550, 610), null, "compute");
+    b += edge(rootId, "M770 448V642H700", null, "compute");
+    b += edge(rootId, ortho(495, 674, 495, 716), null, "gather");
+    b += edge(rootId, ortho(590, 746, 640, 746), null, "gather");
+    b += edge(rootId, "M630 300H1040V746H800",
+      [900, 286, "residual → Add & Norm", 190], "gather");
+    b += edge(rootId, ortho(860, 416, 880, 416),
+      [940, 366, "OPTIONAL · V append", 150], "state", true);
+    b += edge(rootId, "M610 448V470H950V448",
+      [780, 486, "OPTIONAL · K append", 150], "state", true);
+    return baseSvg(rootId, "mha", 810, b,
+      "2017 MHA with scaled embedding, sinusoidal positions, exact multi-head attention, post Add and Norm, and optional modern cache overlay");
   }
 
   function mqaDiagram(rootId) {
     var b = "";
-    b += panel(24, 54, 512, 510, "SHAZEER 2019 INPUT & ONE WRITE-HEAD", "compute");
-    b += panel(554, 54, 522, 510, "LOGICAL BROADCAST & EXACT MULTI-QUERY READ", "control");
 
-    b += box(40, 252, 126, 70, M("E_t", "Token embedding"),
+    b += box(470, 84, 160, 60, M("E_t", "Token embedding"),
       M("[B,L,d]", "[B,L,d]"), "compute", 1, "03");
-    b += box(196, 100, 184, 70, M("P_t^{\\mathrm{learned}}", "Learned input position"),
-      "paper baseline profile", "compute", 2, "04");
-    b += box(196, 252, 184, 70, M("X_t=E_t+P_t", "Add learned position"),
-      "before projections", "gather", 3, "03");
-    b += box(410, 102, 110, 80, M("Q_{1:H_q}", "Many Q heads"),
-      M("[B,H_q,L,d_h]", "[B,Hq,L,dh]"), "compute", null, "03");
-    b += box(410, 340, 110, 80, M("K,V", "One shared K/V"),
-      M("2\\times[B,1,L,d_h]", "2 × [B,1,L,dh]"), "compute", null, "03");
+    b += box(240, 176, 190, 60, M("P_t^{\\mathrm{learned}}", "Learned position"),
+      "2019 baseline PE", "compute", 2, "04");
+    b += box(470, 176, 160, 60, M("X_t=E_t+P_t", "Add position"),
+      null, "gather", 3, "03");
 
-    b += cacheBox(578, 340, 180, 80, "Shared KV cache",
-      M("H_{kv}=1", "Hkv = 1 · one write-head"), 4, "05");
-    b += box(578, 112, 180, 82, "Logical KV broadcast",
-      M("[B,1,L,d_h]\\rightsquigarrow H_q", "stride-0 read · no repeat"), "control", 5, "06");
-    b += box(806, 122, 246, 112,
+    b += box(240, 280, 190, 68, M("Q_{1:H_q}", "Many Q heads"),
+      M("[B,H_q,L,d_h]", "[B,Hq,L,dh]"), "compute", 4, "03");
+    b += box(620, 280, 190, 68, M("K,V", "One shared K/V"),
+      M("2\\times[B,1,L,d_h]", "2 × [B,1,L,dh]"), "compute", 5, "03");
+    b += cacheBox(620, 392, 190, 64, "Shared KV cache",
+      M("H_{kv}=1", "Hkv = 1"), 6, "05");
+    b += box(620, 500, 190, 64, "Logical broadcast",
+      "stride-0 · no repeat", "control", 7, "06");
+
+    b += box(240, 500, 300, 68,
       M("S_h=Q_hK^{\\mathsf T}/\\sqrt{d_h}+M", "Per-Q-head exact scores"),
-      M("h=1,\\ldots,H_q", "shared K · independent logits"), "compute", 6, "06");
-    b += box(806, 288, 246, 84,
+      null, "compute", 8, "06");
+    b += box(240, 612, 300, 64,
       M("O_h=\\operatorname{softmax}(S_h)V", "Softmax × shared V"),
-      "logical broadcast on V", "compute", 7, "06");
-    b += box(806, 430, 246, 72,
+      null, "compute", 9, "06");
+    b += box(240, 720, 300, 60,
       M("\\operatorname{Concat}(O_h)W^O", "Concat heads → WO"),
-      "residual-stream output", "gather", 8, "07");
-    b += box(578, 462, 180, 62, "2019 scope",
+      null, "gather", 10, "07");
+    b += box(760, 612, 260, 60, "2019 scope",
       "sharing change · not a new PE", "orange", null, "01");
 
-    b += edge(rootId, ortho(166, 287, 196, 287), null, "compute");
-    b += edge(rootId, ortho(288, 170, 288, 252), null, "compute");
-    b += edge(rootId, ortho(380, 287, 410, 142), null, "compute");
-    b += edge(rootId, ortho(380, 287, 410, 380), null, "compute");
-    b += edge(rootId, ortho(520, 142, 578, 153), null, "control");
-    b += edge(rootId, ortho(520, 380, 578, 380), null, "state");
-    b += edge(rootId, ortho(668, 340, 668, 194), null, "control");
-    b += edge(rootId, ortho(758, 153, 806, 178), null, "control");
-    b += edge(rootId, ortho(929, 234, 929, 288), null, "compute");
-    b += edge(rootId, ortho(758, 380, 806, 330), null, "state");
-    b += edge(rootId, ortho(929, 372, 929, 430), null, "gather");
-    b += edge(rootId, ortho(668, 420, 668, 462), null, "orange");
-    return baseSvg(rootId, "mqa", 592, b,
+    b += edge(rootId, ortho(550, 144, 550, 176), null, "compute");
+    b += edge(rootId, ortho(430, 206, 470, 206), null, "compute");
+    b += edge(rootId, "M510 236V254H335V280", null, "compute");
+    b += edge(rootId, "M590 236V254H715V280", null, "compute");
+    b += edge(rootId, ortho(335, 348, 335, 500), null, "compute");
+    b += edge(rootId, ortho(715, 348, 715, 392), null, "state");
+    b += edge(rootId, ortho(715, 456, 715, 500), null, "state");
+    b += edge(rootId, ortho(620, 532, 540, 532), null, "control");
+    b += edge(rootId, "M715 564V644H540", null, "control");
+    b += edge(rootId, ortho(390, 568, 390, 612), null, "compute");
+    b += edge(rootId, ortho(390, 676, 390, 720), null, "gather");
+    return baseSvg(rootId, "mqa", 810, b,
       "2019 MQA with learned input positions, many query heads, one shared KV head, and logical broadcasting");
   }
 
   function gqaDiagram(rootId) {
     var b = "";
-    b += panel(24, 52, 1052, 398, "GQA PAPER PROFILE · T5 RELATIVE BIAS & GROUPED KV", "compute");
-    b += panel(74, 492, 952, 164, "TRAINING ONLY · MHA CHECKPOINT TO GQA UPtraining", "orange", true);
+    b += panel(74, 500, 952, 150, "TRAINING ONLY · MHA → GQA UPTRAINING", "orange", true);
 
-    b += box(40, 202, 118, 70, M("X_t", "T5 hidden"),
+    b += box(40, 240, 130, 64, M("X_t", "T5 hidden"),
       M("[B,L,d]", "[B,L,d]"), "compute", 1, "03");
-    b += box(190, 88, 170, 72, M("Q_h=XW_h^Q", "Hq query heads"),
-      M("h=0,\\ldots,H_q-1", "query head h"), "compute", null, "03");
-    b += box(190, 304, 170, 72, M("K_g,V_g", "Hkv grouped K/V"),
-      M("g=0,\\ldots,H_{kv}-1", "group index g"), "compute", null, "03");
-    b += box(400, 174, 188, 86,
-      M("r=H_q/H_{kv},\\quad g(h)=\\lfloor h/r\\rfloor", "Map query head to KV group"),
-      "logical lookup · no repeat", "control", 2, "06", { titleSize: 10.4 });
-    b += box(400, 70, 188, 72,
-      M("b_{h,\\operatorname{bucket}(t-s)}", "T5 relative bias by head"),
-      "inherited from checkpoint", "compute", 3, "04");
-    b += cacheBox(400, 304, 188, 72, "Grouped KV cache",
-      M("2\\times[B,H_{kv},L,d_h]", "K_g and V_g"), 4, "05");
-    b += box(632, 94, 244, 106,
-      M("S_h=Q_hK_{g(h)}^{\\mathsf T}/\\sqrt{d_h}+B_h^{\\mathrm{T5}}+M",
-        "Grouped score + head-indexed T5 bias"),
-      "paper-faithful score", "compute", 5, "07", { titleSize: 9.6 });
-    b += box(632, 270, 244, 88,
-      M("O_h=\\operatorname{softmax}_s(S_h)V_{g(h)}", "Exact groupwise read"),
-      "one output / query head", "compute", 6, "07");
-    b += box(914, 176, 140, 96,
+    b += box(230, 100, 190, 68, M("Q_h=XW_h^Q", "Hq query heads"),
+      M("[B,H_q,L,d_h]", "[B,Hq,L,dh]"), "compute", 2, "03");
+    b += box(460, 100, 210, 68, "T5 relative bias",
+      M("b_{h,\\operatorname{bucket}(t-s)}", "by query head"), "compute", 3, "04");
+    b += box(460, 240, 210, 68, M("g(h)=\\lfloor h/r\\rfloor", "Head-to-group map"),
+      M("r=H_q/H_{kv}", "r = Hq / Hkv"), "control", 4, "06");
+    b += box(230, 380, 190, 68, M("K_g,V_g", "Hkv grouped K/V"),
+      M("g=0,\\ldots,H_{kv}-1", "group index g"), "compute", 5, "03");
+    b += cacheBox(460, 380, 210, 68, "Grouped KV cache",
+      M("2\\times[B,H_{kv},L,d_h]", "K_g and V_g"), 6, "05");
+
+    b += box(730, 100, 310, 76,
+      M("S_h=Q_hK_{g(h)}^{\\mathsf T}/\\sqrt{d_h}+b_h+M", "Grouped score + T5 bias"),
+      null, "compute", 7, "07", { titleSize: 9.8 });
+    b += box(730, 240, 310, 68,
+      M("O_h=\\operatorname{softmax}(S_h)V_{g(h)}", "Exact groupwise read"),
+      null, "compute", 8, "07");
+    b += box(730, 352, 310, 60,
       M("\\operatorname{Concat}(O_h)W^O", "Concat → WO"),
-      "write residual", "gather", 7, "08", { titleSize: 10.4 });
+      null, "gather", 9, "08");
 
-    b += box(100, 536, 170, 72, M("W_{1:H_q}^{K,V}", "MHA K/V weights"),
+    b += box(100, 536, 180, 68, M("W_{1:H_q}^{K,V}", "MHA K/V weights"),
       "pretrained checkpoint", "state", null, "01");
-    b += box(330, 536, 190, 72,
-      M("\\bar W_g^{K,V}=r^{-1}\\!\\sum_{h:g(h)=g}W_h^{K,V}", "Groupwise mean pool"),
-      "initialization only", "gather", null, "01", { titleSize: 9.4 });
-    b += box(580, 536, 170, 72, M("W_{1:H_{kv}}^{K,V}", "GQA K/V init"),
-      "fewer write heads", "state", null, "02");
-    b += box(810, 536, 190, 72, "Continue pretraining",
-      "paper recipe · about 5%", "control", null, "02");
+    b += box(330, 536, 210, 68,
+      M("\\bar W_g=r^{-1}\\!\\sum_{h:g(h)=g}W_h", "Groupwise mean pool"),
+      null, "gather", null, "01", { titleSize: 9.6 });
+    b += box(590, 536, 180, 68, M("W_{1:H_{kv}}^{K,V}", "GQA K/V init"),
+      null, "state", null, "02");
+    b += box(820, 536, 180, 68, "Continue pretraining",
+      "about 5% of budget", "control", null, "02");
 
-    b += edge(rootId, ortho(158, 237, 190, 124), null, "compute");
-    b += edge(rootId, ortho(158, 237, 190, 340), null, "compute");
-    b += edge(rootId, ortho(360, 124, 400, 217), null, "control");
-    b += edge(rootId, ortho(360, 340, 400, 340), null, "state");
-    b += edge(rootId, ortho(494, 304, 494, 260), null, "control");
-    b += edge(rootId, ortho(588, 217, 632, 147), null, "control");
-    b += edge(rootId, ortho(494, 142, 632, 147), null, "compute");
-    b += edge(rootId, ortho(754, 200, 754, 270), null, "compute");
-    b += edge(rootId, ortho(588, 340, 632, 314), null, "state");
-    b += edge(rootId, ortho(876, 314, 914, 224), null, "gather");
-    b += edge(rootId, ortho(270, 572, 330, 572),
-      [300, 516, "TRAINING · pool within g", 180], "orange", true);
-    b += edge(rootId, ortho(520, 572, 580, 572),
-      [550, 630, "TRAINING · initialize", 174], "orange", true);
-    b += edge(rootId, ortho(750, 572, 810, 572),
-      [780, 516, "TRAINING · uptrain", 160], "orange", true);
+    b += edge(rootId, "M170 256H200V134H230", null, "compute");
+    b += edge(rootId, "M170 288H200V414H230", null, "compute");
+    b += edge(rootId, "M325 100V76H860V100", null, "compute");
+    b += edge(rootId, ortho(670, 134, 730, 134), null, "compute");
+    b += edge(rootId, "M670 274H685V176", null, "control");
+    b += edge(rootId, "M670 398H715V176", null, "state");
+    b += edge(rootId, "M670 430H700V274H730", null, "state");
+    b += edge(rootId, ortho(420, 414, 460, 414), null, "state");
+    b += edge(rootId, ortho(885, 176, 885, 240), null, "compute");
+    b += edge(rootId, ortho(885, 308, 885, 352), null, "gather");
+    b += edge(rootId, ortho(280, 570, 330, 570),
+      [305, 632, "TRAINING · pool within g", 180], "orange", true);
+    b += edge(rootId, ortho(540, 570, 590, 570),
+      [555, 514, "TRAINING · initialize", 170], "orange", true);
+    b += edge(rootId, ortho(770, 570, 820, 570),
+      [795, 514, "TRAINING · uptrain", 160], "orange", true);
     return baseSvg(rootId, "gqa", 680, b,
       "GQA with T5 relative position bias, explicit query-to-KV grouping, and groupwise mean-pool uptraining");
   }
 
   function mlaDiagram(rootId) {
     var b = "";
-    b += panel(24, 52, 520, 222, "QUERY LATENT · RAW DEFINITION VS CHECKPOINT NORM", "compute");
-    b += panel(24, 300, 520, 220, "JOINT KV LATENT & DECOUPLED ROPE CACHE", "state");
-    b += panel(566, 52, 510, 468, "ABSORBED DECODE · NO EXPLICIT kC OR v", "compute");
-    b += panel(180, 558, 740, 116, "CONCEPTUAL EQUIVALENCE ONLY · RECONSTRUCTION IS NOT CACHED", "orange", true);
 
-    b += box(40, 222, 116, 62, M("h_t", "Input hidden"),
+    b += box(470, 84, 160, 60, M("h_t", "Input hidden"),
       M("[B,1,d]", "[B,1,d]"), "compute", 1, "03");
-    b += box(186, 82, 156, 68, M("c_t^Q=W^{DQ}h_t", "Raw query latent"),
-      M("c_t^Q\\in\\mathbb R^{d_q}", "definition · raw cq"), "compute", 2, "04");
-    b += box(186, 180, 156, 62, M("\\operatorname{RMSNorm}(c_t^Q)", "RMSNorm(cq)"),
-      "checkpoint-dependent", "control", null, "04", { dashed: true });
-    b += box(362, 92, 166, 82,
-      M("q_i^C=W_i^{UQ}\\bar c_t^Q", "Content query qC"),
-      M("q_i^R=R_tW_i^{QR}\\bar c_t^Q", "RoPE query qR"),
-      "compute", 3, "06", { titleSize: 8.8, subSize: 8.0 });
 
-    b += box(186, 330, 156, 68, M("c_t^{KV}=W^{DKV}h_t", "Raw joint KV latent"),
-      M("c_t^{KV}\\in\\mathbb R^{d_c}", "definition · raw cKV"), "compute", 4, "05");
-    b += box(186, 430, 156, 62, M("\\operatorname{RMSNorm}(c_t^{KV})", "RMSNorm(cKV)"),
-      "checkpoint-dependent", "control", null, "05", { dashed: true });
-    b += cacheBox(382, 320, 146, 78, M("c_{1:t}^{KV}", "Cached cKV history"),
-      "raw or checkpoint-normalized", 5, "07");
-    b += cacheBox(382, 430, 146, 66, M("k_{1:t}^{R}=R_sW^{KR}h_s", "Cached RoPE key kR"),
-      M("d_h^R\\;\\text{shared}", "shared positional slice"), 6, "06", { titleSize: 9.8 });
+    b += box(150, 190, 200, 64, M("c_t^Q=W^{DQ}h_t", "Query down-projection"),
+      M("c_t^Q\\in\\mathbb R^{d_q}", "raw query latent"), "compute", 2, "04");
+    b += box(450, 190, 200, 64, M("c_t^{KV}=W^{DKV}h_t", "KV down-projection"),
+      M("c_t^{KV}\\in\\mathbb R^{d_c}", "raw joint KV latent"), "compute", 3, "05");
+    b += box(750, 190, 200, 64, M("k_t^R=R_tW^{KR}h_t", "Decoupled RoPE key"),
+      M("d_h^R\\;\\text{shared}", "shared positional slice"), "compute", 4, "06");
 
-    b += box(566, 92, 210, 84,
-      M("\\widetilde q_i^C=(W_i^{UK})^{\\mathsf T}q_i^C", "Define absorbed query q-tilde"),
-      M("\\widetilde q_i^C\\in\\mathbb R^{d_c}", "one compact latent-space symbol"),
-      "compute", 7, "08", { titleSize: 9.2, subSize: 8.2 });
-    b += box(798, 104, 250, 82,
-      M("n_{i,s}=\\widetilde q_i^{C\\mathsf T}c_s^{KV}+q_i^{R\\mathsf T}k_s^R",
-        "Define compact score numerator n"),
-      "content + decoupled RoPE", "compute", 8, "09", { titleSize: 8.8 });
-    b += box(798, 212, 250, 62,
-      M("s_{i,s}=n_{i,s}/\\sqrt{d_h+d_h^R}+M_{t,s}", "Scale n, then add mask"),
-      "correct full-head scaling", "compute", null, "09", { titleSize: 9.1 });
-    b += box(798, 308, 250, 82,
-      M("a_{i,:}=\\operatorname{softmax}(s_{i,:})", "Candidate weights"),
-      M("m_i=\\sum_s a_{i,s}c_s^{KV}", "latent read m_i"), "gather", 9, "10",
-      { titleSize: 9.2, subSize: 8.5 });
-    b += box(798, 424, 250, 72,
-      M("u_t=W^O\\operatorname{Concat}_i(W_i^{UV}m_{t,i})", "Absorbed value/output write"),
-      "no historical v reconstruction", "gather", 10, "11", { titleSize: 9.7 });
+    b += box(150, 300, 200, 72, M("q_i^C,\\;q_i^R", "Up-project queries"),
+      M("W_i^{UQ}c_t^Q,\\;R_tW_i^{QR}c_t^Q", "content + RoPE query"),
+      "compute", 5, "06", { subSize: 8.2 });
+    b += cacheBox(450, 300, 200, 64, M("c_{1:t}^{KV}", "Latent KV cache"),
+      "the only content cache", 6, "07");
+    b += cacheBox(750, 300, 200, 64, M("k_{1:t}^{R}", "RoPE key cache"),
+      "the only positional cache", 7, "06");
 
-    b += box(230, 586, 170, 62, M("k_{s,i}^C=W_i^{UK}c_s^{KV}", "Conceptual kC"),
-      "equivalent training graph", "orange", null, "08", { dashed: true, titleSize: 9.8 });
-    b += box(465, 586, 170, 62, M("v_{s,i}=W_i^{UV}c_s^{KV}", "Conceptual v"),
-      "equivalent training graph", "orange", null, "10", { dashed: true, titleSize: 9.8 });
-    b += box(700, 586, 170, 62, M("[q_i^C;q_i^R]\\cdot[k_i^C;k^R]", "Reconstructed score"),
-      "numerically equivalent", "cyan", null, "09", { dashed: true, titleSize: 9.6 });
+    b += box(150, 420, 200, 64,
+      M("\\widetilde q_i=(W_i^{UK})^{\\mathsf T}q_i^C", "Absorbed query"),
+      "decode main path", "compute", 8, "08", { titleSize: 9.8 });
+    b += box(430, 420, 300, 72,
+      M("s_{i,s}=\\frac{\\widetilde q_i^{\\mathsf T}c_s^{KV}+q_i^{R\\mathsf T}k_s^R}{\\sqrt{d_h+d_h^R}}+M",
+        "Absorbed score + mask"),
+      null, "compute", 9, "09", { titleSize: 9.4 });
+    b += box(430, 532, 300, 68,
+      M("m_i=\\textstyle\\sum_s a_{i,s}c_s^{KV}", "Latent value read"),
+      M("a_i=\\operatorname{softmax}_s(s_{i,s})", "softmax over history"),
+      "gather", 10, "10");
+    b += box(430, 640, 300, 64,
+      M("u_t=W^O\\operatorname{Concat}_i(W_i^{UV}m_i)", "Absorbed output write"),
+      null, "gather", 11, "11", { titleSize: 9.8 });
 
-    b += edge(rootId, ortho(156, 253, 186, 116), null, "compute");
-    b += edge(rootId, ortho(156, 253, 186, 364), null, "compute");
-    b += edge(rootId, ortho(156, 253, 382, 463, "x", 366), null, "state");
-    b += edge(rootId, ortho(342, 116, 362, 133), null, "compute");
-    b += edge(rootId, ortho(264, 150, 264, 180),
-      [142, 166, "OPTIONAL · checkpoint RMSNorm", 222], "control", true);
-    b += edge(rootId, ortho(342, 211, 362, 150),
-      [354, 198, "OPTIONAL · normalized cq", 196], "control", true);
-    b += edge(rootId, ortho(342, 364, 382, 359), null, "state");
-    b += edge(rootId, ortho(264, 398, 264, 430),
-      [142, 414, "OPTIONAL · checkpoint RMSNorm", 222], "control", true);
-    b += edge(rootId, ortho(342, 461, 382, 378),
-      [362, 446, "OPTIONAL · normalized cKV", 210], "control", true);
-    b += edge(rootId, ortho(528, 133, 566, 134), null, "compute");
-    b += edge(rootId, ortho(776, 134, 798, 145), null, "compute");
-    b += edge(rootId, "M528 359H780V138H798", null, "state");
-    b += edge(rootId, "M528 463H786V164H798", null, "state");
-    b += edge(rootId, ortho(923, 186, 923, 212), null, "compute");
-    b += edge(rootId, ortho(923, 274, 923, 308), null, "compute");
-    b += edge(rootId, ortho(923, 390, 923, 424), null, "gather");
-    b += edge(rootId, "M455 398H548V548H315V586",
-      [314, 540, "OPTIONAL · conceptual reconstruction", 254], "orange", true);
-    b += edge(rootId, "M475 398H552V566H550V586",
-      [558, 538, "OPTIONAL · conceptual reconstruction", 254], "orange", true);
-    b += edge(rootId, "M315 648V660H785V648",
-      [550, 660, "OPTIONAL · equivalence check", 220], "orange", true);
-    return baseSvg(rootId, "mla", 704, b,
-      "MLA absorbed decode over cached cKV and kR, with optional checkpoint normalization and conceptual reconstruction inset");
+    b += box(780, 540, 260, 72,
+      M("k^C=W^{UK}c,\\;v=W^{UV}c", "Conceptual reconstruction"),
+      "training-equivalent · never cached", "orange", null, "08",
+      { dashed: true, titleSize: 9.8, subSize: 8.2 });
+
+    b += edge(rootId, "M510 144V166H250V190", null, "compute");
+    b += edge(rootId, ortho(550, 144, 550, 190), null, "compute");
+    b += edge(rootId, "M590 144V166H850V190", null, "compute");
+    b += edge(rootId, ortho(250, 254, 250, 300), null, "compute");
+    b += edge(rootId, ortho(550, 254, 550, 300), null, "state");
+    b += edge(rootId, ortho(850, 254, 850, 300), null, "state");
+    b += edge(rootId, ortho(250, 372, 250, 420), null, "compute");
+    b += edge(rootId, ortho(350, 452, 430, 452), null, "compute");
+    b += edge(rootId, "M350 336H400V436H430", null, "compute");
+    b += edge(rootId, ortho(550, 364, 550, 420), null, "state");
+    b += edge(rootId, "M850 364V390H650V420", null, "state");
+    b += edge(rootId, "M450 332H410V566H430", null, "state");
+    b += edge(rootId, ortho(580, 492, 580, 532), null, "compute");
+    b += edge(rootId, ortho(580, 600, 580, 640), null, "gather");
+    b += edge(rootId, "M650 348H740V576H780",
+      [870, 510, "OPTIONAL · conceptual view", 210], "orange", true);
+    return baseSvg(rootId, "mla", 744, b,
+      "MLA following the DeepSeek-V2 block: h_t, two down-projections, highlighted latent caches, absorbed decode attention, and a clearly optional conceptual reconstruction");
   }
 
   function dsaDiagram(rootId) {
@@ -645,16 +681,16 @@
     b += cacheBox(184, 202, 178, 82, M("k_{1:L}^I", "Indexer kI cache"),
       "pRoPE → Hadamard → FP8", 3, "03");
     b += box(398, 74, 132, 64, M("w_{t,j}^I", "Head weights wI"),
-      "direct query projection", "control", null, "03");
+      "direct projection", "control", null, "03");
     b += box(398, 170, 214, 94,
       M("I_{t,s}=\\sum_jw_{t,j}^I\\operatorname{ReLU}(q_{t,j}^{I\\mathsf T}k_s^I)",
         "Full-history Indexer logits"),
-      M("[B,L_q,L_k]", "score every history position"), "compute", 4, "03", { titleSize: 8.8 });
+      M("[B,L_q,L_k]", "every history position"), "compute", 4, "03", { titleSize: 8.8 });
     b += box(646, 176, 166, 80, M("\\mathcal I_t=\\operatorname{TopK}_s(I_{t,s},k)", "TopK addresses"),
-      "indices only · no values", "control", 5, "03", { titleSize: 9.8 });
+      "indices only", "control", 5, "03", { titleSize: 9.8 });
 
     b += box(844, 68, 202, 72, "Teacher full MLA logits",
-      "detach · dense warm-up target", "orange", null, "02", { dashed: true });
+      "detach · dense warm-up", "orange", null, "02", { dashed: true });
     b += box(844, 194, 202, 72,
       M("D_{\\mathrm{KL}}(p_t\\Vert\\operatorname{softmax}I_t)", "Indexer KL loss"),
       "training only", "orange", null, "02", { dashed: true });
@@ -662,34 +698,33 @@
     b += cacheBox(328, 402, 250, 86, "MLA latent cache",
       M("\\{c_s^{KV},k_s^R\\}_{s=1}^{L}", "full history · original latent"), 6, "03");
     b += box(646, 390, 166, 88,
-      M("\\operatorname{Gather}(\\{c^{KV},k^R\\},\\mathcal I_t)", "Gather latent candidates"),
-      "addresses select original MLA state", "gather", 7, "01", { titleSize: 9.6 });
+      M("\\operatorname{Gather}(\\{c^{KV},k^R\\},\\mathcal I_t)", "Gather candidates"),
+      null, "gather", 7, "01", { titleSize: 9.6 });
     b += box(646, 508, 166, 64, M("q_t^C,q_t^R", "MLA query"),
-      "high-dimensional query", "compute", null, "01");
+      "high-dimensional", "compute", null, "01");
     b += box(844, 386, 202, 108,
-      M("a_t=\\operatorname{softmax}_{\\mathcal I_t}(QK^{\\mathsf T}/\\sqrt d),\\quad o_t=a_tV",
-        "Candidate-only exact MLA"),
-      "renormalize inside selected set", "compute", 8, "03", { titleSize: 9.5 });
+      M("o_t=\\operatorname{softmax}_{\\mathcal I_t}\\!(S_t)V", "Candidate-only exact MLA"),
+      "renormalize in selected set", "compute", 8, "03", { titleSize: 9.8 });
     b += box(844, 524, 202, 58, M("W^O\\to u_t", "Output projection"),
       "residual write", "gather", 9, "03");
 
-    b += edge(rootId, ortho(152, 135, 184, 129), null, "compute");
-    b += edge(rootId, ortho(152, 245, 184, 243), null, "state");
-    b += edge(rootId, "M96 104V62H464V74", null, "control");
-    b += edge(rootId, ortho(362, 129, 398, 212), null, "compute");
-    b += edge(rootId, ortho(362, 243, 398, 228), null, "state");
+    b += edge(rootId, "M152 135H168V129H184", null, "compute");
+    b += edge(rootId, "M152 245H168V243H184", null, "state");
+    b += edge(rootId, "M96 104V68H464V74", null, "control");
+    b += edge(rootId, "M362 129H380V196H398", null, "compute");
+    b += edge(rootId, ortho(362, 243, 398, 243), null, "state");
     b += edge(rootId, ortho(464, 138, 464, 170), null, "control");
-    b += edge(rootId, ortho(612, 217, 646, 216), null, "control");
+    b += edge(rootId, ortho(612, 217, 646, 217), null, "control");
     b += edge(rootId, ortho(729, 256, 729, 390),
       [776, 326, "selected addresses", 174], "control");
-    b += edge(rootId, ortho(578, 445, 646, 434), null, "gather");
-    b += edge(rootId, ortho(812, 434, 844, 440), null, "gather");
-    b += edge(rootId, ortho(812, 540, 844, 470), null, "compute");
+    b += edge(rootId, "M578 445H612V434H646", null, "gather");
+    b += edge(rootId, ortho(812, 440, 844, 440), null, "gather");
+    b += edge(rootId, "M812 540H828V470H844", null, "compute");
     b += edge(rootId, ortho(945, 494, 945, 524), null, "gather");
     b += edge(rootId, ortho(945, 140, 945, 194),
       [1008, 165, "TRAINING · teacher p", 180], "orange", true);
     b += edge(rootId, "M612 180H626V154H826V230H844",
-      [736, 150, "TRAINING · full logits I", 190], "orange", true);
+      [736, 140, "TRAINING · full logits I", 190], "orange", true);
     return baseSvg(rootId, "dsa", 628, b,
       "DSA with a full-history low-precision Indexer lane and a separate gathered MLA candidate lane");
   }
@@ -703,58 +738,56 @@
     b += box(40, 252, 112, 64, M("H_{1:L}", "Hidden sequence"),
       M("[B,L,d]", "[B,L,d]"), "compute", 1, "02");
     b += box(184, 94, 168, 106,
-      M("C^{\\mathrm{Comp}}=\\mathcal C_{\\mathrm{overlap}}(H;\\theta_C)", "Core overlap compressor"),
-      "a/b streams · per-channel softmax over 2m", "compute", 2, "02", { titleSize: 9.8, subSize: 8.2 });
+      M("C^{\\mathrm{Comp}}=\\mathcal C_{\\mathrm{overlap}}(H;\\theta_C)", "Core compressor"),
+      "overlap a/b · softmax over 2m", "compute", 2, "02", { titleSize: 9.8, subSize: 8.2 });
     b += box(184, 344, 168, 106,
-      M("K^{I\\mathrm{Comp}}=\\mathcal C_{\\mathrm{overlap}}(H;\\theta_I)", "Index overlap compressor"),
-      M("\\theta_I\\ne\\theta_C", "independent a/b projections"), "compute", 3, "02", { titleSize: 9.8 });
+      M("K^{I\\mathrm{Comp}}=\\mathcal C_{\\mathrm{overlap}}(H;\\theta_I)", "Index compressor"),
+      M("\\theta_I\\ne\\theta_C", "independent parameters"), "compute", 3, "02", { titleSize: 9.8 });
 
     b += cacheBox(410, 92, 160, 88, M("C^{\\mathrm{Comp}}_{1:L/m}", "CComp cache"),
       "core content entries", 4, "03");
     b += cacheBox(410, 242, 160, 88, M("K^{I\\mathrm{Comp}}_{1:L/m}", "KIComp cache"),
       "index keys only", 5, "03");
-    b += box(410, 382, 160, 70, M("q_t^I,w_t^I", "Indexer query + weights"),
-      "independent query path", "compute", null, "03");
+    b += box(410, 382, 160, 70, M("q_t^I,w_t^I", "Indexer query"),
+      "independent path", "compute", null, "03");
     b += box(594, 222, 146, 86,
-      M("I_t=\\operatorname{Index}(q_t^I,w_t^I,K^{I\\mathrm{Comp}})", "Score KIComp entries"),
-      "weighted ReLU logits", "compute", 6, "03", { titleSize: 8.8 });
+      M("I_t=\\operatorname{Index}(q_t^I,w_t^I,K^{I\\mathrm{Comp}})", "Score KIComp"),
+      null, "compute", 6, "03", { titleSize: 8.8 });
     b += box(594, 346, 146, 70, M("\\mathcal J_t=\\operatorname{TopK}(I_t)", "TopK addresses"),
-      "V4-Flash / Pro config", "control", 7, "03", { titleSize: 9.8 });
+      null, "control", 7, "03", { titleSize: 9.8 });
     b += box(594, 468, 146, 78,
       M("\\operatorname{Gather}(C^{\\mathrm{Comp}},\\mathcal J_t)", "Gather CComp"),
-      "selected global summaries", "gather", 8, "03", { titleSize: 9.6 });
+      null, "gather", 8, "03", { titleSize: 9.6 });
 
-    b += cacheBox(800, 82, 116, 84, "SWA cache lane",
-      "raw recent entries · pRoPE", 9, "03", { subSize: 8.2 });
+    b += cacheBox(800, 82, 116, 84, "SWA cache",
+      "recent raw · pRoPE", 9, "03", { subSize: 8.2 });
     b += box(938, 82, 116, 84, "Query lane",
-      M("q_t\\;\\cdot\\;\\operatorname{pRoPE}_{64}", "Hq heads · trailing-64"),
-      "compute", 10, "03",
-      { subSize: 8.1 });
+      M("q_t\\cdot\\operatorname{pRoPE}_{64}", "Hq heads"),
+      "compute", 10, "03", { subSize: 8.1 });
     b += box(800, 222, 254, 112,
       M("\\operatorname{MQA}_{K=V}(q_t;\\mathrm{sink},C_{\\mathcal J_t},C_{\\mathrm{SWA}})",
         "One shared-KV MQA + sink"),
-      M("a_t=\\operatorname{softmax}([s_{\\mathrm{sink}},s_{\\mathrm{global}},s_{\\mathrm{SWA}}])",
-        "single normalization: sink, global, SWA"), "compute", 11, "03",
-      { titleSize: 9.2, subSize: 8.1 });
+      "one softmax: sink + global + SWA", "compute", 11, "03",
+      { titleSize: 9.2, subSize: 8.2 });
     b += box(800, 374, 254, 66, M("\\operatorname{RoPE}^{-1}_{64}(-t)", "Inverse partial RoPE"),
-      "return value slice to query frame", "compute", 12, "01");
+      null, "compute", 12, "01");
     b += box(800, 478, 254, 70,
       M("W^{OA}_{\\mathrm{group}}\\to\\operatorname{Concat}\\to W^{OB}", "Grouped output projection"),
-      "low-rank groups → residual width", "gather", 13, "03", { titleSize: 9.6 });
+      null, "gather", 13, "03", { titleSize: 9.6 });
     b += box(800, 584, 254, 48, M("u_t", "Output hidden"),
       M("[B,L,d]", "[B,L,d]"), "gather", 14, "03");
 
-    b += edge(rootId, ortho(152, 284, 184, 147), null, "compute");
-    b += edge(rootId, ortho(152, 284, 184, 397), null, "compute");
+    b += edge(rootId, "M152 284H168V147H184", null, "compute");
+    b += edge(rootId, "M152 284H168V397H184", null, "compute");
     b += edge(rootId, ortho(352, 147, 410, 136), null, "state");
     b += edge(rootId, ortho(352, 397, 410, 286), null, "state");
-    b += edge(rootId, ortho(570, 286, 594, 265), null, "compute");
-    b += edge(rootId, ortho(570, 417, 594, 280), null, "compute");
+    b += edge(rootId, ortho(570, 286, 594, 286), null, "compute");
+    b += edge(rootId, "M570 417H582V308", null, "compute");
     b += edge(rootId, ortho(667, 308, 667, 346), null, "control");
     b += edge(rootId, ortho(667, 416, 667, 468),
       [720, 442, "addresses", 112], "control");
-    b += edge(rootId, ortho(570, 136, 594, 507, "x", 580), null, "gather");
-    b += edge(rootId, ortho(740, 507, 800, 294), null, "gather");
+    b += edge(rootId, "M410 160H400V507H594", null, "gather");
+    b += edge(rootId, "M740 507H770V294H800", null, "gather");
     b += edge(rootId, ortho(858, 166, 858, 222), null, "state");
     b += edge(rootId, ortho(996, 166, 996, 222), null, "compute");
     b += edge(rootId, ortho(927, 334, 927, 374), null, "compute");
@@ -774,36 +807,34 @@
       M("[B,L,d]", "[B,L,d]"), "compute", 1, "02");
     b += box(184, 200, 176, 126,
       M("C_i^{\\mathrm{Comp}}=\\mathcal C_{m'}(H_{m'i:m'(i+1)})", "Non-overlap compressor"),
-      M("m'=128\\;\\cdot\\;\\operatorname{softmax}_{m'}(Z+B)\\odot C",
-        "per-channel weighted block summary"),
-      "compute", 2, "02", { titleSize: 9.2, subSize: 8.1 });
+      "m'=128 · per-channel softmax",
+      "compute", 2, "02", { titleSize: 9.2, subSize: 8.2 });
     b += box(184, 86, 176, 72, "Causal publish gate",
-      "only closed blocks become visible", "control", 3, "02");
+      "only closed blocks visible", "control", 3, "02");
 
     b += cacheBox(426, 116, 304, 92, "Completed CComp cache",
-      M("\\{C_i^{\\mathrm{Comp}}:m'(i+1)\\le t\\}", "all closed summaries · pRoPE"),
+      M("\\{C_i^{\\mathrm{Comp}}:m'(i+1)\\le t\\}", "closed summaries · pRoPE"),
       4, "03");
-    b += cacheBox(426, 356, 138, 88, "SWA cache lane",
-      "recent raw entries · w=128", 5, "03", { subSize: 8.1 });
+    b += cacheBox(426, 356, 138, 88, "SWA cache",
+      "recent raw · w=128", 5, "03", { subSize: 8.1 });
     b += box(592, 356, 138, 88, "Query lane",
-      M("q_t\\;\\cdot\\;\\operatorname{pRoPE}_{64}", "Hq heads · trailing-64"),
+      M("q_t\\cdot\\operatorname{pRoPE}_{64}", "Hq heads"),
       "compute", 6, "03", { subSize: 8.1 });
 
     b += box(800, 188, 252, 118,
       M("\\operatorname{MQA}_{K=V}(q_t;\\mathrm{sink},C_{\\mathrm{all}},C_{\\mathrm{SWA}})",
         "Dense shared-KV MQA + sink"),
-      M("a_t=\\operatorname{softmax}([s_{\\mathrm{sink}},s_{\\mathrm{all}},s_{\\mathrm{SWA}}])",
-        "one normalization: sink, all CComp, SWA"), "compute", 7, "03",
+      "one softmax: sink + all CComp + SWA", "compute", 7, "03",
       { titleSize: 9.1, subSize: 8.2 });
     b += box(800, 346, 252, 66, M("\\operatorname{RoPE}^{-1}_{64}(-t)", "Inverse partial RoPE"),
-      "return value slice to query frame", "compute", 8, "01");
+      null, "compute", 8, "01");
     b += box(800, 452, 252, 70,
       M("W^{OA}_{\\mathrm{group}}\\to\\operatorname{Concat}\\to W^{OB}", "Grouped output projection"),
-      "low-rank groups → residual width", "gather", 9, "03", { titleSize: 9.6 });
+      null, "gather", 9, "03", { titleSize: 9.6 });
     b += box(800, 552, 252, 48, M("u_t", "Output hidden"),
       M("[B,L,d]", "[B,L,d]"), "gather", 10, "03");
 
-    b += edge(rootId, ortho(152, 300, 184, 263), null, "compute");
+    b += edge(rootId, "M152 300H168V263H184", null, "compute");
     b += edge(rootId, ortho(272, 200, 272, 158), null, "control");
     b += edge(rootId, ortho(360, 122, 426, 162), null, "state");
     b += edge(rootId, ortho(730, 162, 800, 232), null, "state");
@@ -818,230 +849,169 @@
 
   function linearDiagram(rootId) {
     var b = "";
-    b += panel(24, 52, 340, 526, "2020 ELU+1 TOKEN FEATURES", "compute");
-    b += panel(382, 52, 380, 526, "CAUSAL S / z RECURRENT STATE", "state");
-    b += panel(780, 52, 296, 526, "NUMERATOR, DENOMINATOR & OUTPUT", "gather");
 
-    b += box(40, 250, 106, 64, M("x_t", "Input token"),
+    b += box(470, 84, 160, 60, M("x_t", "Input token"),
       M("[B,1,d]", "[B,1,d]"), "compute", 1, "04");
-    b += box(176, 104, 82, 58, M("W_Q", "WQ"), "query", "compute", null, "04");
-    b += box(176, 252, 82, 58, M("W_K", "WK"), "key", "compute", null, "04");
-    b += box(176, 420, 82, 58, M("W_V", "WV"), "value", "compute", null, "04");
-    b += box(278, 98, 70, 70, M("\\phi(q_t)", "phi(q)"),
-      M("\\operatorname{ELU}(q_t)+1", "ELU(q)+1"), "compute", 2, "01", { titleSize: 10.2 });
-    b += box(278, 246, 70, 70, M("\\phi(k_t)", "phi(k)"),
-      M("\\operatorname{ELU}(k_t)+1", "ELU(k)+1"), "compute", 3, "01", { titleSize: 10.2 });
-    b += box(278, 414, 70, 70, M("v_t", "Value v"),
+
+    b += box(220, 190, 180, 68, M("\\phi(q_t)", "Query feature"),
+      M("\\operatorname{ELU}(x_tW_Q)+1", "ELU(q)+1"), "compute", 2, "01");
+    b += box(460, 190, 180, 68, M("\\phi(k_t)", "Key feature"),
+      M("\\operatorname{ELU}(x_tW_K)+1", "ELU(k)+1"), "compute", 3, "01");
+    b += box(700, 190, 180, 68, M("v_t=x_tW_V", "Value"),
       M("\\mathbb R^{d_v}", "dv channels"), "compute", 4, "04");
 
-    b += cacheBox(402, 112, 160, 82, M("S_{t-1}", "Previous S state"),
-      M("\\mathbb R^{r\\times d_v}", "feature × value"), 5, "03");
-    b += cacheBox(582, 112, 160, 82, M("z_{t-1}", "Previous z state"),
-      M("\\mathbb R^r", "feature normalizer"), 6, "03");
-    b += box(402, 250, 160, 92,
-      M("S_t=S_{t-1}+\\phi(k_t)v_t^{\\mathsf T}", "Update S with outer product"),
-      "fixed-size associative state", "state", 7, "03", { titleSize: 9.6 });
-    b += box(582, 250, 160, 92,
-      M("z_t=z_{t-1}+\\phi(k_t)", "Update z"),
-      "fixed-size denominator state", "state", 8, "03", { titleSize: 9.6 });
-    b += box(402, 424, 340, 112, "2020 training execution boundary",
-      "paper gives causal recurrence and a custom GPU implementation; this diagram makes no later-kernel claim",
-      "orange", null, "03", { subSize: 7.9 });
+    b += box(400, 310, 300, 96,
+      M("S_t=S_{t-1}+\\phi(k_t)v_t^{\\mathsf T}", "Recurrent cell · update S"),
+      M("z_t=z_{t-1}+\\phi(k_t)", "and normalizer z"),
+      "state", 5, "03", { titleSize: 10.4 });
 
-    b += box(800, 112, 252, 76,
-      M("n_t=\\phi(q_t)^{\\mathsf T}S_t", "Numerator"),
-      M("n_t\\in\\mathbb R^{d_v}", "query-dependent value read"), "compute", 9, "03");
-    b += box(800, 230, 252, 76,
-      M("d_t=\\phi(q_t)^{\\mathsf T}z_t+\\varepsilon", "Denominator"),
-      "query-dependent normalization", "compute", 10, "03");
-    b += box(800, 368, 252, 78,
-      M("y_t=n_t/d_t", "Normalize numerator / denominator"),
-      "then output projection WO", "gather", 11, "04");
-    b += box(800, 502, 252, 54, M("u_t=W^Oy_t", "Output hidden"),
-      "constant-state decode", "gather", 12, "04");
+    b += box(400, 470, 300, 80,
+      M("y_t=\\phi(q_t)^{\\mathsf T}S_t/(\\phi(q_t)^{\\mathsf T}z_t+\\varepsilon)",
+        "Read: numerator / denominator"),
+      null, "gather", 6, "03", { titleSize: 9.6 });
+    b += box(400, 594, 300, 56, M("u_t=W^Oy_t", "Output hidden"),
+      null, "gather", 7, "04");
 
-    b += edge(rootId, ortho(146, 282, 176, 133), null, "compute");
-    b += edge(rootId, ortho(146, 282, 176, 281), null, "compute");
-    b += edge(rootId, ortho(146, 282, 176, 449), null, "compute");
-    b += edge(rootId, ortho(258, 133, 278, 133), null, "compute");
-    b += edge(rootId, ortho(258, 281, 278, 281), null, "compute");
-    b += edge(rootId, ortho(258, 449, 278, 449), null, "compute");
-    b += edge(rootId, ortho(348, 281, 402, 296), null, "state");
-    b += edge(rootId, ortho(348, 449, 402, 320), null, "state");
-    b += edge(rootId, ortho(482, 194, 482, 250), null, "state");
-    b += edge(rootId, "M348 281H372V226H572V296H582", null, "state");
-    b += edge(rootId, ortho(662, 194, 662, 250), null, "state");
-    b += edge(rootId, "M482 342V366H776V150H800", null, "compute");
-    b += edge(rootId, ortho(742, 296, 800, 268), null, "compute");
-    b += edge(rootId, "M313 98V78H926V112",
-      [620, 88, "query read rail", 132], "compute");
-    b += edge(rootId, "M348 133H372V350H1066V268H1052",
-      [720, 348, "normalizer read rail", 166], "compute");
-    b += edge(rootId, "M1052 150H1066V407H1052", null, "gather");
-    b += edge(rootId, ortho(926, 306, 926, 368), null, "gather");
-    b += edge(rootId, ortho(926, 446, 926, 502), null, "gather");
-    b += edge(rootId, ortho(562, 320, 572, 424), null, "orange");
-    return baseSvg(rootId, "linear", 606, b,
-      "Original 2020 kernelized linear attention with ELU plus one features, S and z states, and normalized readout");
+    b += box(760, 470, 280, 80, "2020 execution boundary",
+      "causal recurrence · custom CUDA kernel", "orange", null, "03",
+      { dashed: true, subSize: 8.2 });
+
+    b += edge(rootId, "M510 144V166H310V190", null, "compute");
+    b += edge(rootId, ortho(550, 144, 550, 190), null, "compute");
+    b += edge(rootId, "M590 144V166H790V190", null, "compute");
+    b += edge(rootId, ortho(550, 258, 550, 310), null, "state");
+    b += edge(rootId, "M790 258V284H660V310", null, "state");
+    b += edge(rootId, "M700 340H744V380H700",
+      [855, 360, M("S_{t-1},z_{t-1}\\;\\text{carry}", "carry S, z to t+1"), 170], "state");
+    b += edge(rootId, "M310 258V510H400", null, "compute");
+    b += edge(rootId, ortho(550, 406, 550, 470), null, "state");
+    b += edge(rootId, ortho(550, 550, 550, 594), null, "gather");
+    return baseSvg(rootId, "linear", 680, b,
+      "Original 2020 kernelized linear attention drawn as one recurrent cell with a single S and z feedback loop and normalized readout");
   }
 
   function deltaDiagram(rootId) {
     var b = "";
-    b += panel(24, 52, 374, 598, "SEPARATE TOKEN PATHS · CONV ONLY ON q / k / v", "compute");
-    b += panel(416, 52, 374, 598, "TRANSPOSED FAST-WEIGHT STATE · F = S TRANSPOSE", "state");
-    b += panel(808, 52, 268, 598, "READ, GATE & WRITE BACK", "gather");
 
-    b += box(40, 284, 104, 64, M("x_t", "Input hidden"),
+    b += box(470, 84, 160, 56, M("x_t", "Input hidden"),
       M("[B,1,d]", "[B,1,d]"), "compute", 1, "03");
-    b += box(176, 92, 202, 68, M("q_t", "q path"),
-      "WQ → causal ShortConv → SiLU → L2Norm", "compute", null, "01", { titleSize: 9.0, subSize: 7.9 });
-    b += box(176, 162, 202, 68, M("k_t", "k path"),
-      "WK → causal ShortConv → SiLU → L2Norm", "compute", null, "01", { titleSize: 9.0, subSize: 7.9 });
-    b += box(176, 252, 202, 68, M("v_t", "v path"),
-      "WV → causal ShortConv → SiLU", "compute", null, "01", { titleSize: 9.2, subSize: 8.1 });
-    b += box(176, 354, 202, 62,
-      M("\\alpha_t=\\exp[-\\operatorname{softplus}(\\cdot)]", "Direct scalar alpha"),
-      "no ShortConv · per-head decay", "control", null, "03", { titleSize: 9.4 });
-    b += box(176, 440, 202, 62, M("\\beta_t=\\sigma(x_tW_\\beta)", "Direct write beta"),
-      "no ShortConv · write strength", "control", null, "03");
-    b += box(176, 526, 202, 62, M("g_t=x_tW_g", "Direct output gate g"),
-      "no ShortConv · SiLU at readout", "control", null, "03");
 
-    b += cacheBox(436, 92, 148, 72, M("F_{t-1}=S_{t-1}^{\\mathsf T}", "Previous F state"),
-      M("F\\in\\mathbb R^{d_v\\times d_k}", "transposed convention"), 2, "02");
-    b += box(436, 180, 148, 68, M("F=S^{\\mathsf T}", "State convention"),
-      M("Fk=\\widehat v,\\;Fq=o", "rows are value channels"), "cyan", null, "02");
-    b += box(614, 92, 156, 72, M("\\widetilde F_{t-1}=\\alpha_tF_{t-1}", "1 · decay"),
-      "scalar GDN retention", "state", 3, "02");
-    b += box(614, 184, 156, 72, M("\\widehat v_t=\\widetilde F_{t-1}k_t", "2 · predict"),
-      "old value at current key", "compute", 4, "02");
-    b += box(614, 290, 156, 72, M("e_t=v_t-\\widehat v_t", "3 · error"),
-      "write only what is missing", "cyan", 5, "02");
-    b += box(604, 402, 176, 94,
-      M("F_t=\\widetilde F_{t-1}+\\beta_te_tk_t^{\\mathsf T}", "4 · rank-1 write"),
-      M("F_t\\in\\mathbb R^{d_v\\times d_k}", "updated recurrent state"), "gather", 6, "02",
-      { titleSize: 9.5 });
-    b += box(436, 536, 344, 72, "Training execution",
-      "decay-aware chunkwise WY/UT; decode keeps F plus three ShortConv states",
-      "orange", null, "04", { dashed: true, subSize: 8.0 });
+    b += box(50, 180, 150, 76, M("q_t", "q path"),
+      "ShortConv→SiLU→L2", "compute", null, "01", { subSize: 8.0 });
+    b += box(220, 180, 150, 76, M("k_t", "k path"),
+      "ShortConv→SiLU→L2", "compute", null, "01", { subSize: 8.0 });
+    b += box(390, 180, 150, 76, M("v_t", "v path"),
+      "ShortConv→SiLU", "compute", null, "01", { subSize: 8.0 });
+    b += box(560, 180, 150, 76, M("\\alpha_t", "Decay gate"),
+      "direct · per-head", "control", null, "03", { subSize: 8.0 });
+    b += box(730, 180, 150, 76, M("\\beta_t", "Write gate"),
+      "direct · sigmoid", "control", null, "03", { subSize: 8.0 });
+    b += box(900, 180, 150, 76, M("g_t", "Output gate"),
+      "direct · no conv", "control", null, "03", { subSize: 8.0 });
 
-    b += box(832, 402, 220, 94,
-      M("o_t=F_t(q_t/\\sqrt{d_k})", "5 · read with q"),
-      "query-dependent value output", "gather", 7, "02");
-    b += box(832, 536, 220, 72,
-      M("W_O[\\operatorname{RMSNorm}(o_t)\\odot\\operatorname{SiLU}(g_t)]", "Gate → WO → residual"),
-      "Gated DeltaNet output", "gather", 8, "03", { titleSize: 9.2 });
+    b += box(300, 320, 500, 96,
+      M("F_t=\\alpha_tF_{t-1}(I-\\beta_tk_tk_t^{\\mathsf T})+\\beta_tv_tk_t^{\\mathsf T}",
+        "Recurrence: decay, then delta write"),
+      M("F=S^{\\mathsf T}\\in\\mathbb R^{d_v\\times d_k}", "F = S^T in R^{dv×dk}"),
+      "state", 2, "02", { titleSize: 10.0 });
 
-    b += edge(rootId, ortho(144, 316, 176, 126), null, "compute");
-    b += edge(rootId, ortho(144, 316, 176, 196), null, "compute");
-    b += edge(rootId, ortho(144, 316, 176, 286), null, "compute");
-    b += edge(rootId, ortho(144, 316, 176, 385), null, "control");
-    b += edge(rootId, ortho(144, 316, 176, 471), null, "control");
-    b += edge(rootId, ortho(144, 316, 176, 557), null, "control");
-    b += edge(rootId, ortho(584, 128, 614, 128), null, "state");
-    b += edge(rootId, ortho(378, 385, 614, 144, "x", 598), null, "control");
-    b += edge(rootId, ortho(692, 164, 692, 184), null, "state");
-    b += edge(rootId, "M378 196H410V166H596V220H614", null, "compute");
-    b += edge(rootId, ortho(692, 256, 692, 290), null, "compute");
-    b += edge(rootId, ortho(378, 286, 614, 326, "x", 594), null, "compute");
-    b += edge(rootId, ortho(692, 362, 692, 402), null, "gather");
-    b += edge(rootId, ortho(378, 471, 604, 460, "x", 590), null, "control");
-    b += edge(rootId, ortho(692, 164, 604, 430, "x", 596), null, "state");
-    b += edge(rootId, ortho(780, 449, 832, 449), null, "gather");
-    b += edge(rootId, "M277 92V72H942V402",
-      [620, 82, "q read rail", 108], "compute");
-    b += edge(rootId, ortho(942, 496, 942, 536), null, "gather");
-    b += edge(rootId, "M277 588V630H806V572H832",
-      [610, 628, "output-gate rail", 144], "control");
-    b += edge(rootId, ortho(692, 496, 608, 536, "y", 516),
-      [690, 522, "TRAINING · chunk transform", 218], "orange", true);
-    b += edge(rootId, ortho(510, 164, 510, 180), null, "cyan");
+    b += box(300, 470, 240, 72,
+      M("o_t=F_t(q_t/\\sqrt{d_k})", "Read with q"),
+      null, "gather", 3, "02", { titleSize: 10.4 });
+    b += box(600, 470, 260, 72,
+      M("\\operatorname{RMSNorm}(o_t)\\odot\\operatorname{SiLU}(g_t)", "Norm ⊙ output gate"),
+      null, "gather", 4, "03", { titleSize: 9.6 });
+    b += box(600, 586, 260, 56, M("W_O\\to u_t", "WO → residual"),
+      null, "gather", 5, "03");
+
+    b += box(60, 586, 300, 56, "Training execution",
+      "chunkwise WY/UT · decode keeps F + conv states", "orange", null, "04",
+      { dashed: true, subSize: 8.0 });
+
+    b += edge(rootId, "M480 140V154H125V180", null, "compute");
+    b += edge(rootId, "M508 140V162H295V180", null, "compute");
+    b += edge(rootId, "M536 140V170H465V180", null, "compute");
+    b += edge(rootId, "M564 140V170H635V180", null, "control");
+    b += edge(rootId, "M592 140V162H805V180", null, "control");
+    b += edge(rootId, "M620 140V154H975V180", null, "control");
+    b += edge(rootId, "M295 256V288H400V320", null, "compute");
+    b += edge(rootId, ortho(465, 256, 465, 320), null, "compute");
+    b += edge(rootId, ortho(635, 256, 635, 320), null, "control");
+    b += edge(rootId, "M805 256V288H700V320", null, "control");
+    b += edge(rootId, "M800 344H844V392H800",
+      [860, 414, M("F_{t-1}\\;\\text{carry}", "carry F to t+1"), 150], "state");
+    b += edge(rootId, ortho(420, 416, 420, 470), null, "state");
+    b += edge(rootId, "M125 256V506H300", null, "compute");
+    b += edge(rootId, ortho(540, 506, 600, 506), null, "gather");
+    b += edge(rootId, "M975 256V506H860", null, "control");
+    b += edge(rootId, ortho(730, 542, 730, 586), null, "gather");
     return baseSvg(rootId, "gated-delta", 678, b,
-      "Gated DeltaNet with separate q k v ShortConv paths, direct gates, transposed state, and decay predict error write read order");
+      "Gated DeltaNet following the paper block figure: parallel conv and direct-gate projections, one recurrence cell with a single feedback loop, gated readout");
   }
 
   function kdaDiagram(rootId) {
     var b = "";
-    b += panel(24, 52, 374, 598, "SEPARATE TOKEN PATHS · CONV ONLY ON q / k / v", "compute");
-    b += panel(416, 52, 374, 598, "CHANNEL DECAY + DELTA UPDATE · F = S TRANSPOSE", "state");
-    b += panel(808, 52, 268, 598, "READOUT & CHECKPOINT PLACEMENT", "gather");
 
-    b += box(40, 284, 104, 64, M("x_t", "Input hidden"),
+    b += box(470, 84, 160, 56, M("x_t", "Input hidden"),
       M("[B,1,d]", "[B,1,d]"), "compute", 1, "03");
-    b += box(176, 92, 202, 68, M("q_t", "q path"),
-      "WQ → causal ShortConv → SiLU → L2Norm", "compute", null, "01", { titleSize: 9.0, subSize: 7.9 });
-    b += box(176, 162, 202, 68, M("k_t", "k path"),
-      "WK → causal ShortConv → SiLU → L2Norm", "compute", null, "01", { titleSize: 9.0, subSize: 7.9 });
-    b += box(176, 252, 202, 68, M("v_t", "v path"),
-      "WV → causal ShortConv → SiLU", "compute", null, "01", { titleSize: 9.2, subSize: 8.1 });
-    b += box(176, 354, 202, 62,
-      M("\\alpha_t\\in(0,1)^{d_k}", "Direct channel alpha"),
-      M("W_\\alpha^\\downarrow\\to\\operatorname{SiLU}\\to W_\\alpha^\\uparrow\\to\\log\\text{-decay}",
-        "direct low-rank gate · no ShortConv"), "control", null, "03", { titleSize: 9.3, subSize: 8.0 });
-    b += box(176, 440, 202, 62, M("\\beta_t=\\sigma(x_tW_\\beta)", "Direct write beta"),
-      "no ShortConv · scalar write gate", "control", null, "03");
-    b += box(176, 526, 202, 62,
-      M("g_t=W_g^\\uparrow\\operatorname{SiLU}(x_tW_g^\\downarrow)", "Direct low-rank gate g"),
-      "no ShortConv · sigmoid at readout", "control", null, "03", { titleSize: 9.1 });
 
-    b += cacheBox(436, 92, 148, 72, M("F_{t-1}=S_{t-1}^{\\mathsf T}", "Previous F state"),
-      M("F\\in\\mathbb R^{d_v\\times d_k}", "transposed convention"), 2, "02");
-    b += box(614, 92, 156, 72,
-      M("\\widetilde F_{t-1}=F_{t-1}\\operatorname{Diag}(\\alpha_t)", "1 · channel decay"),
-      "right-multiply in F convention", "state", 3, "02", { titleSize: 9.4 });
-    b += box(614, 184, 156, 72, M("\\widehat v_t=\\widetilde F_{t-1}k_t", "2 · predict"),
-      "old value at current key", "compute", 4, "02");
-    b += box(614, 290, 156, 72, M("e_t=v_t-\\widehat v_t", "3 · error"),
-      "post-decay prediction error", "cyan", 5, "02");
-    b += box(604, 402, 176, 94,
-      M("F_t=\\widetilde F_{t-1}+\\beta_te_tk_t^{\\mathsf T}", "4 · rank-1 write"),
-      M("F_t\\in\\mathbb R^{d_v\\times d_k}", "updated KDA state"), "gather", 6, "02",
-      { titleSize: 9.5 });
-    b += box(436, 522, 344, 92,
-      M("S_t=(I-\\beta_tk_tk_t^{\\mathsf T})D_tS_{t-1}+\\beta_tk_tv_t^{\\mathsf T}",
-        "Exact column-state DPLR order"),
-      M("D_t=\\operatorname{Diag}(\\alpha_t)", "rank-1 factor acts after channel decay"),
-      "cyan", null, "02", { titleSize: 9.0, subSize: 7.8 });
+    b += box(50, 180, 150, 76, M("q_t", "q path"),
+      "ShortConv→SiLU→L2", "compute", null, "01", { subSize: 8.0 });
+    b += box(220, 180, 150, 76, M("k_t", "k path"),
+      "ShortConv→SiLU→L2", "compute", null, "01", { subSize: 8.0 });
+    b += box(390, 180, 150, 76, M("v_t", "v path"),
+      "ShortConv→SiLU", "compute", null, "01", { subSize: 8.0 });
+    b += box(560, 180, 150, 76, M("\\alpha_t\\in(0,1)^{d_k}", "Channel decay"),
+      "low-rank direct", "control", null, "03", { titleSize: 9.8, subSize: 8.0 });
+    b += box(730, 180, 150, 76, M("\\beta_t", "Write gate"),
+      "direct · sigmoid", "control", null, "03", { subSize: 8.0 });
+    b += box(900, 180, 150, 76, M("g_t", "Output gate"),
+      "low-rank direct", "control", null, "03", { subSize: 8.0 });
 
-    b += box(832, 402, 220, 94,
-      M("o_t=F_t(q_t/\\sqrt{d_k})", "5 · read with q"),
-      "same as S-transpose q", "gather", 7, "02");
-    b += box(832, 522, 220, 92,
-      M("W_O[\\operatorname{RMSNorm}(o_t)\\odot\\sigma(g_t)]", "Gate → WO → residual"),
-      "KDA block output", "gather", 8, "03", { titleSize: 9.2 });
-    b += box(40, 674, 220, 70, "NoPE global attention",
-      "checkpoint MLA variant · no positional encoding", "compute", null, "04", { subSize: 8.0 });
-    b += box(286, 674, 766, 70,
-      M("(\\mathrm{KDA}\\times3\\to\\mathrm{MLA\\!\\!-NoPE})\\times6\\;\\to\\;\\mathrm{KDA}\\times2\\to\\mathrm{MLA\\!\\!-NoPE}",
-        "(KDA×3→MLA-NoPE)×6 → KDA×2→MLA-NoPE"),
-      "checkpoint tail · layerwise sequence, not mixed heads", "orange", 9, "05", { titleSize: 10.2 });
+    b += box(300, 320, 500, 96,
+      M("F_t=F_{t-1}\\operatorname{Diag}(\\alpha_t)(I-\\beta_tk_tk_t^{\\mathsf T})+\\beta_tv_tk_t^{\\mathsf T}",
+        "Recurrence: channel decay, then delta write"),
+      M("F=S^{\\mathsf T}\\in\\mathbb R^{d_v\\times d_k}", "F = S^T in R^{dv×dk}"),
+      "state", 2, "02", { titleSize: 9.4 });
 
-    b += edge(rootId, ortho(144, 316, 176, 126), null, "compute");
-    b += edge(rootId, ortho(144, 316, 176, 196), null, "compute");
-    b += edge(rootId, ortho(144, 316, 176, 286), null, "compute");
-    b += edge(rootId, ortho(144, 316, 176, 385), null, "control");
-    b += edge(rootId, ortho(144, 316, 176, 471), null, "control");
-    b += edge(rootId, ortho(144, 316, 176, 557), null, "control");
-    b += edge(rootId, ortho(584, 128, 614, 128), null, "state");
-    b += edge(rootId, ortho(378, 385, 614, 144, "x", 598), null, "control");
-    b += edge(rootId, ortho(692, 164, 692, 184), null, "state");
-    b += edge(rootId, "M378 196H410V166H596V220H614", null, "compute");
-    b += edge(rootId, ortho(692, 256, 692, 290), null, "compute");
-    b += edge(rootId, ortho(378, 286, 614, 326, "x", 594), null, "compute");
-    b += edge(rootId, ortho(692, 362, 692, 402), null, "gather");
-    b += edge(rootId, ortho(378, 471, 604, 460, "x", 590), null, "control");
-    b += edge(rootId, ortho(692, 164, 604, 430, "x", 596), null, "state");
-    b += edge(rootId, ortho(780, 449, 832, 449), null, "gather");
-    b += edge(rootId, "M277 92V72H942V402",
-      [620, 82, "q read rail", 108], "compute");
-    b += edge(rootId, ortho(942, 496, 942, 522), null, "gather");
-    b += edge(rootId, "M277 588V638H806V566H832",
-      [610, 636, "output-gate rail", 144], "control");
-    b += edge(rootId, ortho(692, 496, 608, 522, "y", 508), null, "cyan");
-    b += edge(rootId, "M942 614V650H669V674", [820, 650, "checkpoint layer order", 196], "orange");
-    b += edge(rootId, ortho(260, 709, 286, 709), null, "orange");
-    return baseSvg(rootId, "kda", 772, b,
-      "KDA with separate q k v ShortConv paths, direct channel gates, exact DPLR order, and checkpoint-tail layer sequence");
+    b += box(300, 470, 240, 72,
+      M("o_t=F_t(q_t/\\sqrt{d_k})", "Read with q"),
+      null, "gather", 3, "02", { titleSize: 10.4 });
+    b += box(600, 470, 260, 72,
+      M("\\operatorname{RMSNorm}(o_t)\\odot\\sigma(g_t)", "Norm ⊙ output gate"),
+      null, "gather", 4, "03", { titleSize: 9.8 });
+    b += box(600, 586, 260, 56, M("W_O\\to u_t", "WO → residual"),
+      null, "gather", 5, "03");
+
+    b += box(60, 676, 220, 60, "MLA · NoPE",
+      "global attention · no PE", "compute", null, "04", { subSize: 8.2 });
+    b += box(320, 676, 740, 60,
+      "(KDA×3 → MLA-NoPE)×6 → KDA×2 → MLA-NoPE",
+      "checkpoint layer order · layerwise, not mixed heads", "orange", 6, "05",
+      { titleSize: 10.4, subSize: 8.2 });
+
+    b += edge(rootId, "M480 140V154H125V180", null, "compute");
+    b += edge(rootId, "M508 140V162H295V180", null, "compute");
+    b += edge(rootId, "M536 140V170H465V180", null, "compute");
+    b += edge(rootId, "M564 140V170H635V180", null, "control");
+    b += edge(rootId, "M592 140V162H805V180", null, "control");
+    b += edge(rootId, "M620 140V154H975V180", null, "control");
+    b += edge(rootId, "M295 256V288H400V320", null, "compute");
+    b += edge(rootId, ortho(465, 256, 465, 320), null, "compute");
+    b += edge(rootId, ortho(635, 256, 635, 320), null, "control");
+    b += edge(rootId, "M805 256V288H700V320", null, "control");
+    b += edge(rootId, "M800 344H844V392H800",
+      [860, 414, M("F_{t-1}\\;\\text{carry}", "carry F to t+1"), 150], "state");
+    b += edge(rootId, ortho(420, 416, 420, 470), null, "state");
+    b += edge(rootId, "M125 256V506H300", null, "compute");
+    b += edge(rootId, ortho(540, 506, 600, 506), null, "gather");
+    b += edge(rootId, "M975 256V506H860", null, "control");
+    b += edge(rootId, ortho(730, 542, 730, 586), null, "gather");
+    b += edge(rootId, ortho(730, 642, 730, 676),
+      [880, 656, "checkpoint layer order", 190], "orange");
+    b += edge(rootId, ortho(280, 706, 320, 706), null, "orange");
+    return baseSvg(rootId, "kda", 768, b,
+      "KDA following the Kimi Linear block figure: parallel conv and direct-gate projections, one channel-decay delta recurrence cell with a single feedback loop, gated readout, and the exact checkpoint layer order");
   }
 
   function key(config) {
