@@ -956,18 +956,40 @@ body.diagram-is-open { overflow: hidden; }
   .architecture-workbench {
     /* Diagram column gets >=840px of the 1440px workbench at 1500px+. */
     grid-template-columns: minmax(840px, 1.18fr) minmax(460px, .82fr);
-    align-items: stretch;
-  }
-  /* Match the IDE height to the diagram pane; the editor absorbs the slack. */
-  .architecture-workbench .code-ide {
-    display: flex;
-    flex-direction: column;
-    height: auto;
+    align-items: start;
   }
   .architecture-workbench .code-ide__editor {
+    height: clamp(300px, 32vh, 500px);
+  }
+  /* Both panes adopt the smaller natural height (set by course.js); the
+     taller one scrolls internally. */
+  .architecture-workbench.is-height-synced .architecture-pane,
+  .architecture-workbench.is-height-synced .code-ide {
+    height: var(--workbench-height);
+  }
+  .architecture-workbench.is-height-synced .architecture-pane {
+    display: flex;
+    flex-direction: column;
+  }
+  .architecture-workbench.is-height-synced .architecture-pane .diagram--report {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+  .architecture-workbench.is-height-synced .architecture-pane .diagram-canvas {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+  }
+  .architecture-workbench.is-height-synced .code-ide {
+    display: flex;
+    flex-direction: column;
+  }
+  .architecture-workbench.is-height-synced .code-ide__editor {
     flex: 1 1 auto;
     height: auto;
-    min-height: 280px;
+    min-height: 0;
   }
 }
 

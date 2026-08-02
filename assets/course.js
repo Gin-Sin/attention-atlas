@@ -166,12 +166,46 @@
     }
     button.addEventListener("click", function () {
       setExpanded(!figure.classList.contains("is-expanded"));
+      window.dispatchEvent(new Event("resize"));
     });
     document.addEventListener("keydown", function (event) {
       if (event.key === "Escape" && figure.classList.contains("is-expanded")) {
         setExpanded(false);
+        window.dispatchEvent(new Event("resize"));
       }
     });
+  }
+
+  function initWorkbenchHeightSync(scope) {
+    var workbench = scope.querySelector(".architecture-workbench");
+    if (!workbench) return;
+    var pane = workbench.querySelector(".architecture-pane");
+    var ide = workbench.querySelector(".code-ide");
+    var figure = workbench.closest(".report-figure");
+    if (!pane || !ide) return;
+
+    function apply() {
+      workbench.classList.remove("is-height-synced");
+      workbench.style.removeProperty("--workbench-height");
+      var sideBySide = window.matchMedia("(min-width: 1500px)").matches;
+      var expanded = figure && figure.classList.contains("is-expanded");
+      if (!sideBySide || expanded) return;
+      var unified = Math.min(pane.offsetHeight, ide.offsetHeight);
+      if (!isFinite(unified) || unified < 200) return;
+      workbench.style.setProperty("--workbench-height", unified + "px");
+      workbench.classList.add("is-height-synced");
+    }
+
+    var pending = 0;
+    function schedule() {
+      window.cancelAnimationFrame(pending);
+      pending = window.requestAnimationFrame(apply);
+    }
+    window.addEventListener("resize", schedule);
+    /* KaTeX and web fonts settle after first paint and shift heights. */
+    window.addEventListener("load", schedule);
+    window.setTimeout(schedule, 400);
+    apply();
   }
 
   function copyText(text) {
@@ -457,6 +491,7 @@
     initArchitectureWorkbench(root, implementations[c.id]);
     initCopyButtons(root);
     renderMath(root);
+    initWorkbenchHeightSync(root);
   }
 
   function populateHome() {
