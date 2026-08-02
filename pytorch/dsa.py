@@ -115,7 +115,7 @@ def detached_indexer_kl(
 # [/Block 02]
 
 
-# [Block 03] Low-dimensional routing and full-dimensional sparse attention
+# [Block 03] Two-stage module configuration and projections
 class DynamicSparseAttention(nn.Module):
     """Two-stage causal DSA teaching module.
 
@@ -172,7 +172,9 @@ class DynamicSparseAttention(nn.Module):
     def _causal_mask(self, length: int, device: torch.device) -> Tensor:
         positions = torch.arange(length, device=device)
         return positions[None, :, None] >= positions[None, None, :]
+    # [/Block 03]
 
+    # [Block 04] Lightning indexer scoring over the causal history
     def indexer_scores(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """Return causal index logits ``[B,L,L]`` and mask ``[1,L,L]``."""
         batch, length, _ = x.shape
@@ -189,7 +191,9 @@ class DynamicSparseAttention(nn.Module):
         scores = (per_head * weights[..., None]).sum(dim=1)
         causal = self._causal_mask(length, x.device)
         return scores.masked_fill(~causal, torch.finfo(scores.dtype).min), causal
+    # [/Block 04]
 
+    # [Block 05] Dense teacher distribution for indexer alignment
     def dense_teacher_probs(self, x: Tensor) -> Tensor:
         """Build a detached-target candidate from dense core attention."""
         length = x.size(1)
@@ -204,7 +208,9 @@ class DynamicSparseAttention(nn.Module):
         logits = logits * (self.head_dim ** -0.5)
         causal = self._causal_mask(length, x.device)[:, None, :, :]
         return masked_softmax(logits, causal, dim=-1).detach()
+    # [/Block 05]
 
+    # [Block 06] Causal top-k address selection
     def forward(
         self,
         x: Tensor,
@@ -229,7 +235,9 @@ class DynamicSparseAttention(nn.Module):
         query_positions = torch.arange(length, device=x.device)
         safe_self = query_positions[None, :, None].expand_as(selected)
         selected = torch.where(selected_valid, selected, safe_self)
+        # [/Block 06]
 
+        # [Block 07] Gather cached keys and values at selected addresses
         positions = torch.arange(length, device=x.device)
         queries = apply_partial_rope(
             self._heads(self.query(x)), positions, self.rotary_dim
@@ -240,7 +248,9 @@ class DynamicSparseAttention(nn.Module):
         values = self._heads(self.value(x))
         selected_keys = gather_per_query(keys, selected)
         selected_values = gather_per_query(values, selected)
+        # [/Block 07]
 
+        # [Block 08] Candidate-only core attention
         core_logits = torch.einsum("bhld,bhlkd->bhlk", queries, selected_keys)
         core_logits = core_logits * (self.head_dim ** -0.5)
         probabilities = masked_softmax(
@@ -250,6 +260,9 @@ class DynamicSparseAttention(nn.Module):
             "bhlk,bhlkd->bhld", probabilities, selected_values
         )
         context = context.transpose(1, 2).contiguous().view(batch, length, -1)
+        # [/Block 08]
+
+        # [Block 09] Output projection and auxiliary results
         result = self.output(context)
 
         if not return_aux:
@@ -265,10 +278,10 @@ class DynamicSparseAttention(nn.Module):
                 index_logits, teacher_probs, causal
             )
         return result, aux
-# [/Block 03]
+# [/Block 09]
 
 
-# [Block 04] Deterministic CPU smoke test
+# [Block 10] Deterministic CPU smoke test
 def _smoke_test() -> None:
     torch.manual_seed(7)
     model = DynamicSparseAttention(
@@ -303,4 +316,4 @@ def _smoke_test() -> None:
 
 if __name__ == "__main__":
     _smoke_test()
-# [/Block 04]
+# [/Block 10]

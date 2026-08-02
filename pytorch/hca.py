@@ -129,7 +129,7 @@ class NonOverlappingChannelCompressor(nn.Module):
 # [/Block 02]
 
 
-# [Block 03] Dense summary attention plus local raw attention
+# [Block 03] HCA module configuration and projections
 class HeavilyCompressedAttention(nn.Module):
     """Causal HCA over all heavy summaries and a recent uncompressed window."""
 
@@ -171,7 +171,9 @@ class HeavilyCompressedAttention(nn.Module):
         return projected.view(batch, length, self.num_heads, self.head_dim).transpose(
             1, 2
         )
+    # [/Block 03]
 
+    # [Block 04] Raw query/key/value lanes with partial RoPE
     def forward(
         self, x: Tensor, *, return_aux: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Dict[str, Tensor]]]:
@@ -191,7 +193,9 @@ class HeavilyCompressedAttention(nn.Module):
             canonical_raw_keys, raw_positions, self.rotary_dim
         )
         raw_values = self._heads(self.value(x))
+        # [/Block 04]
 
+        # [Block 05] Inverse-RoPE canonicalization and heavy compression
         # This explicit round trip teaches the position-safe compression rule.
         # A production kernel would keep/fuse the canonical content channels.
         keys_for_compression = apply_partial_rope(
@@ -211,7 +215,9 @@ class HeavilyCompressedAttention(nn.Module):
         compressed_keys_flat, compressed_values_flat = compressed.split(
             self.d_model, dim=-1
         )
+        # [/Block 05]
 
+        # [Block 06] Completed summary cache and causal publish gate
         summary_count = compressed.size(1)
         if summary_count:
             summary_keys = apply_partial_rope(
@@ -241,7 +247,9 @@ class HeavilyCompressedAttention(nn.Module):
             summary_valid = torch.empty(
                 batch, length, 0, dtype=torch.bool, device=x.device
             )
+        # [/Block 06]
 
+        # [Block 07] Recent raw sliding-window candidates
         offsets = torch.arange(self.local_window, device=x.device)
         local_indices = raw_positions[:, None] - offsets[None, :]
         local_valid = local_indices >= 0
@@ -249,7 +257,9 @@ class HeavilyCompressedAttention(nn.Module):
         batched_local = local_indices[None, :, :].expand(batch, -1, -1)
         local_keys = gather_per_query(positioned_raw_keys, batched_local)
         local_values = gather_per_query(raw_values, batched_local)
+        # [/Block 07]
 
+        # [Block 08] Dense softmax over all summaries and local tokens
         candidate_keys = torch.cat((dense_summary_keys, local_keys), dim=3)
         candidate_values = torch.cat((dense_summary_values, local_values), dim=3)
         candidate_valid = torch.cat(
@@ -270,6 +280,9 @@ class HeavilyCompressedAttention(nn.Module):
             "bhlk,bhlkd->bhld", probabilities, candidate_values
         )
         context = context.transpose(1, 2).contiguous().view(batch, length, -1)
+        # [/Block 08]
+
+        # [Block 09] Output projection and auxiliary results
         result = self.output(context)
 
         if not return_aux:
@@ -281,10 +294,10 @@ class HeavilyCompressedAttention(nn.Module):
             "local_indices": local_indices,
             "attention_probs": probabilities,
         }
-# [/Block 03]
+# [/Block 09]
 
 
-# [Block 04] Deterministic CPU smoke test
+# [Block 10] Deterministic CPU smoke test
 def _smoke_test() -> None:
     torch.manual_seed(19)
     model = HeavilyCompressedAttention(
@@ -321,4 +334,4 @@ def _smoke_test() -> None:
 
 if __name__ == "__main__":
     _smoke_test()
-# [/Block 04]
+# [/Block 10]

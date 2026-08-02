@@ -673,40 +673,40 @@
     b += panel(24, 340, 1052, 260, "LOWER LANE · MLA LATENT CACHE → GATHER → CANDIDATE MLA", "gather");
 
     b += box(40, 104, 112, 62, M("h_t", "Query hidden"),
-      "detached index input", "compute", 1, "03");
+      "detached index input", "compute", 1, "04");
     b += box(40, 214, 112, 62, M("h_{1:L}", "History hidden"),
-      "index-key source", "compute", null, "03");
+      "index-key source", "compute", null, "04");
     b += box(184, 88, 178, 82, M("q_{t,j}^I", "Indexer qI heads"),
-      "pRoPE → Hadamard → FP8", "compute", 2, "03");
+      "pRoPE → Hadamard → FP8", "compute", 2, "04");
     b += cacheBox(184, 202, 178, 82, M("k_{1:L}^I", "Indexer kI cache"),
-      "pRoPE → Hadamard → FP8", 3, "03");
+      "pRoPE → Hadamard → FP8", 3, "04");
     b += box(398, 74, 132, 64, M("w_{t,j}^I", "Head weights wI"),
-      "direct projection", "control", null, "03");
+      "direct projection", "control", null, "04");
     b += box(398, 170, 214, 94,
       M("I_{t,s}=\\sum_jw_{t,j}^I\\operatorname{ReLU}(q_{t,j}^{I\\mathsf T}k_s^I)",
         "Full-history Indexer logits"),
-      M("[B,L_q,L_k]", "every history position"), "compute", 4, "03", { titleSize: 8.8 });
+      M("[B,L_q,L_k]", "every history position"), "compute", 4, "04", { titleSize: 8.8 });
     b += box(646, 176, 166, 80, M("\\mathcal I_t=\\operatorname{TopK}_s(I_{t,s},k)", "TopK addresses"),
-      "indices only", "control", 5, "03", { titleSize: 9.8 });
+      "indices only", "control", 5, "06", { titleSize: 9.8 });
 
     b += box(844, 68, 202, 72, "Teacher full MLA logits",
-      "detach · dense warm-up", "orange", null, "02", { dashed: true });
+      "detach · dense warm-up", "orange", null, "05", { dashed: true });
     b += box(844, 194, 202, 72,
       M("D_{\\mathrm{KL}}(p_t\\Vert\\operatorname{softmax}I_t)", "Indexer KL loss"),
       "training only", "orange", null, "02", { dashed: true });
 
     b += cacheBox(328, 402, 250, 86, "MLA latent cache",
-      M("\\{c_s^{KV},k_s^R\\}_{s=1}^{L}", "full history · original latent"), 6, "03");
+      M("\\{c_s^{KV},k_s^R\\}_{s=1}^{L}", "full history · original latent"), 6, "07");
     b += box(646, 390, 166, 88,
       M("\\operatorname{Gather}(\\{c^{KV},k^R\\},\\mathcal I_t)", "Gather candidates"),
-      null, "gather", 7, "01", { titleSize: 9.6 });
+      null, "gather", 7, "07", { titleSize: 9.6 });
     b += box(646, 508, 166, 64, M("q_t^C,q_t^R", "MLA query"),
-      "high-dimensional", "compute", null, "01");
+      "high-dimensional", "compute", null, "07");
     b += box(844, 386, 202, 108,
       M("o_t=\\operatorname{softmax}_{\\mathcal I_t}\\!(S_t)V", "Candidate-only exact MLA"),
-      "renormalize in selected set", "compute", 8, "03", { titleSize: 9.8 });
+      "renormalize in selected set", "compute", 8, "08", { titleSize: 9.8 });
     b += box(844, 524, 202, 58, M("W^O\\to u_t", "Output projection"),
-      "residual write", "gather", 9, "03");
+      "residual write", "gather", 9, "09");
 
     b += edge(rootId, "M152 135H168V129H184", null, "compute");
     b += edge(rootId, "M152 245H168V243H184", null, "state");
@@ -745,37 +745,37 @@
       M("\\theta_I\\ne\\theta_C", "independent parameters"), "compute", 3, "02", { titleSize: 9.8 });
 
     b += cacheBox(410, 92, 160, 88, M("C^{\\mathrm{Comp}}_{1:L/m}", "CComp cache"),
-      "core content entries", 4, "03");
+      "core content entries", 4, "06");
     b += cacheBox(410, 242, 160, 88, M("K^{I\\mathrm{Comp}}_{1:L/m}", "KIComp cache"),
-      "index keys only", 5, "03");
+      "index keys only", 5, "04");
     b += box(410, 382, 160, 70, M("q_t^I,w_t^I", "Indexer query"),
-      "independent path", "compute", null, "03");
+      "independent path", "compute", null, "04");
     b += box(594, 222, 146, 86,
       M("I_t=\\operatorname{Index}(q_t^I,w_t^I,K^{I\\mathrm{Comp}})", "Score KIComp"),
-      null, "compute", 6, "03", { titleSize: 8.8 });
+      null, "compute", 6, "04", { titleSize: 8.8 });
     b += box(594, 346, 146, 70, M("\\mathcal J_t=\\operatorname{TopK}(I_t)", "TopK addresses"),
-      null, "control", 7, "03", { titleSize: 9.8 });
+      null, "control", 7, "04", { titleSize: 9.8 });
     b += box(594, 468, 146, 78,
       M("\\operatorname{Gather}(C^{\\mathrm{Comp}},\\mathcal J_t)", "Gather CComp"),
-      null, "gather", 8, "03", { titleSize: 9.6 });
+      null, "gather", 8, "06", { titleSize: 9.6 });
 
     b += cacheBox(800, 82, 116, 84, "SWA cache",
-      "recent raw · pRoPE", 9, "03", { subSize: 8.2 });
+      "recent raw · pRoPE", 9, "07", { subSize: 8.2 });
     b += box(938, 82, 116, 84, "Query lane",
       M("q_t\\cdot\\operatorname{pRoPE}_{64}", "Hq heads"),
-      "compute", 10, "03", { subSize: 8.1 });
+      "compute", 10, "05", { subSize: 8.1 });
     b += box(800, 222, 254, 112,
       M("\\operatorname{MQA}_{K=V}(q_t;\\mathrm{sink},C_{\\mathcal J_t},C_{\\mathrm{SWA}})",
         "One shared-KV MQA + sink"),
-      "one softmax: sink + global + SWA", "compute", 11, "03",
+      "one softmax: sink + global + SWA", "compute", 11, "08",
       { titleSize: 9.2, subSize: 8.2 });
     b += box(800, 374, 254, 66, M("\\operatorname{RoPE}^{-1}_{64}(-t)", "Inverse partial RoPE"),
       null, "compute", 12, "01");
     b += box(800, 478, 254, 70,
       M("W^{OA}_{\\mathrm{group}}\\to\\operatorname{Concat}\\to W^{OB}", "Grouped output projection"),
-      null, "gather", 13, "03", { titleSize: 9.6 });
+      null, "gather", 13, "09", { titleSize: 9.6 });
     b += box(800, 584, 254, 48, M("u_t", "Output hidden"),
-      M("[B,L,d]", "[B,L,d]"), "gather", 14, "03");
+      M("[B,L,d]", "[B,L,d]"), "gather", 14, "09");
 
     b += edge(rootId, "M152 284H168V147H184", null, "compute");
     b += edge(rootId, "M152 284H168V397H184", null, "compute");
@@ -810,29 +810,29 @@
       "m'=128 · per-channel softmax",
       "compute", 2, "02", { titleSize: 9.2, subSize: 8.2 });
     b += box(184, 86, 176, 72, "Causal publish gate",
-      "only closed blocks visible", "control", 3, "02");
+      "only closed blocks visible", "control", 3, "06");
 
     b += cacheBox(426, 116, 304, 92, "Completed CComp cache",
       M("\\{C_i^{\\mathrm{Comp}}:m'(i+1)\\le t\\}", "closed summaries · pRoPE"),
-      4, "03");
+      4, "06");
     b += cacheBox(426, 356, 138, 88, "SWA cache",
-      "recent raw · w=128", 5, "03", { subSize: 8.1 });
+      "recent raw · w=128", 5, "07", { subSize: 8.1 });
     b += box(592, 356, 138, 88, "Query lane",
       M("q_t\\cdot\\operatorname{pRoPE}_{64}", "Hq heads"),
-      "compute", 6, "03", { subSize: 8.1 });
+      "compute", 6, "04", { subSize: 8.1 });
 
     b += box(800, 188, 252, 118,
       M("\\operatorname{MQA}_{K=V}(q_t;\\mathrm{sink},C_{\\mathrm{all}},C_{\\mathrm{SWA}})",
         "Dense shared-KV MQA + sink"),
-      "one softmax: sink + all CComp + SWA", "compute", 7, "03",
+      "one softmax: sink + all CComp + SWA", "compute", 7, "08",
       { titleSize: 9.1, subSize: 8.2 });
     b += box(800, 346, 252, 66, M("\\operatorname{RoPE}^{-1}_{64}(-t)", "Inverse partial RoPE"),
-      null, "compute", 8, "01");
+      null, "compute", 8, "05");
     b += box(800, 452, 252, 70,
       M("W^{OA}_{\\mathrm{group}}\\to\\operatorname{Concat}\\to W^{OB}", "Grouped output projection"),
-      null, "gather", 9, "03", { titleSize: 9.6 });
+      null, "gather", 9, "09", { titleSize: 9.6 });
     b += box(800, 552, 252, 48, M("u_t", "Output hidden"),
-      M("[B,L,d]", "[B,L,d]"), "gather", 10, "03");
+      M("[B,L,d]", "[B,L,d]"), "gather", 10, "09");
 
     b += edge(rootId, "M152 300H168V263H184", null, "compute");
     b += edge(rootId, ortho(272, 200, 272, 158), null, "control");

@@ -1491,6 +1491,15 @@ pre[data-line] {
   stroke-width: 3px !important;
   filter: drop-shadow(0 0 6px rgb(200 120 50 / 58%));
 }
+
+/* Other diagram nodes that share the selected code block: hint, don't shout.
+   Solid thin stroke so it cannot be confused with dashed training edges. */
+.diagram-code-node.is-code-related > rect,
+.diagram-code-node.is-code-related > polygon {
+  stroke: color-mix(in srgb, var(--annotation-orange) 62%, transparent) !important;
+  stroke-width: 1.8px !important;
+  filter: none;
+}
 .diagram-code-node .svg-math-switch,
 .diagram-code-node foreignObject,
 .diagram-code-node foreignObject * {

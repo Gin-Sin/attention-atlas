@@ -137,7 +137,7 @@ class OverlappingChannelCompressor(nn.Module):
 # [/Block 02]
 
 
-# [Block 03] Compressed top-k plus recent raw window
+# [Block 03] CSA module configuration and projections
 class CompressedSparseAttention(nn.Module):
     """Causal CSA with overlapping summaries, indexer top-k, and local tokens."""
 
@@ -191,7 +191,9 @@ class CompressedSparseAttention(nn.Module):
         return projected.view(batch, length, self.num_heads, self.head_dim).transpose(
             1, 2
         )
+    # [/Block 03]
 
+    # [Block 04] Compressed indexer scoring and summary top-k
     def _compressed_topk(
         self, x: Tensor, summaries: Tensor, summary_positions: Tensor
     ) -> Tuple[Tensor, Tensor, Tensor]:
@@ -227,7 +229,9 @@ class CompressedSparseAttention(nn.Module):
         _, indices = torch.topk(logits, k=choices, dim=-1)
         valid = torch.gather(causal.expand(batch, -1, -1), 2, indices)
         return logits, torch.where(valid, indices, torch.zeros_like(indices)), valid
+    # [/Block 04]
 
+    # [Block 05] Summary routing and raw query/key/value lanes
     def forward(
         self, x: Tensor, *, return_aux: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Dict[str, Tensor]]]:
@@ -251,7 +255,9 @@ class CompressedSparseAttention(nn.Module):
             self._heads(self.key(x)), raw_positions, self.rotary_dim
         )
         raw_values = self._heads(self.value(x))
+        # [/Block 05]
 
+        # [Block 06] Gather selected compressed keys and values
         if summaries.size(1):
             compressed_keys = apply_partial_rope(
                 self._heads(self.key(summaries)),
@@ -268,7 +274,9 @@ class CompressedSparseAttention(nn.Module):
             chosen_values = raw_values.new_empty(
                 batch, self.num_heads, length, 0, self.head_dim
             )
+        # [/Block 06]
 
+        # [Block 07] Recent raw sliding-window candidates
         offsets = torch.arange(self.local_window, device=x.device)
         local_indices = raw_positions[:, None] - offsets[None, :]
         local_valid = local_indices >= 0
@@ -276,7 +284,9 @@ class CompressedSparseAttention(nn.Module):
         batched_local = local_indices[None, :, :].expand(batch, -1, -1)
         local_keys = gather_per_query(raw_keys, batched_local)
         local_values = gather_per_query(raw_values, batched_local)
+        # [/Block 07]
 
+        # [Block 08] One shared softmax over summaries and local tokens
         candidate_keys = torch.cat((chosen_keys, local_keys), dim=3)
         candidate_values = torch.cat((chosen_values, local_values), dim=3)
         candidate_valid = torch.cat(
@@ -297,6 +307,9 @@ class CompressedSparseAttention(nn.Module):
             "bhlk,bhlkd->bhld", probabilities, candidate_values
         )
         context = context.transpose(1, 2).contiguous().view(batch, length, -1)
+        # [/Block 08]
+
+        # [Block 09] Output projection and auxiliary results
         result = self.output(context)
 
         if not return_aux:
@@ -310,10 +323,10 @@ class CompressedSparseAttention(nn.Module):
             "local_indices": local_indices,
             "attention_probs": probabilities,
         }
-# [/Block 03]
+# [/Block 09]
 
 
-# [Block 04] Deterministic CPU smoke test
+# [Block 10] Deterministic CPU smoke test
 def _smoke_test() -> None:
     torch.manual_seed(11)
     model = CompressedSparseAttention(
@@ -358,4 +371,4 @@ def _smoke_test() -> None:
 
 if __name__ == "__main__":
     _smoke_test()
-# [/Block 04]
+# [/Block 10]

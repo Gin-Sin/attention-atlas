@@ -330,13 +330,20 @@
       if (fullSource && scrollToLine) scrollToSourceLine(block);
     }
 
-    function syncDiagramNodes() {
+    function syncDiagramNodes(sourceNode) {
+      var primary = sourceNode || null;
       diagramNodes.forEach(function (node) {
-        var active = normalizeId(node.getAttribute("data-code-block")) === currentId;
-        node.classList.toggle("is-active", active);
-        node.classList.toggle("is-code-active", active);
-        node.setAttribute("aria-pressed", active ? "true" : "false");
+        var matches = normalizeId(node.getAttribute("data-code-block")) === currentId;
+        node.classList.remove("is-active", "is-code-active", "is-code-related");
+        node.setAttribute("aria-pressed", "false");
+        if (!matches) return;
+        if (!primary) primary = node;
+        if (node !== primary) node.classList.add("is-code-related");
       });
+      if (primary) {
+        primary.classList.add("is-code-active");
+        primary.setAttribute("aria-pressed", "true");
+      }
     }
 
     function revealIdeIfNeeded() {
@@ -364,7 +371,7 @@
       currentId = normalized;
       select.value = currentId;
       lines.textContent = "Lines " + block.start + "–" + block.end;
-      syncDiagramNodes();
+      syncDiagramNodes(options && options.sourceNode);
       refreshEditor(true);
       setStatus("Block " + currentId + " 已选中 · " +
         (fullSource ? "完整源码已定位到高亮行；" : "编辑器显示当前代码块；") +
@@ -380,12 +387,12 @@
       node.setAttribute("role", "button");
       node.setAttribute("aria-label", "查看代码块 " + id + "：" + block.title);
       node.addEventListener("click", function () {
-        selectBlock(id, { reveal: true });
+        selectBlock(id, { reveal: true, sourceNode: node });
       });
       node.addEventListener("keydown", function (event) {
         if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
         event.preventDefault();
-        selectBlock(id, { reveal: true });
+        selectBlock(id, { reveal: true, sourceNode: node });
       });
     });
 
