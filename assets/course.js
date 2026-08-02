@@ -101,16 +101,17 @@
       '<div class="code-ide__titlebar"><span class="code-ide__traffic" aria-hidden="true">' +
       '<i></i><i></i><i></i></span><a class="code-ide__meta" href="' +
       esc(implementation.path) + '" title="打开完整源码 ' + esc(implementation.path) +
-      '">Source · ' + esc(implementation.path) + '</a><a class="code-ide__button" href="' +
-      esc(implementation.path) + '" download title="下载完整源码" aria-label="下载完整源码">↓</a></div>' +
+      '">' + esc(implementation.path) + '</a><span class="code-ide__icons">' +
+      '<button class="code-ide__icon" type="button" data-workbench-mode aria-pressed="false" title="查看完整源码" aria-label="查看完整源码">⛶</button>' +
+      '<button class="code-ide__icon" type="button" data-workbench-copy title="复制当前代码" aria-label="复制当前代码">⧉</button>' +
+      '<a class="code-ide__icon" href="' + esc(implementation.path) +
+      '" download title="下载完整源码" aria-label="下载完整源码">↓</a></span></div>' +
       '<div class="code-ide__toolbar"><div class="code-ide__meta"><span data-workbench-block-label>Block ' +
       esc(initialId) + '</span> · <strong data-workbench-title>' + esc(initial.title) +
       '</strong> · <span data-workbench-lines>Lines ' + esc(initial.start) + "–" +
-      esc(initial.end) + '</span></div><div class="code-ide__actions">' +
-      '<select class="code-ide__jump" data-workbench-select aria-label="选择实现代码块">' +
-      options + '</select><button class="code-ide__button" type="button" data-workbench-jump>跳转</button>' +
-      '<button class="code-ide__button" type="button" data-workbench-mode aria-pressed="false">完整源码</button>' +
-      '<button class="code-ide__button" type="button" data-workbench-copy>复制</button></div></div>' +
+      esc(initial.end) + '</span></div>' +
+      '<select class="code-ide__jump" data-workbench-select aria-label="选择实现代码块" title="跳转到指定代码块">' +
+      options + '</select></div>' +
       '<p class="code-ide__status" data-workbench-status aria-live="polite">' +
       "选择架构图节点，或从列表跳转到对应实现。</p>" +
       '<pre class="code-ide__editor language-python line-numbers" data-workbench-pre data-start="' +
@@ -228,7 +229,6 @@
     });
 
     var select = ide.querySelector("[data-workbench-select]");
-    var jumpButton = ide.querySelector("[data-workbench-jump]");
     var modeButton = ide.querySelector("[data-workbench-mode]");
     var copyButton = ide.querySelector("[data-workbench-copy]");
     var blockLabel = ide.querySelector("[data-workbench-block-label]");
@@ -364,29 +364,27 @@
     select.addEventListener("change", function () {
       selectBlock(select.value);
     });
-    jumpButton.addEventListener("click", function () {
-      selectBlock(select.value);
-    });
     modeButton.addEventListener("click", function () {
       fullSource = !fullSource;
       modeButton.setAttribute("aria-pressed", fullSource ? "true" : "false");
-      modeButton.textContent = fullSource ? "仅看当前块" : "查看完整源码";
+      var modeHint = fullSource ? "仅看当前块" : "查看完整源码";
+      modeButton.setAttribute("title", modeHint);
+      modeButton.setAttribute("aria-label", modeHint);
       refreshEditor(true);
       setStatus(fullSource
         ? "完整源码模式 · 当前块行号已高亮。"
         : "当前代码块模式 · 仅显示选中实现。");
     });
     copyButton.addEventListener("click", function () {
-      var original = copyButton.textContent;
       copyText(displayedCode).then(function () {
-        copyButton.textContent = "✓ 已复制";
+        copyButton.textContent = "✓";
         setStatus(fullSource ? "完整源码已复制。" : "当前代码块已复制。");
       }).catch(function () {
-        copyButton.textContent = "复制失败";
+        copyButton.textContent = "✕";
         setStatus("复制失败，请从编辑器中手动选择代码。");
       }).finally(function () {
         window.setTimeout(function () {
-          copyButton.textContent = original;
+          copyButton.textContent = "⧉";
         }, 1500);
       });
     });

@@ -1081,13 +1081,39 @@ body.diagram-is-open { overflow: hidden; }
   background: currentColor;
   box-shadow: 0 0 0 3px rgb(102 199 141 / 12%);
 }
-.code-ide__actions {
-  display: grid;
-  width: 100%;
-  min-width: 0;
+.code-ide__icons {
+  display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  grid-template-columns: minmax(140px, 1fr) repeat(3, max-content);
-  gap: 7px;
+  gap: 5px;
+}
+.code-ide__icon {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #9fb1c1;
+  background: transparent;
+  cursor: pointer;
+  text-decoration: none;
+  font: 500 13px/1 var(--mono);
+}
+.code-ide__icon:hover {
+  color: white;
+  border-color: #587083;
+  background: #1c2c37;
+}
+.code-ide__icon:focus-visible {
+  outline: 2px solid var(--ide-orange);
+  outline-offset: 2px;
+}
+.code-ide__icon[aria-pressed="true"] {
+  color: var(--ide-orange);
+  border-color: #587083;
+  background: #1c2c37;
 }
 .code-ide__jump,
 .code-ide__button {
@@ -1146,7 +1172,15 @@ body.diagram-is-open { overflow: hidden; }
   scrollbar-color: #405461 #0b1218;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  font: 12px/1.72 var(--mono);
+  font: 10.5px/1.7 var(--mono);
+}
+
+/* Outrank Prism's pre[class*="language-"] font sizing from the CDN theme. */
+.code-ide pre.code-ide__editor,
+.code-ide pre.code-ide__editor > code {
+  font-family: var(--mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.7;
   text-align: left;
   text-shadow: none;
   white-space: pre;
@@ -1192,7 +1226,7 @@ pre:has(> code[data-code-block]),
   overflow: auto;
   color: #d9e2e7;
   background: #0b1218;
-  font: 12px/1.72 var(--mono);
+  font: 10.5px/1.7 var(--mono);
   tab-size: 4;
   text-align: left;
   text-shadow: none;
