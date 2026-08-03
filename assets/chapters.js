@@ -132,7 +132,7 @@
         },
         {
           q: "MQA 是否把注意力计算从二次复杂度变成线性复杂度？",
-          hint: "考察长度 L 对 QKᵀ 的影响。",
+          hint: R`考察长度 \(L\) 对 \(QK^{\mathsf T}\) 的影响。`,
           answer: R`否。prefill 仍需要对 \(L\times L\) 的位置对计算分数，关于序列长度仍为二次；MQA 主要减少 KV 存储与解码时的数据搬运。`
         }
       ],
@@ -281,7 +281,7 @@
             因此可把 \(W_i^{UK}\) 合并进查询侧；同理 \(W_i^{UV}\) 可与输出投影合并。decode 直接对 latent 做 core attention，RoPE key 因位置旋转而单独保留；显式恢复 K/V 只是等价说明或训练实现选择。`
         }
       ],
-      warning: "“KV cache 减少 93.3%”和“最大生成吞吐 5.76×”是 DeepSeek-V2 官方对指定 checkpoint、DeepSeek-67B 基线、层配置、量化与系统实现的自报结果，不是 MLA 算子的固定倍率；结构性缓存公式应单独写成 \(d_c+d_h^R\)。",
+      warning: R`“KV cache 减少 93.3%”和“最大生成吞吐 5.76×”是 DeepSeek-V2 官方对指定 checkpoint、DeepSeek-67B 基线、层配置、量化与系统实现的自报结果，不是 MLA 算子的固定倍率；结构性缓存公式应单独写成 \(d_c+d_h^R\)。`,
       exercises: [
         {
           q: R`若 MHA 每 token 缓存 \(2H d_h=2\times32\times128\) 个元素，而 MLA 缓存 \(d_c+d_h^R=512+64\) 个元素，理论元素数比是多少？`,
@@ -314,7 +314,7 @@
       takeaway: "DSA 的候选单位是 MLA 的 token-indexed latent entry；它没有论文定义中的额外局部窗口，短序列 masked-MHA 只是实现 DSA 的 kernel 路径。",
       motivation: [
         R`MLA 解决了每个 token 缓存过宽的问题，但 dense attention 仍要让每个 query 与所有历史位置做高维交互；上下文极长时，算量仍随 \(L^2\) 增长。`,
-        "DSA 引入 Lightning Indexer：用低维低精度路径估计相关性，为每个 query 选择 k 个历史位置；core 读取这些位置的 MLA latent \(c_s^{KV}\)，而非另造一套高维候选缓存。",
+        R`DSA 引入 Lightning Indexer：用低维低精度路径估计相关性，为每个 query 选择 k 个历史位置；core 读取这些位置的 MLA latent \(c_s^{KV}\)，而非另造一套高维候选缓存。`,
         "DeepSeek-V3.2-Exp/V3.2 通过 continued training 加入 DSA；“质量基本持平”和部署成本曲线均属于官方 checkpoint/服务自报，报告也引用了部分独立长上下文评测。"
       ],
       constraints: [
@@ -418,7 +418,7 @@
         { label: "Select", title: "从摘要中搜索", body: "Indexer 选择相关压缩条目，而非原始 token。" },
         { label: "SWA", title: "桌面上的原件", body: "最近 token 保持未压缩，保证局部细节和因果覆盖。" }
       ],
-      diagram: { type: "compressed", mode: "csa", caption: "CSA：独立压缩出 \(C^{Comp}\)（宽 c）与 \(K^{IComp}\)（宽 \(c^I\)）；Indexer 用后者选 top-k，MQA 用前者读写，滑窗保留近期 token。" },
+      diagram: { type: "compressed", mode: "csa", caption: R`CSA：独立压缩出 \(C^{\mathrm{Comp}}\)（宽 \(c\)）与 \(K^{I\mathrm{Comp}}\)（宽 \(c^I\)）；Indexer 用后者选 top-k，MQA 用前者读写，滑窗保留近期 token。` },
       derivations: [
         {
           title: "沿序列维做重叠学习式压缩",
@@ -457,7 +457,7 @@
             所以真实条目的权重和可小于 1。官方 checkpoint 配置为 \(m=4,w=128\)，Indexer 64 头×128 维且 QK 用 FP4；Flash/Pro 的 top-k 分别为 512/1024。这些都是官方模型配置。`
         }
       ],
-      warning: "DeepSeek-V4 是 2026 预览报告。百万上下文 FLOPs/cache、FP4 Indexer、召回与吞吐数字都是官方且 checkpoint/实现特定的自报；结构描述还必须同时计 \(C^{Comp}\)、\(K^{IComp}\)、滑窗、RMSNorm 与 sink。",
+      warning: R`DeepSeek-V4 是 2026 预览报告。百万上下文 FLOPs/cache、FP4 Indexer、召回与吞吐数字都是官方且 checkpoint/实现特定的自报；结构描述还必须同时计 \(C^{\mathrm{Comp}}\)、\(K^{I\mathrm{Comp}}\)、滑窗、RMSNorm 与 sink。`,
       exercises: [
         {
           q: R`\(L=1{,}000{,}000\)，CSA 的 \(m=4\)、\(k=512\)。压缩池有多少条目？每个 query 的 core 只读其中多少比例？`,
@@ -502,7 +502,7 @@
         { label: "Read", title: "完整阅读短目录", body: "没有 Indexer，也没有 top-k 选择遗漏。" },
         { label: "Trade-off", title: "不漏目录，但目录会丢细节", body: "选择误差消失，压缩误差变成主要风险。" }
       ],
-      diagram: { type: "compressed", mode: "hca", caption: "HCA（compressed-dense）：对全部因果已完成的宽 c 压缩条目做 dense MQA；局部滑窗覆盖当前未闭合块与近期 token。" },
+      diagram: { type: "compressed", mode: "hca", caption: R`HCA（compressed-dense）：对全部因果已完成的宽 \(c\) 压缩条目做 dense MQA；局部滑窗覆盖当前未闭合块与近期 token。` },
       derivations: [
         {
           title: "非重叠重压缩",
@@ -564,14 +564,14 @@
       difficulty: "高阶",
       report: "Transformers are RNNs",
       deck: "线性注意力通过核特征映射与矩阵乘法结合律，不再显式构造 L×L 注意力图；因果推理可写成固定大小状态的递推。",
-      takeaway: "先算 QKᵀ 再乘 V 是二次的；若相似度可分解为 φ(q)ᵀφ(k)，就能先累计 KV，再让 q 读取。",
+      takeaway: R`先算 \(QK^{\mathsf T}\) 再乘 \(V\) 是二次的；若相似度可分解为 \(\phi(q)^{\mathsf T}\phi(k)\)，就能先累计 KV，再让 \(q\) 读取。`,
       motivation: [
-        "softmax(QKᵀ)V 的计算顺序会显式形成长度平方的分数矩阵，极长序列训练和推理代价高。",
-        "若相似度写成核内积 φ(q)ᵀφ(k)，利用结合律可先计算 Σφ(k)vᵀ，序列维被汇总到固定矩阵状态。",
+        R`\(\operatorname{softmax}(QK^{\mathsf T})V\) 的计算顺序会显式形成长度平方的分数矩阵，极长序列训练和推理代价高。`,
+        R`若相似度写成核内积 \(\phi(q)^{\mathsf T}\phi(k)\)，利用结合律可先计算 \(\sum\phi(k)v^{\mathsf T}\)，序列维被汇总到固定矩阵状态。`,
         "因果场景中该汇总可按 token 递推为常数状态。这个代数等价不等于声称 2020 原实现采用了后来流行的 prefix-scan 或 chunk 算法。"
       ],
       constraints: [
-        { label: "核约束", title: "不再是精确 softmax", body: "必须选择可分解特征映射 φ；核的归纳偏置决定模型可表达的相似性。" },
+        { label: "核约束", title: "不再是精确 softmax", body: R`必须选择可分解特征映射 \(\phi\)；核的归纳偏置决定模型可表达的相似性。` },
         { label: "状态容量", title: "固定状态会发生干扰", body: "所有历史写入同一个矩阵，精确复制和多键检索常弱于 full attention。" },
         { label: "硬件现实", title: R`\(O(L)\) 不等于一定更快`, body: "短序列上，成熟的 FlashAttention 可能因更高算术强度而更快。" }
       ],
@@ -580,7 +580,7 @@
         { label: "Linear", title: "维护统计台账", body: "历史到来时写入固定状态，query 直接查台账。" },
         { label: "代价", title: "位置可解释性下降", body: "通常无法还原一个显式 L×L 注意力图。" }
       ],
-      diagram: { type: "linear", caption: "线性注意力：每个 (k,v) 写入状态 S,z；q 从固定状态读取，不保存完整历史表。" },
+      diagram: { type: "linear", caption: R`线性注意力：每个 \((k,v)\) 写入状态 \(S,z\)；\(q\) 从固定状态读取，不保存完整历史表。` },
       derivations: [
         {
           title: "从核分解到结合律",
@@ -640,8 +640,8 @@
       deck: R`普通线性注意力不断叠加写入；Delta rule 先读再写残差，Gated DeltaNet 再加入遗忘。论文用 \(F_t\in\mathbb R^{d_v\times d_k}\)，本站统一转置为 \(S_t=F_t^\top\in\mathbb R^{d_k\times d_v}\)。`,
       takeaway: "加法记忆是“追加”；Delta rule 是“按 key 修正”；gate 是“先清场再修正”。三者逐步减少固定状态中的干扰。",
       motivation: [
-        "普通线性状态 S←S+kvᵀ 对相同或相近 key 反复写入时会累积冲突，无法像字典一样覆盖旧值。",
-        "Delta rule 计算当前状态对 key 的预测 Sᵀk，用目标 value 与预测之差作为写入量，因此更新集中在尚未记住的信息。",
+        R`普通线性状态 \(S\leftarrow S+kv^{\mathsf T}\) 对相同或相近 key 反复写入时会累积冲突，无法像字典一样覆盖旧值。`,
+        R`Delta rule 计算当前状态对 key 的预测 \(S^{\mathsf T}k\)，用目标 value 与预测之差作为写入量，因此更新集中在尚未记住的信息。`,
         "Gated DeltaNet 在 delta 更新前对整个状态乘可学习衰减 αt，兼具快速遗忘与精确键值修改；论文还给出并行 chunk 算法。"
       ],
       constraints: [
@@ -885,7 +885,7 @@
     mqa: {
       positionEncoding: {
         title: "MQA 论文评测 learned absolute PE；机制仍与 PE 正交",
-        summary: "Shazeer 的 WMT 基线明确使用 learned positional embeddings，并把 encoder self-attention、decoder self-attention 和 cross-attention 全部替换为 MQA；decoder-only LM 也另行评测。MQA 定义只规定共享 K/V，不能虚构一个适用于所有 PE 的通用加性 \(B_{\rm pos}\)。",
+        summary: R`Shazeer 的 WMT 基线明确使用 learned positional embeddings，并把 encoder self-attention、decoder self-attention 和 cross-attention 全部替换为 MQA；decoder-only LM 也另行评测。MQA 定义只规定共享 K/V，不能虚构一个适用于所有 PE 的通用加性 \(B_{\rm pos}\)。`,
         equation: R`\[
           \text{absolute: }X_p=E[\mathrm{token}_p]+P_p,\quad
           S_h=\frac{Q_hK^\top}{\sqrt{d_h}}+M;

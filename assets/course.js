@@ -18,34 +18,10 @@
     return esc(value).replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
   }
 
+  /* Diagram notes/captions/memory carry real KaTeX \(...\) markup, so they
+     only need HTML escaping before the auto-renderer runs. */
   function technicalText(value) {
-    var replacements = {
-      cKV: "\\(c^{KV}\\)",
-      cQ: "\\(c^{Q}\\)",
-      kR: "\\(k^{R}\\)",
-      qI: "\\(q^{I}\\)",
-      kI: "\\(k^{I}\\)",
-      Hkv: "\\(H_{kv}\\)",
-      Hq: "\\(H_q\\)",
-      Lq: "\\(L_q\\)",
-      Lk: "\\(L_k\\)",
-      dk: "\\(d_k\\)",
-      dv: "\\(d_v\\)",
-      dh: "\\(d_h\\)",
-      dc: "\\(d_c\\)",
-      dR: "\\(d_R\\)",
-      WUK: "\\(W^{UK}\\)",
-      WUV: "\\(W^{UV}\\)",
-      WOA: "\\(W^{OA}\\)",
-      WOB: "\\(W^{OB}\\)",
-      WKR: "\\(W^{KR}\\)",
-      WQR: "\\(W^{QR}\\)",
-      WIUQ: "\\(W^{IUQ}\\)",
-      WIK: "\\(W^{IK}\\)"
-    };
-    return esc(value).replace(/\b(cKV|cQ|kR|qI|kI|Hkv|Hq|Lq|Lk|dk|dv|dh|dc|dR|WUK|WUV|WOA|WOB|WKR|WQR|WIUQ|WIK)\b/g, function (token) {
-      return replacements[token];
-    });
+    return esc(value);
   }
 
   function readProgress() {

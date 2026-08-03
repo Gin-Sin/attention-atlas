@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  var R = String.raw;
+
   var P = {
     canvas: "var(--diagram-canvas, #fbf8f1)",
     ink: "var(--diagram-ink, #27323c)",
@@ -25,85 +27,85 @@
 
   var guides = {
     mha: [
-      ["原论文入口", "词嵌入先乘 sqrt(d_model)，再加固定正弦位置编码；Q/K/V 投影发生在其后。"],
-      ["独立多头投影", "每个头有独立 W_h^Q / W_h^K / W_h^V，Hkv = Hq = H，三路形状均为 [B,H,L,dh]。"],
-      ["精确注意力", "S_h = Q_h K_h^T / sqrt(dh) + M；causal mask 只出现在 decoder，encoder 自注意力省略 M；softmax 后精确乘 V_h。"],
-      ["写回与残差", "Concat(O_h) W^O 之后才做 Add & Norm；这是 2017 的 post-LN 顺序，残差取自 Q/K/V 投影之前的 X。"],
-      ["现代缓存只是叠加层", "2017 训练图没有 KV cache；虚线玫瑰框表示现代增量解码把 K_{1:t} / V_{1:t} 追加进缓存，softmax 本身不变。"],
+      ["原论文入口", R`词嵌入先乘 \(\sqrt{d_{\mathrm{model}}}\)，再加固定正弦位置编码；Q/K/V 投影发生在其后。`],
+      ["独立多头投影", R`每个头有独立 \(W_h^Q\) / \(W_h^K\) / \(W_h^V\)，\(H_{kv}=H_q=H\)，三路形状均为 \([B,H,L,d_h]\)。`],
+      ["精确注意力", R`\(S_h=Q_hK_h^{\mathsf T}/\sqrt{d_h}+M\)；causal mask 只出现在 decoder，encoder 自注意力省略 \(M\)；softmax 后精确乘 \(V_h\)。`],
+      ["写回与残差", R`\(\operatorname{Concat}(O_h)\,W^O\) 之后才做 Add & Norm；这是 2017 的 post-LN 顺序，残差取自 Q/K/V 投影之前的 \(X\)。`],
+      ["现代缓存只是叠加层", R`2017 训练图没有 KV cache；虚线玫瑰框表示现代增量解码把 \(K_{1:t}\) / \(V_{1:t}\) 追加进缓存，softmax 本身不变。`],
       ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；虚线只表示可选或现代叠加路径。"]
     ],
     mqa: [
       ["论文剖面", "Shazeer 2019 基线使用 learned input positions；MQA 的创新只是共享一套 K/V，不是新的位置编码。"],
-      ["多 Q 单 KV", "保留 Hq 个独立 query 头 [B,Hq,L,dh]；K/V 只有一份，形状 2 × [B,1,L,dh]。"],
-      ["广播不是复制", "绿色 broadcast 框表示 Hq 个头 stride-0 逻辑读取同一份 K/V；高效实现不 materialize repeat。"],
-      ["精确 softmax", "S_h = Q_h K^T / sqrt(dh) + M 逐头计算；共享 K/V 只减少搬运，不引入任何近似。"],
-      ["缓存收益", "玫瑰色缓存只有两份 [B,1,L,dh]；解码时历史搬运量随 Hkv=1 大幅下降。"],
+      ["多 Q 单 KV", R`保留 \(H_q\) 个独立 query 头 \([B,H_q,L,d_h]\)；K/V 只有一份，形状 \(2\times[B,1,L,d_h]\)。`],
+      ["广播不是复制", R`绿色 broadcast 框表示 \(H_q\) 个头 stride-0 逻辑读取同一份 K/V；高效实现不 materialize repeat。`],
+      ["精确 softmax", R`\(S_h=Q_hK^{\mathsf T}/\sqrt{d_h}+M\) 逐头计算；共享 K/V 只减少搬运，不引入任何近似。`],
+      ["缓存收益", R`玫瑰色缓存只有两份 \([B,1,L,d_h]\)；解码时历史搬运量随 \(H_{kv}=1\) 大幅下降。`],
       ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；橙色标注论文年代边界。"]
     ],
     gqa: [
-      ["T5 论文剖面", "原 GQA uptraining 继承 T5 的按 query head 相对位置偏置 b_{h,bucket(t-s)}，而不是现代 Llama RoPE。"],
-      ["显式组映射", "r = Hq / Hkv，g(h) = floor(h/r)；每个 Q 头只逻辑读取所属组的 K/V，不做物理 repeat。"],
-      ["分组打分与读取", "S_h = Q_h K_{g(h)}^T / sqrt(dh) + b_h + M；softmax 后乘 V_{g(h)}，每个 query 头一份输出。"],
-      ["缓存形状", "分组缓存为 2 × [B,Hkv,L,dh]，容量介于 MHA 与 MQA 之间。"],
+      ["T5 论文剖面", R`原 GQA uptraining 继承 T5 的按 query head 相对位置偏置 \(b_{h,\operatorname{bucket}(t-s)}\)，而不是现代 Llama RoPE。`],
+      ["显式组映射", R`\(r=H_q/H_{kv}\)，\(g(h)=\lfloor h/r\rfloor\)；每个 Q 头只逻辑读取所属组的 K/V，不做物理 repeat。`],
+      ["分组打分与读取", R`\(S_h=Q_hK_{g(h)}^{\mathsf T}/\sqrt{d_h}+b_h+M\)；softmax 后乘 \(V_{g(h)}\)，每个 query 头一份输出。`],
+      ["缓存形状", R`分组缓存为 \(2\times[B,H_{kv},L,d_h]\)，容量介于 MHA 与 MQA 之间。`],
       ["Uptraining 配方", "组内 K/V 权重均值池化初始化，再继续约 5% 预训练；虚线 inset 只属训练，不是推理路径。"],
       ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；虚线只表示训练或可选路径。"]
     ],
     mla: [
-      ["Decode 主路径", "缓存只含 c^KV 与 k^R；图中主干就是吸收式解码，历史 k^C / v 从不显式重建。"],
-      ["两次下投影", "c^Q = W^DQ h_t 与 c^KV = W^DKV h_t；解耦 RoPE 键 k^R = RoPE(W^KR h_t) 直接来自 h_t，是全头共享的位置切片。"],
-      ["吸收技巧", "内容分数把 W^UK 吸收到 query 侧：q~_i = (W_i^UK)^T q_i^C；输出侧把 W^UV 吸收进写回，一次投影完成。"],
-      ["正确缩放", "即使内容 query 落在 dc 维 latent 空间，分数仍按完整 head 宽度 sqrt(dh + dh^R) 缩放。"],
-      ["可选 RMSNorm", "DeepSeek 检查点会对 c^Q / c^KV 加 RMSNorm；那是实现配方而非 MLA 定义，图中保持原始下投影、此处说明。"],
-      ["重建仅为等价解释", "虚线橙框 k^C = W^UK c、v = W^UV c 是训练/概念等价视角，不是 decode 路径，也不进缓存。"],
+      ["Decode 主路径", R`缓存只含 \(c^{KV}\) 与 \(k^R\)；图中主干就是吸收式解码，历史 \(k^C\) / \(v\) 从不显式重建。`],
+      ["两次下投影", R`\(c^Q=W^{DQ}h_t\) 与 \(c^{KV}=W^{DKV}h_t\)；解耦 RoPE 键 \(k^R=\operatorname{RoPE}(W^{KR}h_t)\) 直接来自 \(h_t\)，是全头共享的位置切片。`],
+      ["吸收技巧", R`内容分数把 \(W^{UK}\) 吸收到 query 侧：\(\widetilde q_i=(W_i^{UK})^{\mathsf T}q_i^C\)；输出侧把 \(W^{UV}\) 吸收进写回，一次投影完成。`],
+      ["正确缩放", R`即使内容 query 落在 \(d_c\) 维 latent 空间，分数仍按完整 head 宽度 \(\sqrt{d_h+d_h^R}\) 缩放。`],
+      ["可选 RMSNorm", R`DeepSeek 检查点会对 \(c^Q\) / \(c^{KV}\) 加 RMSNorm；那是实现配方而非 MLA 定义，图中保持原始下投影、此处说明。`],
+      ["重建仅为等价解释", R`虚线橙框 \(k^C=W^{UK}c\)、\(v=W^{UV}c\) 是训练/概念等价视角，不是 decode 路径，也不进缓存。`],
       ["视觉语义", "玫瑰=持久 latent 缓存，蓝=投影/attention，薰衣草=聚合/写回；橙色虚线=明确可选的概念视角。"]
     ],
     dsa: [
-      ["两条清晰车道", "上方 Indexer 生成 qI、kI、wI、全历史 logits 与 TopK；下方从 MLA latent cache gather 后运行候选 MLA。"],
-      ["低精度对称路径", "qI 与 kI 都经过 partial RoPE、Hadamard 与 FP8；Hadamard 服务数值范围，不是位置编码。"],
+      ["两条清晰车道", R`上方 Indexer 生成 \(q^I\)、\(k^I\)、\(w^I\)、全历史 logits 与 TopK；下方从 MLA latent cache gather 后运行候选 MLA。`],
+      ["低精度对称路径", R`\(q^I\) 与 \(k^I\) 都经过 partial RoPE、Hadamard 与 FP8；Hadamard 服务数值范围，不是位置编码。`],
       ["没有固定局部窗", "DSA 原型由内容 TopK 选择候选；图中不添加 local-window 捷径。"],
-      ["候选内精确注意力", "gather 出的原始 c^KV / k^R 交给高维 MLA query；softmax 只在选中集合内重新归一化，随后 W^O 写回残差。"],
+      ["候选内精确注意力", R`gather 出的原始 \(c^{KV}\) / \(k^R\) 交给高维 MLA query；softmax 只在选中集合内重新归一化，随后 \(W^O\) 写回残差。`],
       ["训练监督", "teacher full logits 与 KL 仅通过带标签虚线连接，detach 后不属于推理图。"],
       ["视觉语义", "绿=TopK/路由，玫瑰=历史 cache，薰衣草=Gather；青/橙为精度和训练注释。"]
     ],
     csa: [
-      ["双压缩器、双缓存", "core compressor 产生 CComp；独立 index compressor 产生 KIComp（theta_I ≠ theta_C），参数与缓存职责不能合并。"],
-      ["重叠压缩内部", "两路 a/b 投影对 2m 重叠窗口做 per-channel softmax 加权求和，得到一个压缩条目。"],
-      ["地址到内容", "KIComp 只负责打分与 TopK（V4-Flash / Pro 配置）；地址下传给 Gather，从 CComp cache 取候选内容。"],
+      ["双压缩器、双缓存", R`core compressor 产生 \(C^{\mathrm{Comp}}\)；独立 index compressor 产生 \(K^{I\mathrm{Comp}}\)（\(\theta_I\ne\theta_C\)），参数与缓存职责不能合并。`],
+      ["重叠压缩内部", R`两路 a/b 投影对 \(2m\) 重叠窗口做 per-channel softmax 加权求和，得到一个压缩条目。`],
+      ["地址到内容", R`\(K^{I\mathrm{Comp}}\) 只负责打分与 TopK（V4-Flash / Pro 配置）；地址下传给 Gather，从 \(C^{\mathrm{Comp}}\) cache 取候选内容。`],
       ["三路进入同一核心", "选中全局摘要、独立 SWA lane 与 query lane 汇入一次 shared-KV MQA；sink、global、SWA 在同一个 softmax 中归一化。"],
-      ["输出坐标", "partial-RoPE 值混合后先 inverse RoPE(-t) 回到 query 坐标，再按组 W^OA → Concat → W^OB 写回残差。"],
+      ["输出坐标", R`partial-RoPE 值混合后先 inverse \(\operatorname{RoPE}(-t)\) 回到 query 坐标，再按组 \(W^{OA}\to\operatorname{Concat}\to W^{OB}\) 写回残差。`],
       ["视觉语义", "蓝=计算，绿=选择，玫瑰=两类 cache，薰衣草=Gather/写回；青/橙为位置与因果注释。"]
     ],
     hca: [
-      ["只压缩、不索引", "非重叠重压缩器（m'=128）只发布已完成块到 CComp cache；HCA 没有 indexer 或 TopK。"],
-      ["压缩器内部", "块内 per-channel softmax(Z+B) ⊙ C 加权求和，把 128 个位置压成一个摘要条目。"],
-      ["因果发布门", "绿色 gate 保证只有 m'(i+1) ≤ t 的已关闭块可见，避免泄露未来信息。"],
-      ["Dense 读取短历史", "全部 completed CComp、独立 SWA lane 与 query lane 进入 shared-KV dense MQA；sink、all-CComp、SWA 一次归一化。"],
-      ["位置与输出", "压缩与局部 entry 使用 partial RoPE；输出先 inverse RoPE(-t)，再按组 W^OA → Concat → W^OB 写回。"],
+      ["只压缩、不索引", R`非重叠重压缩器（\(m'=128\)）只发布已完成块到 \(C^{\mathrm{Comp}}\) cache；HCA 没有 indexer 或 TopK。`],
+      ["压缩器内部", R`块内 per-channel \(\operatorname{softmax}(Z+B)\odot C\) 加权求和，把 128 个位置压成一个摘要条目。`],
+      ["因果发布门", R`绿色 gate 保证只有 \(m'(i+1)\le t\) 的已关闭块可见，避免泄露未来信息。`],
+      ["Dense 读取短历史", R`全部 completed \(C^{\mathrm{Comp}}\)、独立 SWA lane 与 query lane 进入 shared-KV dense MQA；sink、全部压缩摘要、SWA 一次归一化。`],
+      ["位置与输出", R`压缩与局部 entry 使用 partial RoPE；输出先 inverse \(\operatorname{RoPE}(-t)\)，再按组 \(W^{OA}\to\operatorname{Concat}\to W^{OB}\) 写回。`],
       ["视觉语义", "蓝=计算，绿=因果完成控制，玫瑰=cache，薰衣草=汇合/写回；青/橙为位置和边界注释。"]
     ],
     linear: [
-      ["原始特征映射", "2020 Linear Transformer 使用 phi(x) = ELU(x) + 1，使核可结合且非负；phi 同时作用在 q 与 k。"],
-      ["一个循环单元", "按原论文的 RNN 视角，整个历史折进固定大小状态：S 累积 phi(k) v^T（r×dv），z 累积 phi(k)（r 维）。"],
-      ["单一反馈环", "右侧自环表示 S_{t-1} / z_{t-1} 进入下一步；解码状态大小与序列长度无关。"],
-      ["读取即归一化", "y_t = phi(q)^T S_t / (phi(q)^T z_t + eps)：分子读值、分母归一化，再经 W^O 写回残差。"],
+      ["原始特征映射", R`2020 Linear Transformer 使用 \(\phi(x)=\operatorname{ELU}(x)+1\)，使核可结合且非负；\(\phi\) 同时作用在 q 与 k。`],
+      ["一个循环单元", R`按原论文的 RNN 视角，整个历史折进固定大小状态：\(S\) 累积 \(\phi(k)v^{\mathsf T}\)（\(r\times d_v\)），\(z\) 累积 \(\phi(k)\)（\(r\) 维）。`],
+      ["单一反馈环", R`右侧自环表示 \(S_{t-1}\) / \(z_{t-1}\) 进入下一步；解码状态大小与序列长度无关。`],
+      ["读取即归一化", R`\(y_t=\phi(q)^{\mathsf T}S_t/(\phi(q)^{\mathsf T}z_t+\varepsilon)\)：分子读值、分母归一化，再经 \(W^O\) 写回残差。`],
       ["训练表述保持克制", "原论文给出因果递推及自定义 CUDA 实现；图不把后来的并行 scan / chunk kernel 冒充官方实现。"],
       ["视觉语义", "蓝=投影/读取，玫瑰=递推状态单元与反馈环，薰衣草=归一化写回；橙色注释标明执行边界。"]
     ],
     delta: [
-      ["参数路径必须分开", "只有 q/k/v 经过 causal ShortConv（q/k 再 SiLU + L2Norm，v 只 SiLU）；alpha、beta、output gate g 直接由当前 hidden 投影。"],
-      ["转置状态约定", "图用 F = S^T，形状 dv×dk；因此预测和读取写成 Fk、Fq。"],
-      ["单一更新方程", "F_t = alpha_t F_{t-1}(I - beta_t k_t k_t^T) + beta_t v_t k_t^T：先 decay 再 delta 纠写，与论文块图一致。"],
-      ["五步展开", "等价展开为 decay → predict → error → write → read：e_t = v_t - (alpha_t F_{t-1}) k_t，误差基于衰减后的状态，顺序决定语义。"],
-      ["读取与门控", "o_t = F_t (q_t / sqrt(dk))；输出 W_O [RMSNorm(o_t) ⊙ SiLU(g_t)]，g 是 direct 投影门。"],
-      ["训练执行", "训练用 decay-aware chunkwise WY/UT 变换；解码只保留 F 和三份 ShortConv 状态。"],
+      ["参数路径必须分开", R`只有 q/k/v 经过 causal ShortConv（q/k 再 SiLU + L2Norm，v 只 SiLU）；\(\alpha\)、\(\beta\)、output gate \(g\) 直接由当前 hidden 投影。`],
+      ["转置状态约定", R`图用 \(F=S^{\mathsf T}\)，形状 \(d_v\times d_k\)；因此预测和读取写成 \(Fk\)、\(Fq\)。`],
+      ["单一更新方程", R`\(F_t=\alpha_tF_{t-1}(I-\beta_tk_tk_t^{\mathsf T})+\beta_tv_tk_t^{\mathsf T}\)：先 decay 再 delta 纠写，与论文块图一致。`],
+      ["五步展开", R`等价展开为 decay → predict → error → write → read：\(e_t=v_t-(\alpha_tF_{t-1})k_t\)，误差基于衰减后的状态，顺序决定语义。`],
+      ["读取与门控", R`\(o_t=F_t(q_t/\sqrt{d_k})\)；输出 \(W_O[\operatorname{RMSNorm}(o_t)\odot\operatorname{SiLU}(g_t)]\)，\(g\) 是 direct 投影门。`],
+      ["训练执行", R`训练用 decay-aware chunkwise WY/UT 变换；解码只保留 \(F\) 和三份 ShortConv 状态。`],
       ["视觉语义", "蓝=特征计算，绿=gate/control，玫瑰=F 状态单元与反馈环，薰衣草=读取/写回。"]
     ],
     kda: [
-      ["逐通道衰减", "alpha 是 dk 维 direct 低秩门（W 降维 → SiLU → W 升维 → log-decay）；在 F = S^T 约定下 decay 写成 F·Diag(alpha)。"],
-      ["单一更新方程", "F_t = F_{t-1} Diag(alpha_t)(I - beta_t k_t k_t^T) + beta_t v_t k_t^T：通道 decay 在 rank-1 纠写之前。"],
-      ["DPLR 次序不可交换", "列向量原式严格为 S_t = (I - beta k k^T) Diag(alpha) S_{t-1} + beta k v^T；rank-1 因子作用在 decay 之后。"],
-      ["参数路径", "q/k/v 各走 causal ShortConv；alpha、beta、g 直接投影且不接卷积支路；g 为低秩、读出处用 sigmoid。"],
-      ["读取与门控", "o_t = F_t (q_t / sqrt(dk))；输出 W_O [RMSNorm(o_t) ⊙ sigma(g_t)] 写回残差。"],
+      ["逐通道衰减", R`\(\alpha\) 是 \(d_k\) 维 direct 低秩门（\(W\) 降维 → SiLU → \(W\) 升维 → log-decay）；在 \(F=S^{\mathsf T}\) 约定下 decay 写成 \(F\operatorname{Diag}(\alpha)\)。`],
+      ["单一更新方程", R`\(F_t=F_{t-1}\operatorname{Diag}(\alpha_t)(I-\beta_tk_tk_t^{\mathsf T})+\beta_tv_tk_t^{\mathsf T}\)：通道 decay 在 rank-1 纠写之前。`],
+      ["DPLR 次序不可交换", R`列向量原式严格为 \(S_t=(I-\beta kk^{\mathsf T})\operatorname{Diag}(\alpha)S_{t-1}+\beta kv^{\mathsf T}\)；rank-1 因子作用在 decay 之后。`],
+      ["参数路径", R`q/k/v 各走 causal ShortConv；\(\alpha\)、\(\beta\)、\(g\) 直接投影且不接卷积支路；\(g\) 为低秩、读出处用 sigmoid。`],
+      ["读取与门控", R`\(o_t=F_t(q_t/\sqrt{d_k})\)；输出 \(W_O[\operatorname{RMSNorm}(o_t)\odot\sigma(g_t)]\) 写回残差。`],
       ["Checkpoint 尾部", "官方层序为 (KDA×3 → MLA-NoPE)×6 → KDA×2 → MLA-NoPE；MLA 变体不带位置编码，逐层交错而非混头。"],
       ["视觉语义", "蓝=计算，绿=逐通道控制，玫瑰=状态单元与反馈环，薰衣草=写回；橙色标注精确层序。"]
     ]
@@ -112,13 +114,13 @@
   var memories = {
     mha: "2017 MHA：缩放 embedding 加正弦位置后投影多头，精确注意力写回，再做 post Add & Norm。",
     mqa: "MQA：很多独立 Q 逻辑广播到唯一共享 K/V；减少历史搬运，不近似 softmax。",
-    gqa: "GQA：T5 query head 用 g(h) 找组内 K/V；MHA checkpoint 先组内均值再 uptrain。",
-    mla: "MLA decode：直接用缓存 cKV+kR 做吸收式打分与读出；kC/v 重建只是等价解释。",
+    gqa: R`GQA：T5 query head 用 \(g(h)\) 找组内 K/V；MHA checkpoint 先组内均值再 uptrain。`,
+    mla: R`MLA decode：直接用缓存 \(c^{KV}\)+\(k^R\) 做吸收式打分与读出；\(k^C\)/\(v\) 重建只是等价解释。`,
     dsa: "DSA：低维 FP8 Indexer 选地址，Gather 再把原始 MLA latent 交给精确候选 attention。",
-    csa: "CSA：KIComp 负责找地址，CComp 提供内容；再与 SWA 一起进入唯一的 MQA+sink 核心。",
+    csa: R`CSA：\(K^{I\mathrm{Comp}}\) 负责找地址，\(C^{\mathrm{Comp}}\) 提供内容；再与 SWA 一起进入唯一的 MQA+sink 核心。`,
     hca: "HCA：只缓存已完成的重压缩块，不做 TopK；全部摘要与 SWA 一起 dense 读取。",
-    linear: "Linear Transformer：ELU+1 把历史折进 S/z 循环单元，query 用分子除以分母读取固定状态。",
-    delta: "GDN：q/k/v 走 ShortConv，direct gates 控制单一循环单元 F_t=αF(I-βkkᵀ)+βvkᵀ，再 Fq 读出。",
+    linear: R`Linear Transformer：\(\operatorname{ELU}+1\) 把历史折进 \(S\)/\(z\) 循环单元，query 用分子除以分母读取固定状态。`,
+    delta: R`GDN：q/k/v 走 ShortConv，direct gates 控制单一循环单元 \(F_t=\alpha F(I-\beta kk^{\mathsf T})+\beta vk^{\mathsf T}\)，再 \(Fq\) 读出。`,
     kda: "KDA：逐 key-channel decay 后做 delta 纠写，并按精确 checkpoint 尾部与 NoPE MLA 交错。"
   };
 
