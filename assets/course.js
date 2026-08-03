@@ -431,6 +431,20 @@
     var sources = c.sources.map(function (s) {
       return '<li><span><a href="' + esc(s.url) + '" target="_blank" rel="noreferrer">' + esc(s.label) + "</a></span></li>";
     }).join("");
+    var tocEntries = [
+      ["01", "问题从哪里来", "sec-01"],
+      ["02", "设计限定条件", "sec-02"],
+      ["03", "先抓住数学直觉", "sec-03"],
+      ["04", "架构图与交互实现", "sec-04"],
+      ["05", "位置编码与时序注入", "sec-05"],
+      ["06", "数学推导", "sec-06"],
+      ["07", "练习与答案", "sec-07"],
+      ["08", "权威来源", "authoritative-sources"]
+    ];
+    var toc = '<nav class="chapter-toc" aria-label="本章目录"><span class="chapter-toc__label">Contents · 本章目录</span><ol>' +
+      tocEntries.map(function (entry) {
+        return '<li><a href="#' + entry[2] + '"><i>' + entry[0] + "</i>" + esc(entry[1]) + "</a></li>";
+      }).join("") + "</ol></nav>";
     var prev = chapters[index - 1];
     var next = chapters[index + 1];
     var nav = '<nav class="chapter-nav">' +
@@ -441,15 +455,15 @@
     root.innerHTML =
       '<nav class="breadcrumbs"><a href="index.html">Attention Atlas</a> &nbsp;/&nbsp; Chapter ' + String(c.order).padStart(2, "0") + " &nbsp;/&nbsp; " + esc(c.title) + "</nav>" +
       '<header class="chapter-hero"><p class="eyebrow">Chapter ' + String(c.order).padStart(2, "0") + " · " + esc(c.fullTitle) + '</p><h1>' + esc(c.title) + '</h1><p class="chapter-deck">' + esc(c.zhTitle) + "。 " + esc(c.deck) + '</p><div class="chapter-meta"><b>' + esc(c.category) + "</b><span>" + esc(c.year) + "</span><span>难度 · " + esc(c.difficulty) + "</span><span>" + esc(c.report) + '</span></div></header>' +
-      '<aside class="takeaway"><span>Mathematical Takeaway</span><p>' + c.takeaway + "</p></aside>" +
-      '<main class="chapter-main"><h2 data-no="01">问题从哪里来</h2>' + motivation +
-      '<h2 data-no="02">设计限定条件</h2>' + renderCards(c.constraints, "constraint") +
-      '<h2 data-no="03">先抓住数学直觉</h2>' + renderCards(c.intuitions, "intuition") +
-      '<h2 data-no="04">架构图与交互实现</h2>' + renderDiagram(c.diagram, implementations[c.id]) +
-      '<h2 data-no="05">位置编码与时序注入</h2>' + renderPositionEncoding(c.positionEncoding) +
-      '<h2 data-no="06">数学推导</h2>' + derivations +
+      '<aside class="takeaway"><span>Mathematical Takeaway</span><p>' + c.takeaway + "</p></aside>" + toc +
+      '<main class="chapter-main"><h2 data-no="01" id="sec-01">问题从哪里来</h2>' + motivation +
+      '<h2 data-no="02" id="sec-02">设计限定条件</h2>' + renderCards(c.constraints, "constraint") +
+      '<h2 data-no="03" id="sec-03">先抓住数学直觉</h2>' + renderCards(c.intuitions, "intuition") +
+      '<h2 data-no="04" id="sec-04">架构图与交互实现</h2>' + renderDiagram(c.diagram, implementations[c.id]) +
+      '<h2 data-no="05" id="sec-05">位置编码与时序注入</h2>' + renderPositionEncoding(c.positionEncoding) +
+      '<h2 data-no="06" id="sec-06">数学推导</h2>' + derivations +
       '<div class="warning"><strong>边界与误区：</strong> ' + esc(c.warning) + "</div>" +
-      '<h2 data-no="07">练习与答案</h2>' + exercises +
+      '<h2 data-no="07" id="sec-07">练习与答案</h2>' + exercises +
       '<h2 data-no="08" id="authoritative-sources">权威来源</h2><ol class="source-list">' + sources + "</ol>" +
       '<button class="button" id="complete-chapter" type="button">标记本章完成</button>' +
       nav + "</main>";

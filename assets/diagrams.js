@@ -615,7 +615,7 @@
       M("[B,1,d]", "[B,1,d]"), "compute", 1, "03");
 
     b += box(150, 190, 200, 64, M("c_t^Q=W^{DQ}h_t", "Query down-projection"),
-      M("c_t^Q\\in\\mathbb R^{d_q}", "raw query latent"), "compute", 2, "04");
+      M("c_t^Q\\in\\mathbb R^{d_c'}", "raw query latent"), "compute", 2, "04");
     b += box(450, 190, 200, 64, M("c_t^{KV}=W^{DKV}h_t", "KV down-projection"),
       M("c_t^{KV}\\in\\mathbb R^{d_c}", "raw joint KV latent"), "compute", 3, "05");
     b += box(750, 190, 200, 64, M("k_t^R=R_tW^{KR}h_t", "Decoupled RoPE key"),
