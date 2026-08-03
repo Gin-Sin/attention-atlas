@@ -411,10 +411,29 @@ class PyTorchReferenceTests(unittest.TestCase):
         x = torch.randn(2, 6, 16)
         with torch.no_grad():
             teacher = model.dense_teacher_probs(x)
-            output, aux = model(x, teacher_probs=teacher, return_aux=True)
+            output, full_cache, aux = model(
+                x, use_cache=True, teacher_probs=teacher, return_aux=True
+            )
         self.assert_finite_shape(output, (2, 6, 16))
         self.assert_finite_shape(aux["selected_indices"], (2, 6, 3))
         self.assertTrue(torch.isfinite(aux["indexer_kl"]).item())
+        self.assertIsNotNone(full_cache)
+        self.assert_finite_shape(full_cache[0], (2, 4, 6, 4))
+        self.assert_finite_shape(full_cache[1], (2, 4, 6, 4))
+        self.assert_finite_shape(full_cache[2], (2, 6, 4))
+
+        cache = None
+        pieces = []
+        with torch.no_grad():
+            for step in range(x.size(1)):
+                piece, cache = model(
+                    x[:, step : step + 1], kv_cache=cache, use_cache=True
+                )
+                pieces.append(piece)
+        torch.testing.assert_close(
+            torch.cat(pieces, dim=1), output, rtol=1e-5, atol=1e-6
+        )
+        torch.testing.assert_close(cache[2], full_cache[2])
 
     def test_csa_tiny_forward(self) -> None:
         module = self.modules["csa"]

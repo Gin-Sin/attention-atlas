@@ -8,7 +8,14 @@ implemented as an eager float32 simulation.  It is intentionally not a
 reproduction of a production DeepSeek kernel: it uses eager PyTorch gathers
 and ordinary multi-head attention instead of MLA, with no fused kernels.
 
-Shapes use B=batch, L=sequence length, H=attention heads, and D=head dimension.
+``forward`` returns ``(output, new_cache)``.  When ``use_cache=True`` the
+cache is ``(key[B,H,S,Dh], value[B,H,S,Dh], index_key[B,S,DI])``: the two
+core tensors every incremental decoder keeps, plus the FP8-processed indexer
+keys that DSA additionally has to cache so each new query can score the full
+history.  Cached decoding assumes contiguous positions beginning at zero.
+
+Shapes use B=batch, T=new query tokens, S=all cached tokens, L=sequence
+length, H=attention heads, and D=head dimension.
 """
 
 from __future__ import annotations
@@ -17,6 +24,8 @@ from typing import Dict, Optional, Tuple, Union
 
 import torch
 from torch import Tensor, nn
+
+DSACache = Tuple[Tensor, Tensor, Tensor]
 
 
 # [Block 01] Partial RoPE, Hadamard/FP8, and masked-softmax utilities
@@ -82,13 +91,17 @@ def hadamard_transform(x: Tensor) -> Tensor:
 
 
 def fp8_round_trip(x: Tensor) -> Tensor:
-    """Simulate FP8 (e4m3) storage with per-tensor absmax scaling.
+    """Simulate FP8 (e4m3) storage with per-vector absmax scaling.
 
     Production DSA keeps the indexer's q/k in FP8 to shrink cache traffic;
     quantize-dequantize reproduces that precision loss in float32 eager mode.
+    Scaling each length-``D`` vector independently keeps quantization local
+    to its token, so entries written during incremental decoding are
+    identical to a full-sequence recompute.
     """
     fp8_max = torch.finfo(torch.float8_e4m3fn).max
-    scale = x.abs().amax().clamp_min(torch.finfo(x.dtype).tiny) / fp8_max
+    scale = x.abs().amax(dim=-1, keepdim=True)
+    scale = scale.clamp_min(torch.finfo(x.dtype).tiny) / fp8_max
     return (x / scale).to(torch.float8_e4m3fn).to(x.dtype) * scale
 
 
@@ -213,35 +226,54 @@ class DynamicSparseAttention(nn.Module):
             1, 2
         )
 
-    def _causal_mask(self, length: int, device: torch.device) -> Tensor:
-        positions = torch.arange(length, device=device)
-        return positions[None, :, None] >= positions[None, None, :]
+    def _causal_mask(self, query_positions: Tensor, key_positions: Tensor) -> Tensor:
+        return query_positions[None, :, None] >= key_positions[None, None, :]
     # [/Block 03]
 
     # [Block 04] Lightning indexer scoring over the causal history
-    def indexer_scores(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        """Return causal index logits ``[B,L,L]`` and mask ``[1,L,L]``."""
+    def indexer_scores(
+        self,
+        x: Tensor,
+        *,
+        past_index_keys: Optional[Tensor] = None,
+        first_position: int = 0,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """Score the new queries against the full (cached + new) history.
+
+        Returns causal index logits ``[B,T,S]``, the mask ``[1,T,S]``, and the
+        appended indexer key cache ``[B,S,DI]``.  Keys are cached after the
+        pRoPE -> Hadamard -> FP8 pipeline, i.e. in their storage format.
+        """
         batch, length, _ = x.shape
         source = x.detach() if self.detach_indexer_input else x
         queries = self.index_queries(source).view(
             batch, length, self.num_index_heads, self.index_dim
         )
-        queries = queries.transpose(1, 2)  # [B, HI, L, DI]
-        keys = self.index_key(source)[:, None]  # [B, 1, L, DI], shared by index heads
+        queries = queries.transpose(1, 2)  # [B, HI, T, DI]
+        new_keys = self.index_key(source)[:, None]  # [B, 1, T, DI], shared by heads
         weights = torch.sigmoid(self.index_weights(source)).transpose(1, 2)
 
         # Paper pipeline for both indexer sides: pRoPE -> Hadamard -> FP8.
-        positions = torch.arange(length, device=x.device)
+        positions = torch.arange(
+            first_position, first_position + length, device=x.device
+        )
         queries = apply_partial_rope(queries, positions, self.index_rotary_dim)
-        keys = apply_partial_rope(keys, positions, self.index_rotary_dim)
+        new_keys = apply_partial_rope(new_keys, positions, self.index_rotary_dim)
         queries = fp8_round_trip(hadamard_transform(queries))
-        keys = fp8_round_trip(hadamard_transform(keys)).squeeze(1)
+        new_keys = fp8_round_trip(hadamard_transform(new_keys)).squeeze(1)
+        keys = (
+            new_keys
+            if past_index_keys is None
+            else torch.cat((past_index_keys, new_keys), dim=1)
+        )
 
         per_head = torch.einsum("bhld,bsd->bhls", queries, keys)
         per_head = torch.relu(per_head * (self.index_dim ** -0.5))
         scores = (per_head * weights[..., None]).sum(dim=1)
-        causal = self._causal_mask(length, x.device)
-        return scores.masked_fill(~causal, torch.finfo(scores.dtype).min), causal
+        key_positions = torch.arange(keys.size(1), device=x.device)
+        causal = self._causal_mask(positions, key_positions)
+        scores = scores.masked_fill(~causal, torch.finfo(scores.dtype).min)
+        return scores, causal, keys
     # [/Block 04]
 
     # [Block 05] Dense teacher distribution for indexer alignment
@@ -257,7 +289,7 @@ class DynamicSparseAttention(nn.Module):
         )
         logits = torch.einsum("bhld,bhsd->bhls", queries, keys)
         logits = logits * (self.head_dim ** -0.5)
-        causal = self._causal_mask(length, x.device)[:, None, :, :]
+        causal = self._causal_mask(positions, positions)[:, None, :, :]
         return masked_softmax(logits, causal, dim=-1).detach()
     # [/Block 05]
 
@@ -266,37 +298,72 @@ class DynamicSparseAttention(nn.Module):
         self,
         x: Tensor,
         *,
+        kv_cache: Optional[DSACache] = None,
+        use_cache: bool = False,
         teacher_probs: Optional[Tensor] = None,
         return_aux: bool = False,
-    ) -> Union[Tensor, Tuple[Tensor, Dict[str, Tensor]]]:
-        """Attend from ``x [B,L,d_model]`` and return the same leading shape."""
+    ) -> Union[
+        Tuple[Tensor, Optional[DSACache]],
+        Tuple[Tensor, Optional[DSACache], Dict[str, Tensor]],
+    ]:
+        """Attend from new tokens ``x [B,T,d_model]``.
+
+        Returns ``(output, new_cache)``, plus an aux dict when requested.
+        With ``kv_cache`` the new tokens continue at position ``S`` after the
+        cached history; without it this is an ordinary full-sequence pass.
+        """
         if x.ndim != 3 or x.size(-1) != self.d_model:
-            raise ValueError("x must have shape [B,L,d_model]")
+            raise ValueError("x must have shape [B,T,d_model]")
         batch, length, _ = x.shape
         if length == 0:
             raise ValueError("sequence length must be positive")
 
-        index_logits, causal = self.indexer_scores(x)
-        choices = min(self.top_k, length)
+        past_keys = past_values = past_index_keys = None
+        first_position = 0
+        if kv_cache is not None:
+            past_keys, past_values, past_index_keys = kv_cache
+            if (
+                past_keys.shape[:2] != (batch, self.num_heads)
+                or past_values.shape != past_keys.shape
+                or past_index_keys.shape != (batch, past_keys.size(2), self.index_dim)
+            ):
+                raise ValueError("invalid DSA cache shape")
+            first_position = past_index_keys.size(1)
+
+        index_logits, causal, index_keys = self.indexer_scores(
+            x, past_index_keys=past_index_keys, first_position=first_position
+        )
+        total_length = index_keys.size(1)
+        choices = min(self.top_k, total_length)
         _, selected = torch.topk(index_logits, k=choices, dim=-1)
         selected_valid = torch.gather(causal.expand(batch, -1, -1), 2, selected)
 
         # Fixed-width top-k has padded choices for early queries. Replace their
         # gather addresses with the causal self position, then mask them out.
-        query_positions = torch.arange(length, device=x.device)
+        query_positions = torch.arange(
+            first_position, first_position + length, device=x.device
+        )
         safe_self = query_positions[None, :, None].expand_as(selected)
         selected = torch.where(selected_valid, selected, safe_self)
         # [/Block 06]
 
-        # [Block 07] Gather cached keys and values at selected addresses
-        positions = torch.arange(length, device=x.device)
+        # [Block 07] Append the KV/index caches and gather selected addresses
         queries = apply_partial_rope(
-            self._heads(self.query(x)), positions, self.rotary_dim
+            self._heads(self.query(x)), query_positions, self.rotary_dim
         )
-        keys = apply_partial_rope(
-            self._heads(self.key(x)), positions, self.rotary_dim
+        new_keys = apply_partial_rope(
+            self._heads(self.key(x)), query_positions, self.rotary_dim
         )
-        values = self._heads(self.value(x))
+        new_values = self._heads(self.value(x))
+        keys = new_keys if past_keys is None else torch.cat(
+            (past_keys, new_keys), dim=2
+        )
+        values = new_values if past_values is None else torch.cat(
+            (past_values, new_values), dim=2
+        )
+        new_cache: Optional[DSACache] = (
+            (keys, values, index_keys) if use_cache else None
+        )
         selected_keys = gather_per_query(keys, selected)
         selected_values = gather_per_query(values, selected)
         # [/Block 07]
@@ -317,7 +384,7 @@ class DynamicSparseAttention(nn.Module):
         result = self.output(context)
 
         if not return_aux:
-            return result
+            return result, new_cache
         aux: Dict[str, Tensor] = {
             "index_logits": index_logits,
             "selected_indices": selected,
@@ -328,7 +395,7 @@ class DynamicSparseAttention(nn.Module):
             aux["indexer_kl"] = detached_indexer_kl(
                 index_logits, teacher_probs, causal
             )
-        return result, aux
+        return result, new_cache, aux
 # [/Block 09]
 
 
@@ -347,18 +414,35 @@ def _smoke_test() -> None:
     model.eval()
     x = torch.randn(2, 9, 32)
     teacher = model.dense_teacher_probs(x)
-    output, aux = model(x, teacher_probs=teacher, return_aux=True)
+    output, full_cache, aux = model(
+        x, use_cache=True, teacher_probs=teacher, return_aux=True
+    )
 
     query_position = torch.arange(x.size(1))[None, :, None]
     assert output.shape == x.shape
     assert torch.isfinite(output).all()
     assert torch.isfinite(aux["indexer_kl"])
     assert torch.all(aux["selected_indices"] <= query_position)
+    assert full_cache is not None
+    assert full_cache[0].shape == (2, 4, 9, 8)  # core keys [B,H,S,Dh]
+    assert full_cache[1].shape == (2, 4, 9, 8)  # core values [B,H,S,Dh]
+    assert full_cache[2].shape == (2, 9, 8)  # FP8-format indexer keys [B,S,DI]
 
     changed = x.clone()
     changed[:, 6:] = torch.randn_like(changed[:, 6:]) * 5
-    changed_output = model(changed)
+    changed_output, _ = model(changed)
     torch.testing.assert_close(output[:, :6], changed_output[:, :6])
+
+    # Token-by-token cached decoding must reproduce the full-sequence pass.
+    cache = None
+    steps = []
+    for step in range(x.size(1)):
+        piece, cache = model(x[:, step : step + 1], kv_cache=cache, use_cache=True)
+        steps.append(piece)
+    torch.testing.assert_close(torch.cat(steps, dim=1), output)
+    assert cache is not None
+    torch.testing.assert_close(cache[0], full_cache[0])
+    torch.testing.assert_close(cache[2], full_cache[2])
     print(
         "DSA smoke test passed:",
         tuple(output.shape),
