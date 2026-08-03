@@ -2,9 +2,11 @@
 
 This file preserves the two-stage idea: a cheap, low-dimensional indexer scans
 the causal history, then full-dimensional attention reads only its top-k
-choices.  It is intentionally not a reproduction of a production DeepSeek
-kernel: it uses eager PyTorch gathers, float32-friendly operations, ordinary
-multi-head attention instead of MLA, and no fused/quantized indexer.
+choices.  The indexer q/k path mirrors the paper's numeric pipeline —
+partial RoPE, an orthonormal Hadamard rotation, then FP8 (e4m3) storage —
+implemented as an eager float32 simulation.  It is intentionally not a
+reproduction of a production DeepSeek kernel: it uses eager PyTorch gathers
+and ordinary multi-head attention instead of MLA, with no fused kernels.
 
 Shapes use B=batch, L=sequence length, H=attention heads, and D=head dimension.
 """
@@ -17,7 +19,7 @@ import torch
 from torch import Tensor, nn
 
 
-# [Block 01] Partial RoPE and masked-softmax utilities
+# [Block 01] Partial RoPE, Hadamard/FP8, and masked-softmax utilities
 def apply_partial_rope(
     x: Tensor,
     positions: Tensor,
@@ -57,6 +59,37 @@ def apply_partial_rope(
     rotated = torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1)
     rotated = rotated.flatten(-2)
     return torch.cat((rotated, x[..., rotary_dim:]), dim=-1)
+
+
+def hadamard_transform(x: Tensor) -> Tensor:
+    """Orthonormal fast Walsh-Hadamard transform along the last dimension.
+
+    Being orthonormal, it preserves dot products exactly in real arithmetic;
+    its role in DSA is purely numeric: rotating away per-channel outliers so
+    the coarse FP8 grid loses less information.
+    """
+    width = x.size(-1)
+    if width & (width - 1):
+        raise ValueError("Hadamard transform requires a power-of-two width")
+    result = x
+    stride = 1
+    while stride < width:
+        result = result.unflatten(-1, (width // (2 * stride), 2, stride))
+        even, odd = result[..., 0, :], result[..., 1, :]
+        result = torch.stack((even + odd, even - odd), dim=-2).flatten(-3)
+        stride *= 2
+    return result * width ** -0.5
+
+
+def fp8_round_trip(x: Tensor) -> Tensor:
+    """Simulate FP8 (e4m3) storage with per-tensor absmax scaling.
+
+    Production DSA keeps the indexer's q/k in FP8 to shrink cache traffic;
+    quantize-dequantize reproduces that precision loss in float32 eager mode.
+    """
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    scale = x.abs().amax().clamp_min(torch.finfo(x.dtype).tiny) / fp8_max
+    return (x / scale).to(torch.float8_e4m3fn).to(x.dtype) * scale
 
 
 def masked_softmax(logits: Tensor, mask: Tensor, dim: int = -1) -> Tensor:
@@ -119,9 +152,11 @@ def detached_indexer_kl(
 class DynamicSparseAttention(nn.Module):
     """Two-stage causal DSA teaching module.
 
-    The indexer has several low-dimensional query heads and one shared key.
-    Positive per-head weights combine ReLU dot products before causal top-k.
-    The core uses normal full-dimensional Q/K/V projections on gathered tokens.
+    The indexer has several low-dimensional query heads and one shared key;
+    both sides follow the paper's numeric pipeline: partial RoPE, Hadamard
+    rotation, FP8 round trip.  Positive per-head weights combine ReLU dot
+    products before causal top-k.  The core uses normal full-dimensional
+    Q/K/V projections on gathered tokens.
     """
 
     def __init__(
@@ -133,6 +168,7 @@ class DynamicSparseAttention(nn.Module):
         num_index_heads: int = 4,
         top_k: int = 8,
         rotary_dim: int = 0,
+        index_rotary_dim: Optional[int] = None,
         detach_indexer_input: bool = True,
     ) -> None:
         super().__init__()
@@ -140,6 +176,8 @@ class DynamicSparseAttention(nn.Module):
             raise ValueError("d_model must be divisible by num_heads")
         if index_dim <= 0 or num_index_heads <= 0 or top_k <= 0:
             raise ValueError("index dimensions, heads, and top_k must be positive")
+        if index_dim & (index_dim - 1):
+            raise ValueError("index_dim must be a power of two for the Hadamard step")
 
         self.d_model = d_model
         self.num_heads = num_heads
@@ -148,9 +186,15 @@ class DynamicSparseAttention(nn.Module):
         self.num_index_heads = num_index_heads
         self.top_k = top_k
         self.rotary_dim = rotary_dim
+        # Default: rotate half of the indexer width, rounded down to even.
+        if index_rotary_dim is None:
+            index_rotary_dim = 2 * (index_dim // 4)
+        self.index_rotary_dim = index_rotary_dim
         self.detach_indexer_input = detach_indexer_input
         if rotary_dim < 0 or rotary_dim > self.head_dim or rotary_dim % 2:
             raise ValueError("rotary_dim must be even and no larger than head_dim")
+        if index_rotary_dim < 0 or index_rotary_dim > index_dim or index_rotary_dim % 2:
+            raise ValueError("index_rotary_dim must be even and no larger than index_dim")
 
         self.index_queries = nn.Linear(
             d_model, num_index_heads * index_dim, bias=False
@@ -183,8 +227,15 @@ class DynamicSparseAttention(nn.Module):
             batch, length, self.num_index_heads, self.index_dim
         )
         queries = queries.transpose(1, 2)  # [B, HI, L, DI]
-        keys = self.index_key(source)  # [B, L, DI], shared by index heads
+        keys = self.index_key(source)[:, None]  # [B, 1, L, DI], shared by index heads
         weights = torch.sigmoid(self.index_weights(source)).transpose(1, 2)
+
+        # Paper pipeline for both indexer sides: pRoPE -> Hadamard -> FP8.
+        positions = torch.arange(length, device=x.device)
+        queries = apply_partial_rope(queries, positions, self.index_rotary_dim)
+        keys = apply_partial_rope(keys, positions, self.index_rotary_dim)
+        queries = fp8_round_trip(hadamard_transform(queries))
+        keys = fp8_round_trip(hadamard_transform(keys)).squeeze(1)
 
         per_head = torch.einsum("bhld,bsd->bhls", queries, keys)
         per_head = torch.relu(per_head * (self.index_dim ** -0.5))
@@ -287,10 +338,11 @@ def _smoke_test() -> None:
     model = DynamicSparseAttention(
         d_model=32,
         num_heads=4,
-        index_dim=6,
+        index_dim=8,
         num_index_heads=3,
         top_k=4,
         rotary_dim=4,
+        index_rotary_dim=4,
     )
     model.eval()
     x = torch.randn(2, 9, 32)
