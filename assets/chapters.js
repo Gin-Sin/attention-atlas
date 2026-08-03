@@ -1099,6 +1099,29 @@
             **直观。** K 的展开搬到 query 左侧，V 的展开搬到输出右侧，中间直接读紧凑 latent。**边界。**
             该恒等式依赖投影线性且 softmax 权重在 V 投影之前确定；RoPE 子空间因位置相关而不能并入同一个固定内容投影。`,
           source: "DeepSeek-V2 Technical Report (2024), §2.1.2（KV/query compression）、§2.1.3（decoupled RoPE）与 Appendix C"
+        },
+        {
+          title: R`为什么 \(q^R\) 逐头、\(k^R\) 却全头共享`,
+          body: R`**设定。** DeepSeek-V2 定义逐头 RoPE query
+            \(q_{t,i}^R=R_tW_i^{QR}c_t^Q\)，却只保留一个全头共享的 RoPE key
+            \(k_t^R=R_tW^{KR}h_t\)。这个不对称不是数学必然，而是一次精确的成本—收益权衡：昂贵的一侧（key 进缓存）做 MQA 式共享，免费的一侧（query 现算即弃）保留逐头自由度。
+            **补全代数。** key 侧：\(k^R\) 在 latent 之外裸缓存，宽度直接线性计入每 token 缓存。共享时总宽为
+            \[
+            d_c+d_h^R=512+64=576;
+            \]
+            若改为逐头，则变成
+            \[
+            d_c+Hd_h^R=512+128\times64=8704,
+            \]
+            位置通道一项就把 MLA 相对 MHA 的缓存压缩全部吃回。query 侧：\(q_{t,i}^R\) 只为当前 token 计算一次、不进缓存，逐头化的代价仅是可忽略的 \(O(Hd_h^R)\) 投影算量。而每头分数中的位置项
+            \[
+            (R_tq_{t,i}^R)^\top(R_sk_s^R)=(q_{t,i}^R)^\top R_{s-t}k_s^R
+            \]
+            对每个头独立成立相对位置性质：不同头以不同的 \(W_i^{QR}\) 对同一 \(k^R\) 产生不同的幅度与相位响应，位置敏感度的头间多样性完全由 query 侧承担。
+            **张量形状。** 逐头 \(q^R\) 为 \([B,H,L_q,d_h^R]\)；共享 \(k^R\) 缓存为 \([B,1,L,d_h^R]\)，以 stride-0 广播给全部 \(H\) 个头——正是 MQA 的共享技巧在位置通道上的翻版。
+            **直观。** 在随序列长度增长的维度（key cache）上做最激进的共享，在一次性计算的维度（query）上保留全部自由度。
+            **边界。** 共享意味着所有头读取同一个 key 侧位置基底；头间的 key 侧位置差异被放弃，只能靠增大 \(d_h^R\) 换容量并按线性代价计入缓存。DSA/CSA 等后续架构原样继承了这一共享布局。`,
+          source: "DeepSeek-V2 Technical Report (2024), §2.1.3（decoupled RoPE：逐头 RoPE query 与共享 RoPE key 的定义）与 §2.1.4（KV cache 宽度对比）"
         }
       ],
       exercises: [
