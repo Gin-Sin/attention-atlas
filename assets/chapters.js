@@ -1203,18 +1203,18 @@
       ],
       exercises: [
         {
-          kind: "derivation",
-          level: "advanced",
-          q: R`推导 \(D_{\mathrm{KL}}(p\|\operatorname{softmax}(I))\) 对 logit \(I_s\) 的梯度。`,
-          hint: R`使用 \(\log\operatorname{softmax}(I)_u=I_u-\log\sum_ve^{I_v}\)。`,
-          answer: R`去掉与 \(I\) 无关的 \(\sum_up_u\log p_u\) 后，损失为 \(-\sum_up_uI_u+\log\sum_ve^{I_v}\)。因 \(\sum_up_u=1\)，求导得 \(-p_s+e^{I_s}/\sum_ve^{I_v}=\widehat p_s-p_s\)。`
+          kind: "architecture",
+          level: "intermediate",
+          q: R`按解码时的数据流排列以下步骤：生成 Indexer query、扫描 Indexer key cache、top-k、读取 MLA latent entries、执行 core attention。哪些数据需要跨 token 持久缓存？`,
+          hint: "Indexer 负责选位置，core 才读取这些位置对应的完整 MLA 条目。",
+          answer: R`当前隐藏状态 \(h_t\) 先生成 \(q_{t,j}^I,w_{t,j}^I\)，与历史 \(k_{1:t}^I\) 计算 \(I_{t,:}\)；随后 top-k 得到位置集合 \(\mathcal I_t\)，按位置读取 \(\{c_s^{KV},k_s^R:s\in\mathcal I_t\}\)，最后执行 MQA-mode MLA core attention。跨 token 持久缓存的是每个位置的 \(c_s^{KV}\)、共享 RoPE key \(k_s^R\) 和共享 Indexer key \(k_s^I\)；当前 query、完整 score、top-k 索引和展开后的每头 K/V 都是临时量。`
         },
         {
-          kind: "counterexample",
-          level: "advanced",
-          q: "构造一种情形：Indexer 的 top-1 分数误差很小，却让 core 输出发生巨大变化。",
-          hint: "让两个候选 score 很接近，但 value 完全相反。",
-          answer: R`设正确候选 A 与错误候选 B 的 index score 只差 \(\epsilon\)，而 core value 分别为 \(v_A=u,v_B=-u\)。微小量化/估计误差可交换 top-1，使输出从 \(u\) 跳到 \(-u\)，变化范数为 \(2\|u\|\)。离散 top-k 在边界处不连续。`
+          kind: "cache",
+          level: "intermediate",
+          q: R`设 MLA latent 宽度为 \(d_c\)，共享 RoPE key 宽度为 \(d_h^R\)，共享 Indexer key 宽度为 \(d_I\)。写出 DSA 每层、每 token 的持久 attention cache 组成与字节数公式。为什么不乘 query 头数 \(H_q\) 或 Indexer 头数 \(H^I\)？`,
+          hint: "分别考虑 core MLA 与 Lightning Indexer；两条路径的 key 都跨 query heads 共享。",
+          answer: R`持久 cache 由 \(c_s^{KV}\in\mathbb R^{d_c}\)、\(k_s^R\in\mathbb R^{d_h^R}\) 和 \(k_s^I\in\mathbb R^{d_I}\) 组成。若前两者每元素 \(b_{\rm core}\) 字节、Indexer key 每元素 \(b_I\) 字节，则每层每 token 为 \((d_c+d_h^R)b_{\rm core}+d_Ib_I\) 字节。core 采用 MQA-mode MLA，Indexer 也只有一个共享 key，因此都不乘头数；query、top-k 索引和展开 K/V 不属于跨 token KV cache。`
         },
         {
           kind: "code-shape",
@@ -1224,11 +1224,11 @@
           answer: R`点积得到 \(D_{b,t,h,s}=\langle q_{b,t,h},k_{b,s}\rangle\)，形状 \([B,L,H^I,S]\)；计算 \(\sum_h w_{b,t,h}\operatorname{ReLU}(D_{b,t,h,s})\) 后为 \([B,L,S]\)，再沿 S 做 top-k 得 \([B,L,k]\)。`
         },
         {
-          kind: "design",
+          kind: "complexity",
           level: "advanced",
-          q: R`若把 \(k\) 从 2048 减到 512，应至少监控哪些指标来判断是否值得？`,
-          hint: "同时看召回、语言质量和系统收益。",
-          answer: "监控 dense-teacher attention mass/关键 token 的 top-k recall、长上下文与检索任务质量、验证损失、Indexer KL、core FLOPs、端到端 prefill/TPOT；还要按距离和任务类型分桶，避免平均召回掩盖远程依赖退化。"
+          q: R`若 \(d_c=512,d_h^R=64\) 且二者以 BF16 缓存，\(d_I=128\) 且 Indexer key 以 FP8 缓存，40 层、长度 128K、batch 2 的 DSA attention cache 约多大？`,
+          hint: R`每层每 token 为 \((512+64)\times2+128\times1\) 字节，再乘 \(B N L\)；不要乘头数，也不要给 latent 额外乘 K/V 的 2。`,
+          answer: R`每层每 token 为 \(576\times2+128=1280\) 字节。总量为 \(2\times40\times131072\times1280=13{,}421{,}772{,}800\) 字节，即 12.5 GiB；其中 core MLA cache 为 11.25 GiB，Indexer key cache 为 1.25 GiB。该估算不含量化 scale/对齐、页表和运行时工作区。`
         }
       ]
     },
