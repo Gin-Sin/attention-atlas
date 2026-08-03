@@ -39,7 +39,7 @@ CSA 与 HCA 是两章独立内容。全站共 10 章、40 个推导和 60 道练
 - `mqa → pytorch/mqa.py`：7 块，RoPE、单 KV 头、广播读取与缓存。
 - `gqa → pytorch/gqa.py`：8 块，分组 KV 投影、无复制的 head-group 映射与 causal attention。
 - `mla → pytorch/mla.py`：11 块，低秩 Q/KV、decoupled RoPE、latent cache、吸收式/重建式路径。
-- `dsa → pytorch/dsa.py`：10 块，Indexer pRoPE/Hadamard/FP8 模拟、对齐损失、Indexer 打分、dense MLA 教师分布、top-k 选址、latent/RoPE/Indexer 三缓存追加与候选 gather、吸收式候选 MLA、输出写回与增量解码等价 smoke test。
+- `dsa → pytorch/dsa.py`：10 块，对齐官方 `DeepSeek-V3.2-Exp` 推理实现的结构：Indexer 复用 MLA query latent、key LayerNorm、pRoPE/Hadamard、真 FP8+scale 索引缓存，外加对齐损失、dense MLA 教师分布、top-k 选址、latent/RoPE/Indexer 缓存追加与候选 gather、吸收式候选 MLA、输出写回与增量解码等价 smoke test。
 - `csa → pytorch/csa.py`：10 块，重叠压缩、索引打分与 top-k、原始 Q/K/V 通道、摘要 gather、局部窗口、共享 softmax、输出投影与 smoke test。
 - `hca → pytorch/hca.py`：10 块，非重叠重压缩、逆 RoPE 规范化、完结摘要缓存、局部窗口、dense 摘要读取、输出投影与 smoke test。
 - `linear → pytorch/linear_attention.py`：5 块，ELU+1、prefix/recurrent 等价与固定状态。

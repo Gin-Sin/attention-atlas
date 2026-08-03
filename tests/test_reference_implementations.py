@@ -424,7 +424,9 @@ class PyTorchReferenceTests(unittest.TestCase):
         self.assertIsNotNone(full_cache)
         self.assert_finite_shape(full_cache[0], (2, 6, 5))
         self.assert_finite_shape(full_cache[1], (2, 1, 6, 2))
-        self.assert_finite_shape(full_cache[2], (2, 6, 4))
+        self.assertEqual(full_cache[2].shape, (2, 6, 4))
+        self.assertEqual(full_cache[2].dtype, torch.float8_e4m3fn)
+        self.assert_finite_shape(full_cache[3], (2, 6, 1))
 
         cache = None
         pieces = []
@@ -437,7 +439,12 @@ class PyTorchReferenceTests(unittest.TestCase):
         torch.testing.assert_close(
             torch.cat(pieces, dim=1), output, rtol=1e-5, atol=1e-6
         )
-        torch.testing.assert_close(cache[2], full_cache[2])
+        self.assertTrue(
+            torch.equal(
+                cache[2].to(torch.float32), full_cache[2].to(torch.float32)
+            )
+        )
+        torch.testing.assert_close(cache[3], full_cache[3])
 
     def test_csa_tiny_forward(self) -> None:
         module = self.modules["csa"]

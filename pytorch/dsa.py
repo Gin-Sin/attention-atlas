@@ -15,12 +15,24 @@ Both stages follow the paper's structure:
 It is intentionally not a reproduction of a production DeepSeek kernel: it
 uses eager PyTorch gathers and no fused/quantized kernels.
 
+Structure follows the official ``DeepSeek-V3.2-Exp/inference/model.py``:
+the indexer queries are projected from the shared MLA low-rank query latent,
+indexer keys are LayerNorm-ed before RoPE, and the per-head combination
+weights are an unconstrained projection scaled by ``H_I**-0.5``.  The
+official reference realizes sparsity by masking full scores with ``-inf``
+and keeps preallocated cache buffers indexed by ``start_pos``; this teaching
+version gathers the selected candidates explicitly and threads a growing
+cache tuple instead, which changes execution strategy but not the math.
+
 ``forward`` returns ``(output, new_cache)``.  When ``use_cache=True`` the
-cache is ``(latent[B,S,Dc], rope_key[B,1,S,Dr], index_key[B,S,DI])``: the
-MLA latent cache and shared positional key that every MLA decoder keeps,
-plus the FP8-processed indexer keys that DSA additionally has to cache so
-each new query can score the full history.  Cached decoding assumes
-contiguous positions beginning at zero.
+cache is ``(latent[B,S,Dc], rope_key[B,1,S,Dr], index_key[B,S,DI] (FP8),
+index_scale[B,S,1] (float32))``: the MLA latent cache and shared positional
+key that every MLA decoder keeps, plus the indexer keys that DSA
+additionally caches.  Mirroring the official ``k_cache``/``k_scale_cache``
+pair, indexer keys are stored as a real ``float8_e4m3fn`` payload with one
+absmax scale per token (the official 128-wide scaling block equals its
+indexer head dimension).  Cached decoding assumes contiguous positions
+beginning at zero.
 
 Shapes use ``B`` (batch), ``T`` (new query tokens), ``S`` (all cached
 tokens), ``L`` (sequence length), ``H`` (heads), ``Dq`` (query latent rank),
@@ -35,7 +47,7 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 from torch import Tensor, nn
 
-DSACache = Tuple[Tensor, Tensor, Tensor]
+DSACache = Tuple[Tensor, Tensor, Tensor, Tensor]
 
 
 # [Block 01] Partial RoPE, Hadamard/FP8, RMSNorm, and masking utilities
@@ -100,19 +112,27 @@ def hadamard_transform(x: Tensor) -> Tensor:
     return result * width ** -0.5
 
 
-def fp8_round_trip(x: Tensor) -> Tensor:
-    """Simulate FP8 (e4m3) storage with per-vector absmax scaling.
+def act_quant_fp8(x: Tensor) -> Tuple[Tensor, Tensor]:
+    """Quantize activations to FP8 (e4m3) with per-vector absmax scaling.
 
-    Production DSA keeps the indexer's q/k in FP8 to shrink cache traffic;
-    quantize-dequantize reproduces that precision loss in float32 eager mode.
-    Scaling each length-``D`` vector independently keeps quantization local
-    to its token, so entries written during incremental decoding are
-    identical to a full-sequence recompute.
+    Returns the ``float8_e4m3fn`` payload and a float32 scale.  This mirrors
+    the official ``act_quant``: DeepSeek scales per 128-wide block, and the
+    indexer head dimension equals that block width, so the official indexer
+    cache also carries exactly one scale per vector.  Per-vector scaling
+    keeps quantization local to its token, so cache entries written during
+    incremental decoding are identical to a full-sequence recompute.
     """
     fp8_max = torch.finfo(torch.float8_e4m3fn).max
     scale = x.abs().amax(dim=-1, keepdim=True)
-    scale = scale.clamp_min(torch.finfo(x.dtype).tiny) / fp8_max
-    return (x / scale).to(torch.float8_e4m3fn).to(x.dtype) * scale
+    scale = (scale.clamp_min(torch.finfo(x.dtype).tiny) / fp8_max).to(torch.float32)
+    payload = (x / scale.to(x.dtype)).to(torch.float8_e4m3fn)
+    return payload, scale
+
+
+def fp8_round_trip(x: Tensor) -> Tensor:
+    """Reproduce FP8 storage precision loss in float32 eager mode."""
+    payload, scale = act_quant_fp8(x)
+    return payload.to(x.dtype) * scale.to(x.dtype)
 
 
 class RMSNorm(nn.Module):
@@ -189,9 +209,11 @@ def detached_indexer_kl(
 class DynamicSparseAttention(nn.Module):
     """Two-stage causal DSA teaching module with an MLA core.
 
-    The indexer has several low-dimensional query heads and one shared key;
-    both sides follow the paper's numeric pipeline: partial RoPE, Hadamard
-    rotation, FP8 round trip.  Positive per-head weights combine ReLU dot
+    The indexer has several low-dimensional query heads (projected from the
+    shared MLA query latent, as in the official implementation) and one
+    LayerNorm-ed shared key; both sides follow the paper's numeric pipeline:
+    partial RoPE, Hadamard rotation, FP8 round trip.  Per-head weights
+    (an unconstrained projection scaled by ``H_I**-0.5``) combine ReLU dot
     products before causal top-k.  The core is absorbed-form MLA: candidates
     are gathered directly from the latent/RoPE-key caches, the key
     up-projection is folded into the query for scoring, and the value
@@ -246,11 +268,15 @@ class DynamicSparseAttention(nn.Module):
         if index_rotary_dim < 0 or index_rotary_dim > index_dim or index_rotary_dim % 2:
             raise ValueError("index_rotary_dim must be even and no larger than index_dim")
 
+        # Official layout: indexer queries come from the MLA query latent,
+        # keys from the hidden state with LayerNorm, weights from the hidden
+        # state without any nonlinearity.
         self.index_queries = nn.Linear(
-            d_model, num_index_heads * index_dim, bias=False
+            q_lora_rank, num_index_heads * index_dim, bias=False
         )
         self.index_key = nn.Linear(d_model, index_dim, bias=False)
-        self.index_weights = nn.Linear(d_model, num_index_heads, bias=True)
+        self.index_key_norm = nn.LayerNorm(index_dim)
+        self.index_weights = nn.Linear(d_model, num_index_heads, bias=False)
 
         # MLA low-rank paths: query latent and joint KV latent + shared RoPE key.
         self.q_down_proj = nn.Linear(d_model, q_lora_rank, bias=False)
@@ -273,10 +299,16 @@ class DynamicSparseAttention(nn.Module):
     def _causal_mask(self, query_positions: Tensor, key_positions: Tensor) -> Tensor:
         return query_positions[None, :, None] >= key_positions[None, None, :]
 
-    def _mla_queries(self, x: Tensor, positions: Tensor) -> Tuple[Tensor, Tensor]:
+    def _query_latent(self, x: Tensor) -> Tensor:
+        """Normalized low-rank query latent ``[B,T,Dq]``, shared by the MLA
+        query up-projection and the indexer query projection."""
+        return self.q_norm(self.q_down_proj(x))
+
+    def _mla_queries(
+        self, query_latent: Tensor, positions: Tensor
+    ) -> Tuple[Tensor, Tensor]:
         """Return content queries ``[B,H,T,Dn]`` and rotated ``[B,H,T,Dr]``."""
-        batch, length, _ = x.shape
-        query_latent = self.q_norm(self.q_down_proj(x))
+        batch, length, _ = query_latent.shape
         query_heads = self.q_up_proj(query_latent).view(
             batch, length, self.num_heads, self.qk_head_dim
         ).transpose(1, 2)
@@ -314,24 +346,33 @@ class DynamicSparseAttention(nn.Module):
     def indexer_scores(
         self,
         x: Tensor,
+        query_latent: Tensor,
         *,
         past_index_keys: Optional[Tensor] = None,
+        past_index_scales: Optional[Tensor] = None,
         first_position: int = 0,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """Score the new queries against the full (cached + new) history.
 
         Returns causal index logits ``[B,T,S]``, the mask ``[1,T,S]``, and the
-        appended indexer key cache ``[B,S,DI]``.  Keys are cached after the
-        pRoPE -> Hadamard -> FP8 pipeline, i.e. in their storage format.
+        appended indexer key cache: FP8 payload ``[B,S,DI]`` plus float32
+        scales ``[B,S,1]``, mirroring the official k/k_scale cache pair.
+        Indexer queries are projected from the shared MLA query latent; keys
+        are LayerNorm-ed; both then run pRoPE -> Hadamard -> FP8.
         """
         batch, length, _ = x.shape
         source = x.detach() if self.detach_indexer_input else x
-        queries = self.index_queries(source).view(
+        latent_source = (
+            query_latent.detach() if self.detach_indexer_input else query_latent
+        )
+        queries = self.index_queries(latent_source).view(
             batch, length, self.num_index_heads, self.index_dim
         )
         queries = queries.transpose(1, 2)  # [B, HI, T, DI]
-        new_keys = self.index_key(source)[:, None]  # [B, 1, T, DI], shared by heads
-        weights = torch.sigmoid(self.index_weights(source)).transpose(1, 2)
+        new_keys = self.index_key_norm(self.index_key(source))[:, None]
+        # Unconstrained per-head weights, scaled as in the official code.
+        weights = self.index_weights(source) * (self.num_index_heads ** -0.5)
+        weights = weights.transpose(1, 2)  # [B, HI, T]
 
         # Paper pipeline for both indexer sides: pRoPE -> Hadamard -> FP8.
         positions = torch.arange(
@@ -340,20 +381,23 @@ class DynamicSparseAttention(nn.Module):
         queries = apply_partial_rope(queries, positions, self.index_rotary_dim)
         new_keys = apply_partial_rope(new_keys, positions, self.index_rotary_dim)
         queries = fp8_round_trip(hadamard_transform(queries))
-        new_keys = fp8_round_trip(hadamard_transform(new_keys)).squeeze(1)
-        keys = (
-            new_keys
-            if past_index_keys is None
-            else torch.cat((past_index_keys, new_keys), dim=1)
+        new_payload, new_scales = act_quant_fp8(
+            hadamard_transform(new_keys).squeeze(1)
         )
+        if past_index_keys is None:
+            key_payload, key_scales = new_payload, new_scales
+        else:
+            key_payload = torch.cat((past_index_keys, new_payload), dim=1)
+            key_scales = torch.cat((past_index_scales, new_scales), dim=1)
+        keys = key_payload.to(x.dtype) * key_scales.to(x.dtype)
 
-        per_head = torch.einsum("bhld,bsd->bhls", queries, keys)
-        per_head = torch.relu(per_head * (self.index_dim ** -0.5))
+        per_head = torch.relu(torch.einsum("bhld,bsd->bhls", queries, keys))
         scores = (per_head * weights[..., None]).sum(dim=1)
+        scores = scores * (self.index_dim ** -0.5)
         key_positions = torch.arange(keys.size(1), device=x.device)
         causal = self._causal_mask(positions, key_positions)
         scores = scores.masked_fill(~causal, torch.finfo(scores.dtype).min)
-        return scores, causal, keys
+        return scores, causal, key_payload, key_scales
     # [/Block 04]
 
     # [Block 05] Dense MLA teacher distribution for indexer alignment
@@ -361,7 +405,7 @@ class DynamicSparseAttention(nn.Module):
         """Build a detached-target candidate from dense (full-history) MLA."""
         length = x.size(1)
         positions = torch.arange(length, device=x.device)
-        q_content, q_rope = self._mla_queries(x, positions)
+        q_content, q_rope = self._mla_queries(self._query_latent(x), positions)
         latent, rope_key = self._mla_latents(x, positions)
         content_scores = torch.einsum(
             "bhtc,bsc->bhts", self._absorbed_queries(q_content), latent
@@ -397,21 +441,28 @@ class DynamicSparseAttention(nn.Module):
         if length == 0:
             raise ValueError("sequence length must be positive")
 
-        past_latent = past_rope_key = past_index_keys = None
+        past_latent = past_rope_key = past_index_keys = past_index_scales = None
         first_position = 0
         if kv_cache is not None:
-            past_latent, past_rope_key, past_index_keys = kv_cache
+            past_latent, past_rope_key, past_index_keys, past_index_scales = kv_cache
             past_length = past_latent.size(1)
             if (
                 past_latent.shape != (batch, past_length, self.kv_lora_rank)
                 or past_rope_key.shape != (batch, 1, past_length, self.qk_rope_dim)
                 or past_index_keys.shape != (batch, past_length, self.index_dim)
+                or past_index_keys.dtype != torch.float8_e4m3fn
+                or past_index_scales.shape != (batch, past_length, 1)
             ):
                 raise ValueError("invalid DSA cache shape")
             first_position = past_length
 
-        index_logits, causal, index_keys = self.indexer_scores(
-            x, past_index_keys=past_index_keys, first_position=first_position
+        query_latent = self._query_latent(x)
+        index_logits, causal, index_keys, index_scales = self.indexer_scores(
+            x,
+            query_latent,
+            past_index_keys=past_index_keys,
+            past_index_scales=past_index_scales,
+            first_position=first_position,
         )
         total_length = index_keys.size(1)
         choices = min(self.top_k, total_length)
@@ -428,7 +479,7 @@ class DynamicSparseAttention(nn.Module):
         # [/Block 06]
 
         # [Block 07] Append the latent/RoPE/index caches and gather candidates
-        q_content, q_rope = self._mla_queries(x, query_positions)
+        q_content, q_rope = self._mla_queries(query_latent, query_positions)
         new_latent, new_rope_key = self._mla_latents(x, query_positions)
         latent = new_latent if past_latent is None else torch.cat(
             (past_latent, new_latent), dim=1
@@ -437,7 +488,7 @@ class DynamicSparseAttention(nn.Module):
             (past_rope_key, new_rope_key), dim=2
         )
         new_cache: Optional[DSACache] = (
-            (latent, rope_key, index_keys) if use_cache else None
+            (latent, rope_key, index_keys, index_scales) if use_cache else None
         )
         # Candidates are the original cached entries, not rebuilt K/V:
         # latent c_kv [B,T,K,Dc] and the shared rotated RoPE key [B,T,K,Dr].
@@ -517,7 +568,9 @@ def _smoke_test() -> None:
     assert full_cache is not None
     assert full_cache[0].shape == (2, 9, 10)  # latent c_kv [B,S,Dc]
     assert full_cache[1].shape == (2, 1, 9, 4)  # shared RoPE key [B,1,S,Dr]
-    assert full_cache[2].shape == (2, 9, 8)  # FP8-format indexer keys [B,S,DI]
+    assert full_cache[2].shape == (2, 9, 8)  # indexer key payload [B,S,DI]
+    assert full_cache[2].dtype == torch.float8_e4m3fn
+    assert full_cache[3].shape == (2, 9, 1)  # per-token absmax scales [B,S,1]
 
     changed = x.clone()
     changed[:, 6:] = torch.randn_like(changed[:, 6:]) * 5
@@ -533,7 +586,10 @@ def _smoke_test() -> None:
     torch.testing.assert_close(torch.cat(steps, dim=1), output)
     assert cache is not None
     torch.testing.assert_close(cache[0], full_cache[0])
-    torch.testing.assert_close(cache[2], full_cache[2])
+    assert torch.equal(
+        cache[2].to(torch.float32), full_cache[2].to(torch.float32)
+    )
+    torch.testing.assert_close(cache[3], full_cache[3])
     print(
         "DSA smoke test passed:",
         tuple(output.shape),

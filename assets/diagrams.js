@@ -60,7 +60,7 @@
       ["视觉语义", "玫瑰=持久 latent 缓存，蓝=投影/attention，薰衣草=聚合/写回；橙色虚线=明确可选的概念视角。"]
     ],
     dsa: [
-      ["两条清晰车道", R`上方 Indexer 生成 \(q^I\)、\(k^I\)、\(w^I\)、全历史 logits 与 TopK；下方从 MLA latent cache gather 后运行候选 MLA。`],
+      ["两条清晰车道", R`上方 Indexer 生成 \(q^I\)、\(k^I\)、\(w^I\)、全历史 logits 与 TopK；官方实现中 \(q^I\) 由共享的 MLA query latent \(c^Q\) 投影，\(k^I\) 先过 LayerNorm。下方从 MLA latent cache gather 后运行候选 MLA。`],
       ["低精度对称路径", R`\(q^I\) 与 \(k^I\) 都经过 partial RoPE、Hadamard 与 FP8；Hadamard 服务数值范围，不是位置编码。`],
       ["没有固定局部窗", "DSA 原型由内容 TopK 选择候选；图中不添加 local-window 捷径。"],
       ["候选内精确注意力", R`gather 出的原始 \(c^{KV}\) / \(k^R\) 交给高维 MLA query；softmax 只在选中集合内重新归一化，随后 \(W^O\) 写回残差。`],
