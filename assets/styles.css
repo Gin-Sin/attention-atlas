@@ -466,7 +466,8 @@ button { font: inherit; }
   border-radius: 0 12px 12px 0;
   background: linear-gradient(90deg, var(--category-soft), white 72%);
 }
-.takeaway span { color: var(--category-ink); font: 500 10px/1.4 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+/* Direct child only: the paragraph may contain KaTeX-generated spans. */
+.takeaway > span { color: var(--category-ink); font: 500 10px/1.4 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
 .takeaway p { margin: 7px 0 0; font-family: var(--serif); }
 
 .chapter-toc {
@@ -653,7 +654,8 @@ button { font: inherit; }
   border-radius: 0 12px 12px 0;
   background: linear-gradient(90deg, var(--category-soft), white 70%);
 }
-.diagram-memory span {
+/* Direct child only: the paragraph may contain KaTeX-generated spans. */
+.diagram-memory > span {
   color: var(--category-ink);
   font: 500 9px/1.4 var(--mono);
   letter-spacing: .12em;
