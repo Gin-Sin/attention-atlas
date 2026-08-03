@@ -375,9 +375,9 @@
       warning: "内容稀疏注意力存在召回风险：被 Indexer 漏掉的 latent entry 不会进入 core。DeepSeek 的“效率提升/质量持平”必须标作官方、checkpoint 与部署栈特定自报；DSA 论文并未定义一个可兜底的局部滑窗分支。",
       exercises: [
         {
-          q: R`当 \(L=131072,k=2048\) 时，core attention 的位置对数量相对 dense 减少多少倍？`,
-          hint: R`比较 \(L^2\) 与 \(Lk\)。`,
-          answer: R`理想比值为 \(L/k=64\) 倍。这里只比较 core 位置对，不包括带 \(H^Id_I\) 因子的全历史 Indexer 和系统开销；DSA 本身没有另加局部窗口。`
+          q: R`长度为 \(L\) 的因果序列中，Lightning Indexer 有 \(H^I\) 个 query heads、每头宽度 \(d_I\)，core 有 \(H_q\) 个 query heads、点积宽度 \(d_{\rm core}\)，每个 query 选择 \(k\) 个位置。分别推导 Indexer、稀疏 core 与 DSA 总体的时间复杂度，并与 dense core 比较。`,
+          hint: R`因果位置对总数为 \(\sum_{t=1}^{L}t=\Theta(L^2)\)；选中后每个 query 只在 \(k\) 个位置执行 core。`,
+          answer: R`Indexer 对每个因果位置对执行 \(H^I\) 次 \(d_I\) 维点积，因此 \(C_{\rm index}=\Theta(L^2H^Id_I)\)。稀疏 core 每个 query 只读取 \(k\) 个位置，故 \(C_{\rm core}=\Theta(LkH_qd_{\rm core})\)；总体为两者之和。dense core 则为 \(\Theta(L^2H_qd_{\rm core})\)，所以昂贵 core 的位置轴由 \(L\) 降到 \(k\)，理想缩减 \(L/k\) 倍。若把头数和维度视为常数，DSA 总体渐近阶仍含 \(O(L^2)\) 的低维 Indexer，而不是严格 \(O(Lk)\)；收益来自 \(H^Id_I\) 较小、FP8 路径以及 \(k\ll L\)。`
         },
         {
           q: "为什么 DSA 不能只用固定滑动窗口代替 indexer？",
