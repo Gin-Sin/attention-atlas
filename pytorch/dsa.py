@@ -1,21 +1,31 @@
 """Educational, CPU-friendly reference for Dynamic Sparse Attention (DSA).
 
 This file preserves the two-stage idea: a cheap, low-dimensional indexer scans
-the causal history, then full-dimensional attention reads only its top-k
-choices.  The indexer q/k path mirrors the paper's numeric pipeline —
-partial RoPE, an orthonormal Hadamard rotation, then FP8 (e4m3) storage —
-implemented as an eager float32 simulation.  It is intentionally not a
-reproduction of a production DeepSeek kernel: it uses eager PyTorch gathers
-and ordinary multi-head attention instead of MLA, with no fused kernels.
+the causal history, then the core attention reads only its top-k choices.
+Both stages follow the paper's structure:
+
+* the indexer q/k path mirrors the numeric pipeline — partial RoPE, an
+  orthonormal Hadamard rotation, then FP8 (e4m3) storage — implemented as an
+  eager float32 simulation; and
+* the core is MLA in absorbed (MQA-mode) form: the gathered candidates are
+  the original latent entries ``c_kv`` plus the shared decoupled RoPE key,
+  scored by folding the key up-projection into the query and read by folding
+  the value up-projection into the output write.
+
+It is intentionally not a reproduction of a production DeepSeek kernel: it
+uses eager PyTorch gathers and no fused/quantized kernels.
 
 ``forward`` returns ``(output, new_cache)``.  When ``use_cache=True`` the
-cache is ``(key[B,H,S,Dh], value[B,H,S,Dh], index_key[B,S,DI])``: the two
-core tensors every incremental decoder keeps, plus the FP8-processed indexer
-keys that DSA additionally has to cache so each new query can score the full
-history.  Cached decoding assumes contiguous positions beginning at zero.
+cache is ``(latent[B,S,Dc], rope_key[B,1,S,Dr], index_key[B,S,DI])``: the
+MLA latent cache and shared positional key that every MLA decoder keeps,
+plus the FP8-processed indexer keys that DSA additionally has to cache so
+each new query can score the full history.  Cached decoding assumes
+contiguous positions beginning at zero.
 
-Shapes use B=batch, T=new query tokens, S=all cached tokens, L=sequence
-length, H=attention heads, and D=head dimension.
+Shapes use ``B`` (batch), ``T`` (new query tokens), ``S`` (all cached
+tokens), ``L`` (sequence length), ``H`` (heads), ``Dq`` (query latent rank),
+``Dc`` (KV latent rank), ``Dn`` (non-RoPE content dimension), ``Dr`` (RoPE
+dimension), ``Dv`` (value dimension), and ``DI`` (indexer dimension).
 """
 
 from __future__ import annotations
@@ -28,7 +38,7 @@ from torch import Tensor, nn
 DSACache = Tuple[Tensor, Tensor, Tensor]
 
 
-# [Block 01] Partial RoPE, Hadamard/FP8, and masked-softmax utilities
+# [Block 01] Partial RoPE, Hadamard/FP8, RMSNorm, and masking utilities
 def apply_partial_rope(
     x: Tensor,
     positions: Tensor,
@@ -105,6 +115,20 @@ def fp8_round_trip(x: Tensor) -> Tensor:
     return (x / scale).to(torch.float8_e4m3fn).to(x.dtype) * scale
 
 
+class RMSNorm(nn.Module):
+    """Minimal RMSNorm applied to each compressed latent (checkpoint recipe)."""
+
+    def __init__(self, width: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(width))
+
+    def forward(self, x: Tensor) -> Tensor:
+        variance = x.float().pow(2).mean(dim=-1, keepdim=True)
+        normalized = x * torch.rsqrt(variance.to(x.dtype) + self.eps)
+        return normalized * self.weight
+
+
 def masked_softmax(logits: Tensor, mask: Tensor, dim: int = -1) -> Tensor:
     """Softmax that returns zeros, rather than NaNs, for an all-masked row."""
     mask = mask.to(device=logits.device, dtype=torch.bool)
@@ -161,15 +185,17 @@ def detached_indexer_kl(
 # [/Block 02]
 
 
-# [Block 03] Two-stage module configuration and projections
+# [Block 03] Configuration, MLA projection paths, and absorbed-query helpers
 class DynamicSparseAttention(nn.Module):
-    """Two-stage causal DSA teaching module.
+    """Two-stage causal DSA teaching module with an MLA core.
 
     The indexer has several low-dimensional query heads and one shared key;
     both sides follow the paper's numeric pipeline: partial RoPE, Hadamard
     rotation, FP8 round trip.  Positive per-head weights combine ReLU dot
-    products before causal top-k.  The core uses normal full-dimensional
-    Q/K/V projections on gathered tokens.
+    products before causal top-k.  The core is absorbed-form MLA: candidates
+    are gathered directly from the latent/RoPE-key caches, the key
+    up-projection is folded into the query for scoring, and the value
+    up-projection is folded into the output write.
     """
 
     def __init__(
@@ -177,16 +203,25 @@ class DynamicSparseAttention(nn.Module):
         d_model: int,
         num_heads: int,
         *,
+        q_lora_rank: int,
+        kv_lora_rank: int,
+        qk_content_dim: int,
+        qk_rope_dim: int,
+        value_dim: int,
         index_dim: int = 16,
         num_index_heads: int = 4,
         top_k: int = 8,
-        rotary_dim: int = 0,
         index_rotary_dim: Optional[int] = None,
         detach_indexer_input: bool = True,
     ) -> None:
         super().__init__()
-        if d_model % num_heads:
-            raise ValueError("d_model must be divisible by num_heads")
+        mla_dims = (q_lora_rank, kv_lora_rank, qk_content_dim, qk_rope_dim, value_dim)
+        if d_model <= 0 or num_heads <= 0 or min(mla_dims) <= 0:
+            raise ValueError("all dimensions and head counts must be positive")
+        if q_lora_rank >= d_model or kv_lora_rank >= d_model:
+            raise ValueError("latent ranks must be smaller than d_model")
+        if qk_rope_dim % 2:
+            raise ValueError("qk_rope_dim must be even")
         if index_dim <= 0 or num_index_heads <= 0 or top_k <= 0:
             raise ValueError("index dimensions, heads, and top_k must be positive")
         if index_dim & (index_dim - 1):
@@ -194,18 +229,20 @@ class DynamicSparseAttention(nn.Module):
 
         self.d_model = d_model
         self.num_heads = num_heads
-        self.head_dim = d_model // num_heads
+        self.q_lora_rank = q_lora_rank
+        self.kv_lora_rank = kv_lora_rank
+        self.qk_content_dim = qk_content_dim
+        self.qk_rope_dim = qk_rope_dim
+        self.value_dim = value_dim
+        self.qk_head_dim = qk_content_dim + qk_rope_dim
         self.index_dim = index_dim
         self.num_index_heads = num_index_heads
         self.top_k = top_k
-        self.rotary_dim = rotary_dim
         # Default: rotate half of the indexer width, rounded down to even.
         if index_rotary_dim is None:
             index_rotary_dim = 2 * (index_dim // 4)
         self.index_rotary_dim = index_rotary_dim
         self.detach_indexer_input = detach_indexer_input
-        if rotary_dim < 0 or rotary_dim > self.head_dim or rotary_dim % 2:
-            raise ValueError("rotary_dim must be even and no larger than head_dim")
         if index_rotary_dim < 0 or index_rotary_dim > index_dim or index_rotary_dim % 2:
             raise ValueError("index_rotary_dim must be even and no larger than index_dim")
 
@@ -215,19 +252,62 @@ class DynamicSparseAttention(nn.Module):
         self.index_key = nn.Linear(d_model, index_dim, bias=False)
         self.index_weights = nn.Linear(d_model, num_index_heads, bias=True)
 
-        self.query = nn.Linear(d_model, d_model, bias=False)
-        self.key = nn.Linear(d_model, d_model, bias=False)
-        self.value = nn.Linear(d_model, d_model, bias=False)
-        self.output = nn.Linear(d_model, d_model, bias=False)
-
-    def _heads(self, projected: Tensor) -> Tensor:
-        batch, length, _ = projected.shape
-        return projected.view(batch, length, self.num_heads, self.head_dim).transpose(
-            1, 2
+        # MLA low-rank paths: query latent and joint KV latent + shared RoPE key.
+        self.q_down_proj = nn.Linear(d_model, q_lora_rank, bias=False)
+        self.q_norm = RMSNorm(q_lora_rank)
+        self.q_up_proj = nn.Linear(
+            q_lora_rank, num_heads * self.qk_head_dim, bias=False
         )
+        self.kv_down_and_rope_proj = nn.Linear(
+            d_model, kv_lora_rank + qk_rope_dim, bias=False
+        )
+        self.kv_norm = RMSNorm(kv_lora_rank)
+        self.key_up_proj = nn.Linear(
+            kv_lora_rank, num_heads * qk_content_dim, bias=False
+        )
+        self.value_up_proj = nn.Linear(
+            kv_lora_rank, num_heads * value_dim, bias=False
+        )
+        self.out_proj = nn.Linear(num_heads * value_dim, d_model, bias=False)
 
     def _causal_mask(self, query_positions: Tensor, key_positions: Tensor) -> Tensor:
         return query_positions[None, :, None] >= key_positions[None, None, :]
+
+    def _mla_queries(self, x: Tensor, positions: Tensor) -> Tuple[Tensor, Tensor]:
+        """Return content queries ``[B,H,T,Dn]`` and rotated ``[B,H,T,Dr]``."""
+        batch, length, _ = x.shape
+        query_latent = self.q_norm(self.q_down_proj(x))
+        query_heads = self.q_up_proj(query_latent).view(
+            batch, length, self.num_heads, self.qk_head_dim
+        ).transpose(1, 2)
+        q_content, q_rope = torch.split(
+            query_heads, (self.qk_content_dim, self.qk_rope_dim), dim=-1
+        )
+        return q_content, apply_partial_rope(q_rope, positions, self.qk_rope_dim)
+
+    def _mla_latents(self, x: Tensor, positions: Tensor) -> Tuple[Tensor, Tensor]:
+        """Return the normalized latent ``[B,T,Dc]`` and rotated shared
+        positional key ``[B,1,T,Dr]`` — exactly what enters the cache."""
+        compressed = self.kv_down_and_rope_proj(x)
+        latent, rope_key = torch.split(
+            compressed, (self.kv_lora_rank, self.qk_rope_dim), dim=-1
+        )
+        latent = self.kv_norm(latent)
+        rope_key = apply_partial_rope(
+            rope_key.unsqueeze(1), positions, self.qk_rope_dim
+        )
+        return latent, rope_key
+
+    def _absorbed_queries(self, q_content: Tensor) -> Tensor:
+        """Fold the key up-projection into the query: ``[B,H,T,Dn] -> [B,H,T,Dc]``.
+
+        Scores can then hit cached latents directly; content keys ``k_c`` are
+        never materialized on the decode path.
+        """
+        key_up_weight = self.key_up_proj.weight.view(
+            self.num_heads, self.qk_content_dim, self.kv_lora_rank
+        )
+        return torch.einsum("bhtd,hdc->bhtc", q_content, key_up_weight)
     # [/Block 03]
 
     # [Block 04] Lightning indexer scoring over the causal history
@@ -276,19 +356,18 @@ class DynamicSparseAttention(nn.Module):
         return scores, causal, keys
     # [/Block 04]
 
-    # [Block 05] Dense teacher distribution for indexer alignment
+    # [Block 05] Dense MLA teacher distribution for indexer alignment
     def dense_teacher_probs(self, x: Tensor) -> Tensor:
-        """Build a detached-target candidate from dense core attention."""
+        """Build a detached-target candidate from dense (full-history) MLA."""
         length = x.size(1)
         positions = torch.arange(length, device=x.device)
-        queries = apply_partial_rope(
-            self._heads(self.query(x)), positions, self.rotary_dim
+        q_content, q_rope = self._mla_queries(x, positions)
+        latent, rope_key = self._mla_latents(x, positions)
+        content_scores = torch.einsum(
+            "bhtc,bsc->bhts", self._absorbed_queries(q_content), latent
         )
-        keys = apply_partial_rope(
-            self._heads(self.key(x)), positions, self.rotary_dim
-        )
-        logits = torch.einsum("bhld,bhsd->bhls", queries, keys)
-        logits = logits * (self.head_dim ** -0.5)
+        rope_scores = torch.matmul(q_rope, rope_key.transpose(-2, -1))
+        logits = (content_scores + rope_scores) * (self.qk_head_dim ** -0.5)
         causal = self._causal_mask(positions, positions)[:, None, :, :]
         return masked_softmax(logits, causal, dim=-1).detach()
     # [/Block 05]
@@ -318,17 +397,18 @@ class DynamicSparseAttention(nn.Module):
         if length == 0:
             raise ValueError("sequence length must be positive")
 
-        past_keys = past_values = past_index_keys = None
+        past_latent = past_rope_key = past_index_keys = None
         first_position = 0
         if kv_cache is not None:
-            past_keys, past_values, past_index_keys = kv_cache
+            past_latent, past_rope_key, past_index_keys = kv_cache
+            past_length = past_latent.size(1)
             if (
-                past_keys.shape[:2] != (batch, self.num_heads)
-                or past_values.shape != past_keys.shape
-                or past_index_keys.shape != (batch, past_keys.size(2), self.index_dim)
+                past_latent.shape != (batch, past_length, self.kv_lora_rank)
+                or past_rope_key.shape != (batch, 1, past_length, self.qk_rope_dim)
+                or past_index_keys.shape != (batch, past_length, self.index_dim)
             ):
                 raise ValueError("invalid DSA cache shape")
-            first_position = past_index_keys.size(1)
+            first_position = past_length
 
         index_logits, causal, index_keys = self.indexer_scores(
             x, past_index_keys=past_index_keys, first_position=first_position
@@ -347,41 +427,48 @@ class DynamicSparseAttention(nn.Module):
         selected = torch.where(selected_valid, selected, safe_self)
         # [/Block 06]
 
-        # [Block 07] Append the KV/index caches and gather selected addresses
-        queries = apply_partial_rope(
-            self._heads(self.query(x)), query_positions, self.rotary_dim
+        # [Block 07] Append the latent/RoPE/index caches and gather candidates
+        q_content, q_rope = self._mla_queries(x, query_positions)
+        new_latent, new_rope_key = self._mla_latents(x, query_positions)
+        latent = new_latent if past_latent is None else torch.cat(
+            (past_latent, new_latent), dim=1
         )
-        new_keys = apply_partial_rope(
-            self._heads(self.key(x)), query_positions, self.rotary_dim
-        )
-        new_values = self._heads(self.value(x))
-        keys = new_keys if past_keys is None else torch.cat(
-            (past_keys, new_keys), dim=2
-        )
-        values = new_values if past_values is None else torch.cat(
-            (past_values, new_values), dim=2
+        rope_key = new_rope_key if past_rope_key is None else torch.cat(
+            (past_rope_key, new_rope_key), dim=2
         )
         new_cache: Optional[DSACache] = (
-            (keys, values, index_keys) if use_cache else None
+            (latent, rope_key, index_keys) if use_cache else None
         )
-        selected_keys = gather_per_query(keys, selected)
-        selected_values = gather_per_query(values, selected)
+        # Candidates are the original cached entries, not rebuilt K/V:
+        # latent c_kv [B,T,K,Dc] and the shared rotated RoPE key [B,T,K,Dr].
+        selected_latent = gather_per_query(latent.unsqueeze(1), selected).squeeze(1)
+        selected_rope_keys = gather_per_query(rope_key, selected).squeeze(1)
         # [/Block 07]
 
-        # [Block 08] Candidate-only core attention
-        core_logits = torch.einsum("bhld,bhlkd->bhlk", queries, selected_keys)
-        core_logits = core_logits * (self.head_dim ** -0.5)
+        # [Block 08] Candidate-only absorbed MLA attention
+        latent_queries = self._absorbed_queries(q_content)
+        content_scores = torch.einsum(
+            "bhtc,btkc->bhtk", latent_queries, selected_latent
+        )
+        rope_scores = torch.einsum("bhtd,btkd->bhtk", q_rope, selected_rope_keys)
+        core_logits = (content_scores + rope_scores) * (self.qk_head_dim ** -0.5)
         probabilities = masked_softmax(
             core_logits, selected_valid[:, None, :, :], dim=-1
         )
-        context = torch.einsum(
-            "bhlk,bhlkd->bhld", probabilities, selected_values
+        # Read in latent space, then fold the value up-projection into the
+        # output write: one projection per head, applied after the sum.
+        latent_read = torch.einsum(
+            "bhtk,btkc->bhtc", probabilities, selected_latent
         )
-        context = context.transpose(1, 2).contiguous().view(batch, length, -1)
+        value_up_weight = self.value_up_proj.weight.view(
+            self.num_heads, self.value_dim, self.kv_lora_rank
+        )
+        head_outputs = torch.einsum("bhtc,hvc->bhtv", latent_read, value_up_weight)
+        context = head_outputs.transpose(1, 2).contiguous().view(batch, length, -1)
         # [/Block 08]
 
         # [Block 09] Output projection and auxiliary results
-        result = self.output(context)
+        result = self.out_proj(context)
 
         if not return_aux:
             return result, new_cache
@@ -405,10 +492,14 @@ def _smoke_test() -> None:
     model = DynamicSparseAttention(
         d_model=32,
         num_heads=4,
+        q_lora_rank=12,
+        kv_lora_rank=10,
+        qk_content_dim=6,
+        qk_rope_dim=4,
+        value_dim=8,
         index_dim=8,
         num_index_heads=3,
         top_k=4,
-        rotary_dim=4,
         index_rotary_dim=4,
     )
     model.eval()
@@ -424,8 +515,8 @@ def _smoke_test() -> None:
     assert torch.isfinite(aux["indexer_kl"])
     assert torch.all(aux["selected_indices"] <= query_position)
     assert full_cache is not None
-    assert full_cache[0].shape == (2, 4, 9, 8)  # core keys [B,H,S,Dh]
-    assert full_cache[1].shape == (2, 4, 9, 8)  # core values [B,H,S,Dh]
+    assert full_cache[0].shape == (2, 9, 10)  # latent c_kv [B,S,Dc]
+    assert full_cache[1].shape == (2, 1, 9, 4)  # shared RoPE key [B,1,S,Dr]
     assert full_cache[2].shape == (2, 9, 8)  # FP8-format indexer keys [B,S,DI]
 
     changed = x.clone()

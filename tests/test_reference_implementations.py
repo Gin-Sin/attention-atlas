@@ -403,10 +403,14 @@ class PyTorchReferenceTests(unittest.TestCase):
         model = module.DynamicSparseAttention(
             d_model=16,
             num_heads=4,
+            q_lora_rank=6,
+            kv_lora_rank=5,
+            qk_content_dim=4,
+            qk_rope_dim=2,
+            value_dim=4,
             index_dim=4,
             num_index_heads=2,
             top_k=3,
-            rotary_dim=4,
         ).eval()
         x = torch.randn(2, 6, 16)
         with torch.no_grad():
@@ -418,8 +422,8 @@ class PyTorchReferenceTests(unittest.TestCase):
         self.assert_finite_shape(aux["selected_indices"], (2, 6, 3))
         self.assertTrue(torch.isfinite(aux["indexer_kl"]).item())
         self.assertIsNotNone(full_cache)
-        self.assert_finite_shape(full_cache[0], (2, 4, 6, 4))
-        self.assert_finite_shape(full_cache[1], (2, 4, 6, 4))
+        self.assert_finite_shape(full_cache[0], (2, 6, 5))
+        self.assert_finite_shape(full_cache[1], (2, 1, 6, 2))
         self.assert_finite_shape(full_cache[2], (2, 6, 4))
 
         cache = None
