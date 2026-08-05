@@ -220,7 +220,7 @@
       difficulty: "高阶",
       report: "DeepSeek-V2 Technical Report",
       deck: R`理解 MLA，先不要从“低秩压缩”开始，而要先问同一层在两个阶段分别怕什么：Prefill 怕大规模矩阵计算，Decode 怕反复搬运历史 KV。MLA 用同一份 512 维 latent 和两侧线性投影，让内容通道在 Prefill 展开成每头 128 维的 MHA 形态，在 Decode 吸收成共享 512 维的 MQA 形态。`,
-      takeaway: R`MLA 最关键的不是“缓存一个 latent”，而是改变计算括号：Prefill 先把 \(c^{KV}\) 展开为多头 K/V，保留 MHA-128 的并行计算形态；Decode 把 K 上投影吸收到 query、把 V 上投影吸收到输出，直接把同一份 \(c^{KV}\) 当作共享 K=V。小型 decoupled-RoPE 支路负责位置。`,
+      takeaway: R`MLA 最关键的不是“缓存一个 latent”，而是改变计算括号：Prefill 先把 \(c^{KV}\) 展开为多头 K/V，保留 MHA-128 的并行计算形态；Decode 把 K 上投影吸收到 query、把 V 上投影吸收到输出，直接把同一份 \(c^{KV}\) 当作共享 K=V。小型 decoupled-RoPE 支路负责位置。换句话说，MLA 把 Prefill 的计算旋钮 \(d\) 与 Decode 的缓存旋钮 \(C\) 解耦。`,
       motivation: [
         "同一个 Attention 层面对两种完全不同的工作负载。Prefill 一次处理整段 prompt，主要成本是形成并计算大批量 score；逐 token Decode 每步只有一个 query，却要反复读取全部历史 KV，通常受显存带宽与缓存容量约束。",
         "在固定 num_heads 与计算预算下，Prefill 希望每头内容维较小且 K/V 彼此独立：MHA-128 限制最少、矩阵乘也更轻。把内容 head dim 直接放大到 512，会把主要 score 计算近似放大 4 倍。",
@@ -253,8 +253,8 @@
         ],
         bridge: {
           label: "Exact bridge",
-          title: "同一 latent、同一权重，只改变线性运算的结合顺序",
-          body: "NoPE 内容分数和 value 写回满足严格恒等式，所以 Prefill 与 Decode 可以各用最适合自身瓶颈的执行图，而无需训练两套模型。"
+          title: R`MLA 把 Prefill 的 \(d\) 与 Decode 的 \(C+r\) 解耦`,
+          body: R`同一份 latent 和上投影在左侧表现为 \(H\) 个 \(d\) 维内容头，在右侧表现为一份 \(C\) 维共享 K=V；线性恒等式保证只换括号、不换函数。`
         }
       },
       sectionTitles: {
@@ -270,34 +270,52 @@
       intuitions: [
         { label: "Prefill", title: "一次展开，多头并行", body: "像打开源文件后一次导出所有 128 维 K/V 头：本轮计算材料化多头激活，但长期缓存仍只保存 latent 与 RoPE key。" },
         { label: "Decode", title: "只搬源文件，不搬导出件", body: "每一步直接读取 512 维 latent；query 和输出权重现场解释它，不为历史 token 重建并搬运全部多头 K/V。" },
-        { label: "同一模型", title: "只换括号，不换权重", body: "Prefill 与 Decode 不是两套训练参数，而是同一线性计算图的两种结合顺序；这就是 MLA 同时贴近 MHA 与 MQA 的关键。" }
+        { label: "双旋钮", title: R`\(d\) 管 Prefill，\(C\) 管 Decode`, body: R`普通 MHA/GQA 的每头宽度同时进入计算量与 KV cache；MLA 用 \(d\) 决定显式多头计算宽度，用 \(C\) 决定共享历史表示宽度。\(H\) 个 softmax 头和逐头上投影仍在，但不再为历史 token 复制 \(H\) 份缓存。` }
       ],
       diagram: { type: "latent", caption: R`MLA 的双执行图：同一份 \(c^{KV}\) 与同一组上投影，Prefill 展开成每头 128 维 K/V 做 MHA 形态计算；Decode 把投影吸收到 query/输出侧，直接以 512 维 latent 作为共享 K=V。64 维 decoupled-RoPE key 同时服务两条路径。` },
       derivations: [
         {
-          title: "固定缓存预算下，为什么共享 MQA 是 MHA/GQA 的超集",
-          body: R`把一个 GQA 层第 \(s\) 个 token 的全部分组 key/value 拼接成一个共享向量
+          title: "两阶段双预算下，MLA 为什么逼近 Pareto 前沿",
+          body: R`**条件化问题设定。** 暂时忽略常数因子、投影参数量、kernel/内存布局效应与小型 RoPE 项。记 \(H\) 为 query 头数，\(d\) 为 Prefill 使用的显式每头内容宽度，\(C\) 为共享 KV latent 宽度，\(r\) 为位置缓存宽度，\(L\) 为上下文长度。两项主导成本是
             \[
-            c_s=[k_s^{(1)};\ldots;k_s^{(g)};v_s^{(1)};\ldots;v_s^{(g)}]\in\mathbb R^{C},\qquad
-            C=g(d_k+d_v).
+            \mathrm{FLOPs}_{\mathrm{prefill}}=\Theta(HL^2d),\qquad
+            \mathrm{Cache}_{\mathrm{decode}}=\Theta\big(L(C+r)\big).
             \]
-            对属于第 \(j\) 组的 query 头 \(i\)，取选择矩阵 \(P_j^{K},P_j^{V}\) 使
-            \(k_s^{(j)}=P_j^{K}c_s\)、\(v_s^{(j)}=P_j^{V}c_s\)。于是
+            Prefill 的计算预算约束 \(H\) 与 \(d\)；Decode 的显存预算约束 \(C+r\)。在普通 MHA/GQA（\(G\) 个 KV 组、\(d_k=d_v=d\)）中两个旋钮是耦合的：
             \[
-            q_i^\top k_s^{(j)}=\big((P_j^{K})^\top q_i\big)^\top c_s,\qquad
-            \sum_s a_sv_s^{(j)}=P_j^{V}\sum_s a_sc_s,
+            \mathrm{Cache}_{\mathrm{GQA}}=\Theta(2LGd),
             \]
-            即分组选择/投影都能吸收进各头专属的 query 变换与输出变换。还要对齐缩放：原 GQA 头按
-            \(\sqrt{d_k}\) 缩放分数，共享 c 空间形式按 \(\sqrt{C}\) 缩放，因此把补偿因子并入吸收后的 query，
+            减小 \(G\) 或 \(d\) 能省缓存，却直接压窄独立存储的 K/V 子空间。**MLA 把两个旋钮解耦。**
             \[
-            \widehat q_i=\sqrt{C/d_k}\,(P_j^{K})^\top q_i
-            \quad\Longrightarrow\quad
+            c_s=W^{DKV}h_s\in\mathbb R^{C},\qquad
+            k^{C}_{s,i}=W_i^{UK}c_s\in\mathbb R^{d},\qquad
+            v_{s,i}=W_i^{UV}c_s\in\mathbb R^{d}.
+            \]
+            Prefill 显式材料化 \(H\) 个 \(d\) 维头，计算量保持 \(\Theta(HL^2d)\)；Decode 用结合律吸收 \(W_i^{UK}/W_i^{UV}\)，每 token 只存 \(C+r\)。于是 \(d\) 控制算力友好的 Prefill 形态，\(C\) 控制带宽友好的 Decode 表示；\(H\) 个独立 softmax 分布与逐头变换仍然保留，尽管历史缓存里没有 \(H\) 这个轴。
+            **引理：固定缓存预算下的函数族包含**（而非可疑的“每字节容量”标量指标）。对任意 \(G\) 组 GQA，若其拼接缓存宽度 \(C_{\mathrm{GQA}}=G(d_k+d_v)\le C\)，可把全部分组 key/value 填充编码进 \(c_s\in\mathbb R^{C}\)；借助选择矩阵 \(P_j^{K},P_j^{V}\) 与温度校正
+            \[
+            \widehat q_i=\sqrt{C/d_k}\,(P_j^{K})^\top q_i,
+            \qquad
             \frac{\widehat q_i^{\,\top}c_s}{\sqrt{C}}
             =\frac{q_i^\top k_s^{(j)}}{\sqrt{d_k}},
             \]
-            softmax 温度逐位不变，等价才是精确的。一个只缓存一份共享
-            \(K=V=c_s\)、头维为 \(C\) 的 MQA 形态因此能精确复现原 GQA（MHA 是 \(g=H_q\) 的特例）。
-            要点：这是忽略参数量与算力成本的“表示容量”超集论证，不证明单个巨头维 MQA kernel 在工程上最快。`
+            再加输出侧选择 \(P_j^{V}\)，共享 latent 形式就能精确复现该 GQA。于是
+            \[
+            \mathcal F_{\mathrm{GQA}}(C)\subseteq
+            \mathcal F_{\mathrm{shared\ latent}}(C),
+            \]
+            且全部 \(H\) 个头可以在整个 \(C\) 维统计量上使用学到的稠密映射，而不必固定分组切分。
+            **Prefill 侧的诚实关系。**
+            \[
+            \mathcal F_{\mathrm{MLA,prefill}}(H,d,C)
+            \subseteq \mathcal F_{\mathrm{MHA}}(H,d),
+            \]
+            因为 MLA 的显式 K/V 头由共享 \(C\) 维 latent 低秩派生，而非无约束参数；但它保留了 MHA 的执行形态——\(H\) 个独立 softmax 分布、每头 rank-\(d\) 内容回路、逐头的 \(W_i^{UK}/W_i^{UV}\)。增大 \(C\) 可以放松这个共享 latent 瓶颈，而无需改动 \(d\)。
+            **条件化近优结论。**
+            \[
+            \boxed{\text{MLA 把 Prefill 旋钮 }d\text{ 与 Decode 旋钮 }C+r\text{ 解耦。}}
+            \]
+            在 full softmax、线性投影、Partial RoPE 足够有效、固定 \((H,d)\) Prefill 预算与固定 \(C+r\) Decode 缓存预算的条件下，MLA 同时拥有 MHA 式计算图与一个包含等预算 GQA 的共享 latent 函数族，因此位于该双预算 trade-off 的 Pareto 前沿附近。这不是全局最优定理：MHA 侧的包含是严格的，真实系统还叠加参数量、TP、kernel、量化与硬件约束。`
         },
         {
           title: "Prefill 视角：为什么展开成 MHA-128",
@@ -335,9 +353,9 @@
           answer: R`(a) 主导成本是大批量 score/read 的矩阵计算（约 \(\Theta(HL^2d_h)\)），因此选择展开成每头 128 维的 MHA 形态并行计算；(b) 主导成本是每步重复读取全部历史 KV 的带宽与容量，因此选择吸收式 MQA 形态，让全部头直接读取同一份 512 维 latent（外加共享 RoPE key）。`
         },
         {
-          q: R`从两组 GQA 出发（\(g=2\)），构造共享向量 \(c=[k^{(1)};k^{(2)};v^{(1)};v^{(2)}]\)，并说明各头专属的投影如何恢复原来的分组行为。`,
-          hint: R`用选择矩阵把 \(c\) 的对应片段取出来，再吸收进 query 与输出。`,
-          answer: R`设第 1 组头使用 \(k^{(1)},v^{(1)}\)。取 \(P_1^K\) 为从 \(c\) 中切出 \(k^{(1)}\) 的选择矩阵，则 \(q_i^\top k_s^{(1)}=((P_1^K)^\top q_i)^\top c_s\)：分数计算等价于用改造后的 query 对共享 \(c_s\) 做点积。value 侧同理，\(\sum_s a_sv_s^{(1)}=P_1^V\sum_s a_sc_s\)，选择矩阵可并入输出投影。因此“一份宽 \(C\) 的共享 K=V + 各头专属变换”完整覆盖两组 GQA 的行为。`
+          q: R`设 Prefill 预算固定 \(H\) 与 \(d\)，Decode 缓存预算固定 \(C+r\)。用函数族包含关系和计算/缓存公式解释：为什么 MLA 可以被称为“条件化近优”，又为什么不能称为“无条件最优”？`,
+          hint: R`分别写出 \(\Theta(HL^2d)\)、\(\Theta(L(C+r))\)、GQA→shared-latent 的包含关系，以及 MLA→MHA 的包含关系。`,
+          answer: R`(a) MLA 独立满足两个预算：Prefill 用显式 \(H\times d\) 头，计算量 \(\Theta(HL^2d)\)；Decode 吸收上投影后每 token 只存 \(C+r\)，缓存 \(\Theta(L(C+r))\)。(b) 等缓存预算的 GQA 可以精确嵌入共享 latent 形式（配合温度校正 \(\widehat q_i=\sqrt{C/d_k}\,(P_j^K)^\top q_i\)），所以在简化假设下 Decode 侧函数族至少不窄于该 GQA 族。(c) MLA 的 Prefill 只是无约束 MHA 的子集：\(\mathcal F_{\mathrm{MLA,prefill}}(H,d,C)\subseteq\mathcal F_{\mathrm{MHA}}(H,d)\)，因为 K/V 由共享 \(c\) 低秩派生。(d) 参数量、Decode 端 \(HC\) 级计算、TP/kernel/量化与 Partial RoPE 的质量都可能反转选型；也不能把标量 \(H\times d/(C+r)\) 当作容量定理。因此是条件化近优，而非无条件最优。`
         }
       ],
       sources: [
