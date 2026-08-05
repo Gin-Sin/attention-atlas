@@ -115,9 +115,10 @@
       "<p>完整图表资源未能载入。请刷新页面，或检查 assets/diagrams.js 是否可访问。</p></section>";
   }
 
-  function renderCards(items, className) {
-    return '<div class="' + className + '-grid">' + items.map(function (item) {
-      return '<article class="' + className + '"><span class="label">' + esc(item.label) + '</span><strong>' + esc(item.title) + '</strong><p>' + esc(item.body) + "</p></article>";
+  function renderCards(items, className, idPrefix) {
+    return '<div class="' + className + '-grid">' + items.map(function (item, index) {
+      var id = idPrefix ? ' id="' + esc(idPrefix + "-" + (index + 1)) + '"' : "";
+      return '<article class="' + className + '"' + id + '><span class="label">' + esc(item.label) + '</span><strong>' + esc(item.title) + '</strong><p>' + esc(item.body) + "</p></article>";
     }).join("") + "</div>";
   }
 
@@ -174,7 +175,7 @@
         '<p class="phase-compare__execution">' + esc(phase.execution) + "</p>" +
         '<p class="phase-compare__note">' + esc(phase.note) + "</p></article>";
     }).join("");
-    return '<section class="phase-compare" aria-label="' + esc(data.title) + '">' +
+    return '<section class="phase-compare" id="phase-comparison" aria-label="' + esc(data.title) + '">' +
       '<header class="phase-compare__header"><span class="phase-compare__eyebrow">' +
       esc(data.eyebrow) + "</span><h3>" + esc(data.title) + "</h3><p>" +
       esc(data.intro) + "</p></header>" +
@@ -187,10 +188,66 @@
   function renderPositionEncoding(position) {
     if (!position) return '<div class="warning" role="status">本章暂无位置编码说明。</div>';
     return '<article class="formula position-encoding"><span class="formula-label">Position &amp; Sequence</span>' +
-      "<h3>" + esc(position.title) + "</h3><p>" + esc(position.summary) + "</p><div>" +
+      '<h3 id="position-overview">' + esc(position.title) + "</h3><p>" + esc(position.summary) + "</p><div>" +
       position.equation + "</div></article>" +
-      renderCards(position.steps || [], "intuition") +
+      renderCards(position.steps || [], "intuition", "position-step") +
       '<div class="warning"><strong>实现边界：</strong> ' + esc(position.caveat) + "</div>";
+  }
+
+  function renderTocEntries(entries) {
+    return entries.map(function (entry) {
+      var children = entry.children || [];
+      var sublist = children.length
+        ? '<ol class="chapter-toc__sublist">' + children.map(function (child, index) {
+          return '<li><a href="#' + esc(child.id) + '"><i>' +
+            esc(entry.number + "." + (index + 1)) + "</i><span>" +
+            esc(child.title) + "</span></a></li>";
+        }).join("") + "</ol>"
+        : "";
+      return '<li class="chapter-toc__item"><a class="chapter-toc__section-link" href="#' +
+        esc(entry.id) + '"><i>' + esc(entry.number) + "</i><span>" +
+        esc(entry.title) + "</span></a>" + sublist + "</li>";
+    }).join("");
+  }
+
+  function initChapterToc(scope) {
+    var toc = scope.querySelector("[data-chapter-toc]");
+    if (!toc) return;
+    var button = toc.querySelector("[data-toc-toggle]");
+    var label = toc.querySelector("[data-toc-toggle-label]");
+    var body = toc.querySelector(".chapter-toc__body");
+    if (!button || !label || !body) return;
+
+    var compactViewport = window.matchMedia("(max-width: 1480px)");
+    var manuallyToggled = false;
+
+    function setCollapsed(collapsed) {
+      toc.classList.toggle("is-collapsed", collapsed);
+      button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      button.setAttribute("aria-label", collapsed ? "展开本章目录" : "折叠本章目录");
+      label.textContent = collapsed ? "目录" : "收起";
+      body.hidden = collapsed;
+    }
+
+    setCollapsed(compactViewport.matches);
+    button.addEventListener("click", function () {
+      manuallyToggled = true;
+      setCollapsed(!toc.classList.contains("is-collapsed"));
+    });
+    toc.addEventListener("click", function (event) {
+      if (compactViewport.matches && event.target.closest("a")) {
+        setCollapsed(true);
+      }
+    });
+
+    function syncViewport(event) {
+      if (!manuallyToggled) setCollapsed(event.matches);
+    }
+    if (compactViewport.addEventListener) {
+      compactViewport.addEventListener("change", syncViewport);
+    } else {
+      compactViewport.addListener(syncViewport);
+    }
   }
 
   function initDiagramExpand(scope) {
@@ -599,11 +656,11 @@
       var source = d.source
         ? '<p><a class="formula-label" href="#authoritative-sources">Source anchor · ' + esc(d.source) + "</a></p>"
         : "";
-      return '<article class="formula"><span class="formula-label">Derivation ' + (i + 1) +
+      return '<article class="formula" id="derivation-' + (i + 1) + '"><span class="formula-label">Derivation ' + (i + 1) +
         "</span><h3>" + esc(d.title) + "</h3><div>" + richText(d.body) + "</div>" + source + "</article>";
     }).join("");
     var exercises = c.exercises.map(function (e, i) {
-      return '<article class="exercise"><div class="diagram-legend" aria-label="练习分类与难度"><span>Kind · ' + esc(e.kind) +
+      return '<article class="exercise" id="exercise-' + (i + 1) + '"><div class="diagram-legend" aria-label="练习分类与难度"><span>Kind · ' + esc(e.kind) +
         '</span><span>Level · ' + esc(e.level) + "</span></div><h3>练习 " +
         (i + 1) + '</h3><div class="exercise-body"><p>' + e.q +
         '</p><details><summary>提示</summary><p>' + e.hint +
@@ -613,20 +670,57 @@
     var sources = c.sources.map(function (s) {
       return '<li><span><a href="' + esc(s.url) + '" target="_blank" rel="noreferrer">' + esc(s.label) + "</a></span></li>";
     }).join("");
+    var constraintChildren = c.constraints.map(function (item, childIndex) {
+      return { title: item.title, id: "constraint-" + (childIndex + 1) };
+    });
+    if (c.phaseComparison) {
+      constraintChildren.push({ title: c.phaseComparison.title, id: "phase-comparison" });
+    }
+    var positionChildren = c.positionEncoding
+      ? [{ title: c.positionEncoding.title, id: "position-overview" }].concat(
+        (c.positionEncoding.steps || []).map(function (item, childIndex) {
+          return { title: item.title, id: "position-step-" + (childIndex + 1) };
+        })
+      )
+      : [];
     var tocEntries = [
-      ["01", sectionTitle(c, "motivation"), "sec-01"],
-      ["02", sectionTitle(c, "constraints"), "sec-02"],
-      ["03", sectionTitle(c, "intuitions"), "sec-03"],
-      ["04", sectionTitle(c, "diagram"), "sec-04"],
-      ["05", sectionTitle(c, "position"), "sec-05"],
-      ["06", sectionTitle(c, "derivations"), "sec-06"],
-      ["07", sectionTitle(c, "exercises"), "sec-07"],
-      ["08", sectionTitle(c, "sources"), "authoritative-sources"]
+      { number: "01", title: sectionTitle(c, "motivation"), id: "sec-01" },
+      { number: "02", title: sectionTitle(c, "constraints"), id: "sec-02", children: constraintChildren },
+      {
+        number: "03",
+        title: sectionTitle(c, "intuitions"),
+        id: "sec-03",
+        children: c.intuitions.map(function (item, childIndex) {
+          return { title: item.title, id: "intuition-" + (childIndex + 1) };
+        })
+      },
+      { number: "04", title: sectionTitle(c, "diagram"), id: "sec-04" },
+      { number: "05", title: sectionTitle(c, "position"), id: "sec-05", children: positionChildren },
+      {
+        number: "06",
+        title: sectionTitle(c, "derivations"),
+        id: "sec-06",
+        children: c.derivations.map(function (item, childIndex) {
+          return { title: item.title, id: "derivation-" + (childIndex + 1) };
+        })
+      },
+      {
+        number: "07",
+        title: sectionTitle(c, "exercises"),
+        id: "sec-07",
+        children: c.exercises.map(function (_, childIndex) {
+          return { title: "练习 " + (childIndex + 1), id: "exercise-" + (childIndex + 1) };
+        })
+      },
+      { number: "08", title: sectionTitle(c, "sources"), id: "authoritative-sources" }
     ];
-    var toc = '<nav class="chapter-toc" aria-label="本章目录"><span class="chapter-toc__label">Contents · 本章目录</span><ol>' +
-      tocEntries.map(function (entry) {
-        return '<li><a href="#' + entry[2] + '"><i>' + entry[0] + "</i>" + esc(entry[1]) + "</a></li>";
-      }).join("") + "</ol></nav>";
+    var toc = '<nav class="chapter-toc" data-chapter-toc aria-label="本章目录">' +
+      '<div class="chapter-toc__header"><span class="chapter-toc__label">Contents · 本章目录</span>' +
+      '<button class="chapter-toc__toggle" data-toc-toggle type="button" aria-expanded="true" ' +
+      'aria-controls="chapter-toc-list" aria-label="折叠本章目录"><span data-toc-toggle-label>收起</span>' +
+      '<i aria-hidden="true">→</i></button></div>' +
+      '<div class="chapter-toc__body" id="chapter-toc-list"><ol class="chapter-toc__list">' +
+      renderTocEntries(tocEntries) + "</ol></div></nav>";
     var prev = chapters[index - 1];
     var next = chapters[index + 1];
     var nav = '<nav class="chapter-nav">' +
@@ -640,9 +734,9 @@
       '<aside class="takeaway"><span>Mathematical Takeaway</span><p>' + c.takeaway + "</p></aside>" +
       renderAttentionConfig(c.attentionConfig) + toc +
       '<main class="chapter-main"><h2 data-no="01" id="sec-01">' + esc(sectionTitle(c, "motivation")) + "</h2>" + motivation +
-      '<h2 data-no="02" id="sec-02">' + esc(sectionTitle(c, "constraints")) + "</h2>" + renderCards(c.constraints, "constraint") +
+      '<h2 data-no="02" id="sec-02">' + esc(sectionTitle(c, "constraints")) + "</h2>" + renderCards(c.constraints, "constraint", "constraint") +
       renderPhaseComparison(c.phaseComparison) +
-      '<h2 data-no="03" id="sec-03">' + esc(sectionTitle(c, "intuitions")) + "</h2>" + renderCards(c.intuitions, "intuition") +
+      '<h2 data-no="03" id="sec-03">' + esc(sectionTitle(c, "intuitions")) + "</h2>" + renderCards(c.intuitions, "intuition", "intuition") +
       '<h2 data-no="04" id="sec-04">' + esc(sectionTitle(c, "diagram")) + "</h2>" + renderDiagram(c.diagram, implementations[c.id]) +
       '<h2 data-no="05" id="sec-05">' + esc(sectionTitle(c, "position")) + "</h2>" + renderPositionEncoding(c.positionEncoding) +
       '<h2 data-no="06" id="sec-06">' + esc(sectionTitle(c, "derivations")) + "</h2>" + derivations +
@@ -667,6 +761,7 @@
       syncButton();
     });
     syncButton();
+    initChapterToc(root);
     initDiagramExpand(root);
     initArchitectureWorkbench(root, implementations[c.id]);
     initDiagramFlowPreview(root);
