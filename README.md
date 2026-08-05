@@ -5,7 +5,7 @@
 - `MHA → MQA → GQA → MLA → {MFA / TPA, DSA → CSA / HCA}`（MFA 与 TPA 是从 MLA 之后分出的两条并列 dense 分解路线；DSA 直接构建在 MLA 之上，并延伸到 CSA / HCA）
 - `Linear Attention → DeltaNet / Gated DeltaNet → KDA → Hybrid Attention`
 
-CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容量的两条 dense 路线。全站共 12 章、49 个推导和 72 道练习，学习进度只保存在浏览器 `localStorage`，不会上传。
+CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容量的两条 dense 路线。全站共 12 章、48 个推导和 72 道练习，学习进度只保存在浏览器 `localStorage`，不会上传。
 
 ## 章节内容契约
 

@@ -263,8 +263,8 @@
         intuitions: "MLA 的关键：同一组权重，两种执行形态",
         diagram: "一张图看懂 MHA-128 ↔ MQA-512",
         position: "RoPE 为什么必须拆成小支路",
-        derivations: "为什么 MLA 在限定条件下几乎最优",
-        exercises: "练习：判断阶段、恒等变换与适用边界",
+        derivations: "同等表达力下，MLA 为什么更省 KV Cache",
+        exercises: "练习：KV Cache、Decode 算量与等价变换",
         sources: "权威来源与延伸阅读"
       },
       intuitions: [
@@ -275,87 +275,72 @@
       diagram: { type: "latent", caption: R`MLA 的双执行图：同一份 \(c^{KV}\) 与同一组上投影，Prefill 展开成每头 128 维 K/V 做 MHA 形态计算；Decode 把投影吸收到 query/输出侧，直接以 512 维 latent 作为共享 K=V。64 维 decoupled-RoPE key 同时服务两条路径。` },
       derivations: [
         {
-          title: "两阶段双预算下，MLA 为什么逼近 Pareto 前沿",
-          body: R`**条件化问题设定。** 暂时忽略常数因子、投影参数量、kernel/内存布局效应与小型 RoPE 项。记 \(H\) 为 query 头数，\(d\) 为 Prefill 使用的显式每头内容宽度，\(C\) 为共享 KV latent 宽度，\(r\) 为位置缓存宽度，\(L\) 为上下文长度。两项主导成本是
+          title: "证明：同等表达力下，MLA 的 KV Cache 更小",
+          body: R`**前提。** 在 LLM 推理中，先采用一个简化但关键的经验判断：相比增加 head 数量，增大每个 head 的有效工作维度 \(d\) 对模型表达力更重要。下面的结论只在这个前提下成立。
+
+            暂时忽略位置支路。设 GQA 有 \(G\) 个 KV heads、每头维度为 \(d\)；MLA 的联合 KV latent 宽度为 \(C\)。每个历史 token 的内容缓存宽度分别是
             \[
-            \mathrm{FLOPs}_{\mathrm{prefill}}=\Theta(HL^2d),\qquad
-            \mathrm{Cache}_{\mathrm{decode}}=\Theta\big(L(C+r)\big).
+            \mathrm{Cache}_{\mathrm{GQA}}=2Gd,\qquad
+            \mathrm{Cache}_{\mathrm{MQA}}=2d,\qquad
+            \mathrm{Cache}_{\mathrm{MLA}}=C.
             \]
-            Prefill 的计算预算约束 \(H\) 与 \(d\)；Decode 的显存预算约束 \(C+r\)。在普通 MHA/GQA（\(G\) 个 KV 组、\(d_k=d_v=d\)）中两个旋钮是耦合的：
+            GQA/MQA 必须分别缓存 K 和 V，所以有系数 2；MLA 用同一个
+            \(c^{KV}\in\mathbb R^C\) 同时生成 K 和 V，Decode 时再把两侧上投影吸收到 query 与输出，因此只缓存一份 \(C\) 维 latent，并以 MQA-\(C\) 的工作维度执行。
+
+            在上述前提下，要与 MLA-\(C\) 具有同等级的表达力，MQA/GQA 也应取 \(d=C\)。代入即得
             \[
-            \mathrm{Cache}_{\mathrm{GQA}}=\Theta(2LGd),
+            \frac{\mathrm{Cache}_{\mathrm{MLA}}}{\mathrm{Cache}_{\mathrm{MQA}}}
+            =\frac12,\qquad
+            \frac{\mathrm{Cache}_{\mathrm{MLA}}}{\mathrm{Cache}_{\mathrm{GQA}}}
+            =\frac{1}{2G}.
             \]
-            减小 \(G\) 或 \(d\) 能省缓存，却直接压窄独立存储的 K/V 子空间。**MLA 把两个旋钮解耦。**
-            \[
-            c_s=W^{DKV}h_s\in\mathbb R^{C},\qquad
-            k^{C}_{s,i}=W_i^{UK}c_s\in\mathbb R^{d},\qquad
-            v_{s,i}=W_i^{UV}c_s\in\mathbb R^{d}.
-            \]
-            Prefill 显式材料化 \(H\) 个 \(d\) 维头，计算量保持 \(\Theta(HL^2d)\)；Decode 用结合律吸收 \(W_i^{UK}/W_i^{UV}\)，每 token 只存 \(C+r\)。于是 \(d\) 控制算力友好的 Prefill 形态，\(C\) 控制带宽友好的 Decode 表示；\(H\) 个独立 softmax 分布与逐头变换仍然保留，尽管历史缓存里没有 \(H\) 这个轴。
-            **引理：固定缓存预算下的函数族包含**（而非可疑的“每字节容量”标量指标）。对任意 \(G\) 组 GQA，若其拼接缓存宽度 \(C_{\mathrm{GQA}}=G(d_k+d_v)\le C\)，可把全部分组 key/value 填充编码进 \(c_s\in\mathbb R^{C}\)；借助选择矩阵 \(P_j^{K},P_j^{V}\) 与温度校正
-            \[
-            \widehat q_i=\sqrt{C/d_k}\,(P_j^{K})^\top q_i,
-            \qquad
-            \frac{\widehat q_i^{\,\top}c_s}{\sqrt{C}}
-            =\frac{q_i^\top k_s^{(j)}}{\sqrt{d_k}},
-            \]
-            再加输出侧选择 \(P_j^{V}\)，共享 latent 形式就能精确复现该 GQA。于是
-            \[
-            \mathcal F_{\mathrm{GQA}}(C)\subseteq
-            \mathcal F_{\mathrm{shared\ latent}}(C),
-            \]
-            且全部 \(H\) 个头可以在整个 \(C\) 维统计量上使用学到的稠密映射，而不必固定分组切分。
-            **Prefill 侧的诚实关系。**
-            \[
-            \mathcal F_{\mathrm{MLA,prefill}}(H,d,C)
-            \subseteq \mathcal F_{\mathrm{MHA}}(H,d),
-            \]
-            因为 MLA 的显式 K/V 头由共享 \(C\) 维 latent 低秩派生，而非无约束参数；但它保留了 MHA 的执行形态——\(H\) 个独立 softmax 分布、每头 rank-\(d\) 内容回路、逐头的 \(W_i^{UK}/W_i^{UV}\)。增大 \(C\) 可以放松这个共享 latent 瓶颈，而无需改动 \(d\)。
-            **条件化近优结论。**
-            \[
-            \boxed{\text{MLA 把 Prefill 旋钮 }d\text{ 与 Decode 旋钮 }C+r\text{ 解耦。}}
-            \]
-            在 full softmax、线性投影、Partial RoPE 足够有效、固定 \((H,d)\) Prefill 预算与固定 \(C+r\) Decode 缓存预算的条件下，MLA 同时拥有 MHA 式计算图与一个包含等预算 GQA 的共享 latent 函数族，因此位于该双预算 trade-off 的 Pareto 前沿附近。这不是全局最优定理：MHA 侧的包含是严格的，真实系统还叠加参数量、TP、kernel、量化与硬件约束。`
+            这就是核心结论：**同等有效 head 维度下，MLA 的内容缓存是 MQA 的
+            \(1/2\)，是 \(G\)-head GQA 的 \(1/(2G)\)。**
+
+            **具体例子。** GQA-2-128 的内容缓存为
+            \(2\times2\times128=512\) 个元素；MLA-512 也缓存 512 个元素。
+            固定缓存时二者一样大，但 MLA 的 Decode 工作维度是 512，而 GQA
+            只有 128。若把表达力口径对齐到 512，GQA 必须变成 GQA-2-512，
+            缓存增至 \(2\times2\times512=2048\) 个元素，是 MLA-512 的 4 倍；
+            MQA-512 则需 1024 个元素，是 MLA-512 的 2 倍。
+
+            DeepSeek-V2 还缓存一份 64 维共享 RoPE key。若各方案都按“512 维内容
+            + 64 维位置 key”对齐，则 MLA、MQA、GQA-2 分别为 576、1088、2176
+            个元素；位置支路缩小了理论倍数，但不改变 MLA 更省缓存的结论。`
         },
         {
-          title: "Prefill 视角：为什么展开成 MHA-128",
-          body: R`MLA 的内容通道由共享 latent 生成：
+          title: "代价：Decode 做更多计算，但瓶颈访存更少",
+          body: R`吸收上投影后，MLA-512 的内容路径在 Decode 时等效于
+            MQA-512：每个 query head 都要在 512 维空间中完成打分与加权读取。
+            对 \(H\) 个 query heads、长度 \(L\) 的历史，内容计算量近似为
             \[
-            c_s=W^{DKV}h_s\in\mathbb R^{512},\qquad
-            k_{s,i}^{C}=W_i^{UK}c_s,\quad v_{s,i}=W_i^{UV}c_s,
+            \mathrm{FLOPs}_{\mathrm{decode}}=\Theta(2HLC).
             \]
-            每头 \(k^{C},v\) 均为 128 维。Prefill 一次处理长度 \(L\) 的 prompt、\(H\) 个头的内容
-            score 计算量随
-            \[
-            \Theta(H\,L^{2}\,d_h)
-            \]
-            增长：显式展开成 \(d_h=128\) 的多头，比让每个头直接在 512 维共享空间打分便宜约 4 倍。
-            临时展开的 K/V 只是本轮计算的中间量；持久缓存仍然只有 \(c_s\) 与 \(k_s^{R}\)。
-            注意“MHA 形态”指执行图形状：这些每头 K/V 由同一 512 维 latent 低秩派生，不是一组独立无约束的 MHA 权重。`
-        },
-        {
-          title: "Decode 视角：为什么吸收成 MQA-512",
-          body: R`对头 \(i\) 的内容分数与读取应用结合律：
-            \[
-            q_i^\top W_i^{UK}c_s=\big((W_i^{UK})^\top q_i\big)^\top c_s,\qquad
-            \sum_s a_sW_i^{UV}c_s=W_i^{UV}\sum_s a_sc_s,
-            \]
-            再把 \(W_i^{UV}\) 折进输出投影对应分块 \(W_i^{O}\)。于是每个头都以同一份 512 维
-            \(c_s\) 作为 K=V 打分与读取，头间差异只体现在变换后的 query 与输出侧。加上
-            64 维共享 RoPE key 后，持久缓存宽度是 \(512+64=576\)，而不是 512。`
+            因此相对 GQA-2-128，MLA-512 的每头内容算术约为 4 倍。两者都缓存
+            512 个内容元素，所以这个“固定缓存”对比表达的是：MLA 用更多算术换来
+            4 倍工作维度，而没有增加内容缓存。
+
+            若按同等表达力比较，正确基线是 GQA-2-512：它与 MLA-512 的每头工作
+            维度相同，但每个历史 token 要读取 2048 个内容元素；MLA 只读取 512 个，
+            访存量降为 \(1/4\)。与 MQA-512 相比则降为 \(1/2\)。
+
+            Decode 通常每步只产生一个 token，却要扫描全部历史，瓶颈往往是 HBM
+            带宽而不是乘加吞吐。因此在长上下文、小 batch 且有高效吸收式 kernel 时，
+            增加算术强度通常比重复搬运 K/V 更划算。反之，短上下文、大 batch 或缺少
+            专用 kernel 时，MLA 的额外计算不一定能被访存收益抵消。`
         }
       ],
-      warning: "“MLA 在相同训练和推理成本下可能是效果最好的 Full Attention 变体”来自苏剑林在简化假设下的理论解释与消融观察，不是普适定理。完整系统还受 tensor parallel、kernel 可用性、量化、参数量对齐、batch/上下文长度和硬件影响；DeepSeek-V2 的 93.3% cache 降幅与 5.76× 吞吐也只是指定系统对比。",
+      warning: "本节把“有效 head_dim 比 head 数量更影响表达力”作为分析前提，而不是普适定理；MQA-512 也是 MLA 吸收后的结构与执行口径，不等于无约束的标准 MQA-512 参数化。真实选型还受 tensor parallel、kernel、量化、参数预算、batch、上下文长度和硬件影响。",
       exercises: [
         {
-          q: R`同一个 MLA 层处于两种时刻：(a) Prefill 正在并行处理 4K token 的 prompt；(b) Decode 正在生成第 4097 个 token。分别指出主导成本，以及该阶段更想要的执行形态。`,
-          hint: "一个阶段受计算约束，一个阶段受历史 KV 搬运约束。",
-          answer: R`(a) 主导成本是大批量 score/read 的矩阵计算（约 \(\Theta(HL^2d_h)\)），因此选择展开成每头 128 维的 MHA 形态并行计算；(b) 主导成本是每步重复读取全部历史 KV 的带宽与容量，因此选择吸收式 MQA 形态，让全部头直接读取同一份 512 维 latent（外加共享 RoPE key）。`
+          q: R`采用“有效 head_dim 比 head 数量更影响表达力”的前提。设 MLA latent 宽度为 \(C\)，GQA 有 \(G\) 个 KV heads。证明同等表达力下 MLA 相对 MQA、GQA 的内容缓存比例。`,
+          hint: R`先令 MQA/GQA 的 \(d=C\)，再比较 \(C\)、\(2C\) 与 \(2GC\)。`,
+          answer: R`同等表达力要求三者的有效工作维度均为 \(C\)。MLA 联合存储一份 \(C\) 维 latent；MQA 分别存一份 \(C\) 维 K 和 V，共 \(2C\)；GQA 为 \(G\) 个 KV heads 分别存 K/V，共 \(2GC\)。所以 MLA/MQA \(=1/2\)，MLA/GQA \(=1/(2G)\)。结论依赖给定的表达力前提，不能外推为无条件最优定理。`
         },
         {
-          q: R`设 Prefill 预算固定 \(H\) 与 \(d\)，Decode 缓存预算固定 \(C+r\)。用函数族包含关系和计算/缓存公式解释：为什么 MLA 可以被称为“条件化近优”，又为什么不能称为“无条件最优”？`,
-          hint: R`分别写出 \(\Theta(HL^2d)\)、\(\Theta(L(C+r))\)、GQA→shared-latent 的包含关系，以及 MLA→MHA 的包含关系。`,
-          answer: R`(a) MLA 独立满足两个预算：Prefill 用显式 \(H\times d\) 头，计算量 \(\Theta(HL^2d)\)；Decode 吸收上投影后每 token 只存 \(C+r\)，缓存 \(\Theta(L(C+r))\)。(b) 等缓存预算的 GQA 可以精确嵌入共享 latent 形式（配合温度校正 \(\widehat q_i=\sqrt{C/d_k}\,(P_j^K)^\top q_i\)），所以在简化假设下 Decode 侧函数族至少不窄于该 GQA 族。(c) MLA 的 Prefill 只是无约束 MHA 的子集：\(\mathcal F_{\mathrm{MLA,prefill}}(H,d,C)\subseteq\mathcal F_{\mathrm{MHA}}(H,d)\)，因为 K/V 由共享 \(c\) 低秩派生。(d) 参数量、Decode 端 \(HC\) 级计算、TP/kernel/量化与 Partial RoPE 的质量都可能反转选型；也不能把标量 \(H\times d/(C+r)\) 当作容量定理。因此是条件化近优，而非无条件最优。`
+          q: R`比较 GQA-2-128 与 MLA-512 的 Decode：(a) 内容缓存各有多少元素？(b) MLA 每个 query head 的内容算术约是前者多少倍？(c) 若改为同等表达力，正确的 GQA 基线是什么，此时 MLA 的访存量缩小多少？`,
+          hint: "固定缓存时比较 128 与 512；固定表达力时把 GQA 的 head_dim 也提高到 512。",
+          answer: R`(a) GQA-2-128 为 \(2\times2\times128=512\)，MLA-512 为 512，忽略位置支路时相同。(b) score 与 value read 都随每头工作维度线性增长，因此 MLA 的内容算术约为 \(512/128=4\) 倍。(c) 同等表达力应比较 GQA-2-512，其缓存与历史读取为 \(2\times2\times512=2048\) 个元素，MLA 只有 512，访存量缩小 4 倍。两个答案不矛盾：前两个固定缓存，最后一个固定表达力。`
         }
       ],
       sources: [
@@ -1357,8 +1342,8 @@
       },
       derivationSourceFallback: "DeepSeek-V2 Technical Report (2024), §2.1.2–§2.1.4 与 Appendix C；苏剑林（2024/2025）Scientific Spaces MLA 系列（解释性来源）",
       existingExerciseMeta: [
-        { kind: "concept", level: "foundation" },
-        { kind: "derivation", level: "intermediate" }
+        { kind: "derivation", level: "intermediate" },
+        { kind: "complexity", level: "intermediate" }
       ],
       derivations: [
         {
@@ -1414,9 +1399,9 @@
         {
           kind: "complexity",
           level: "intermediate",
-          q: R`DeepSeek-V2 取 \(H=128\)、内容维 128、latent 512、RoPE 64。求持久缓存与“显式 MHA 形态”每 token 元素数之比，并解释为什么 Prefill 仍选择 128 维内容打分、Decode 却接受 512 维 latent 打分。`,
-          hint: R`持久缓存 576；显式形态是 \(2\times128\times128\)。`,
-          answer: R`显式 MHA 形态每 token 需 \(2\times128\times128=32768\) 个元素，持久缓存只有 \(512+64=576\)，比值约 \(56.9\)（这是与自身展开形态的口径对比；DeepSeek 官方 93.3% 用的是不同基线口径）。Prefill 的成本主项是 \(\Theta(HL^2d_h)\) 的 score 计算，128 维内容头比 512 维共享空间便宜约 4 倍，且展开量不进持久缓存；Decode 的成本主项是每步搬运历史缓存，把打分空间提高到 512 维换来的是每 token 只读 576 个元素、且完全不重建 32768 个元素的多头 K/V——计算多一点、搬运少得多。`
+          q: R`取内容维 \(C=512\)、共享位置 key 宽度 \(r=64\)、上下文 \(L=32768\)，缓存使用 BF16。按同等有效内容维度，分别求 MLA、MQA、GQA-2 的单层单序列 KV Cache。`,
+          hint: R`每 token 元素数分别为 \(C+r\)、\(2C+r\)、\(2(2C+r)\)，最后乘 \(L\times2\) 字节。`,
+          answer: R`每 token 分别为 576、1088、2176 个元素。乘 \(32768\times2\) 字节后，MLA 为 36 MiB，MQA 为 68 MiB，GQA-2 为 136 MiB。因此加入 64 维位置支路后，MLA 仍分别比同维 MQA、GQA-2 少 32 MiB 和 100 MiB；相对倍数从理想的 2×/4× 降为约 1.89×/3.78×。`
         },
         {
           kind: "counterexample",
@@ -1429,7 +1414,7 @@
           kind: "design",
           level: "advanced",
           q: "有人断言“MLA 永远是最优 attention”。请批判这个说法，并列出至少四个可能反转工程选型的条件。",
-          hint: "回到“几乎最优”结论的全部前提假设。",
+          hint: "回到本节采用的表达力前提，以及 Decode 的系统边界。",
           answer: R`该断言把条件化结论当成了定理。可能反转选型的条件包括：(1) tensor parallel 布局——TP 切分下 MLA 的 latent 复制读取或头维切分可能不如 GQA 均衡；(2) kernel 可用性——目标硬件若缺少吸收式/FlashMLA 类 kernel，理论带宽收益无法兑现；(3) 量化——latent 与 RoPE key 对量化误差的敏感度可能高于普通 KV；(4) batch 与上下文长度——短上下文、大 batch 时 Decode 未必 memory-bound；(5) 完整 RoPE 的质量——若任务对位置通道要求高，64 维 Partial RoPE 可能不够；(6) 参数量对齐——上投影参数换成更宽 FFN 或更多层也许收益更高；(7) hybrid/线性替代——KDA、GDN 等方案改变长上下文比较基线。任何一条都可能让“几乎最优”失效。`
         }
       ]
