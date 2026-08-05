@@ -177,7 +177,10 @@
         '" target="_blank" rel="noreferrer">' + esc(source.label) + " ↗</a>";
     }).join("");
     return '<section class="attention-config" aria-labelledby="attention-config-title">' +
-      '<header class="attention-config__header"><span>Representative Attention Configuration</span>' +
+      '<header class="attention-config__header"><div class="attention-config__header-bar">' +
+      '<span>Representative Attention Configuration</span>' +
+      '<button class="attention-config__expand" data-config-expand type="button" ' +
+      'aria-expanded="false">⤢ 放大参数图</button></div>' +
       '<h2 id="attention-config-title">' + esc(config.model) + "</h2><p>" +
       esc(config.scope) + "</p>" + renderAttentionConfigLegend() +
       '</header><div class="attention-config__explorer">' +
@@ -199,7 +202,8 @@
       : "";
     var symbols = (module.symbols || []).map(function (item) {
       return '<div class="attention-config__symbol"><dt><span class="attention-config__tex">\\(' +
-        esc(item.tex) + '\\)</span><span>' + esc(item.label || "Shape") +
+        esc(item.tex) + '\\)</span><span class="attention-config__symbol-label">' +
+        esc(item.label || "Shape") +
         '</span></dt><dd><strong>\\(' + esc(item.shape) + '\\)</strong><span>' +
         esc(item.value) + '</span><small>' + esc(item.note) + "</small></dd></div>";
     }).join("");
@@ -213,12 +217,35 @@
     if (!config || config.omit) return;
     var explorer = scope.querySelector(".attention-config__explorer");
     if (!explorer) return;
+    var section = explorer.closest(".attention-config");
+    var expandButton = section && section.querySelector("[data-config-expand]");
     var detail = explorer.querySelector("[data-config-detail]");
     var nodes = Array.from(explorer.querySelectorAll("[data-config-module]"));
     var modules = new Map((config.modules || []).map(function (module) {
       return [module.id, module];
     }));
     if (!detail || !nodes.length) return;
+
+    function setExpanded(expanded) {
+      if (!section || !expandButton) return;
+      section.classList.toggle("is-expanded", expanded);
+      document.body.classList.toggle("config-is-open", expanded);
+      expandButton.setAttribute("aria-expanded", expanded ? "true" : "false");
+      expandButton.textContent = expanded ? "× 关闭大图" : "⤢ 放大参数图";
+      window.dispatchEvent(new Event("resize"));
+    }
+
+    if (expandButton) {
+      expandButton.addEventListener("click", function () {
+        setExpanded(!section.classList.contains("is-expanded"));
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && section.classList.contains("is-expanded")) {
+          setExpanded(false);
+          expandButton.focus();
+        }
+      });
+    }
 
     /* Weight/activation relations are symmetric for highlighting. */
     var related = new Map();

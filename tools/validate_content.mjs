@@ -743,12 +743,17 @@ function validateRenderer(courseSource, chapterHtml) {
     !/renderMath\(detail\)/.test(courseSource) ||
     !/renderAttentionConfigLegend\(/.test(courseSource) ||
     !/attention-config__kind/.test(courseSource) ||
-    !/is-config-related/.test(courseSource)
+    !/is-config-related/.test(courseSource) ||
+    !/data-config-expand/.test(courseSource) ||
+    !/config-is-open/.test(courseSource) ||
+    !/attention-config__tex/.test(courseSource) ||
+    !/attention-config__symbol-label/.test(courseSource)
   ) {
     addError(
       "assets/course.js must rerun KaTeX on config detail updates, render the " +
-        "visual-grammar legend, show module kind badges, and highlight " +
-        "weight/activation relations"
+        "visual-grammar legend, show module kind badges, highlight related " +
+        "weights/activations, expose the fullscreen control, and keep TeX " +
+        "separate from detail labels"
     );
   }
   if (/<(?:code|pre)\b[^>]*>\\\\\(/.test(courseSource)) {
