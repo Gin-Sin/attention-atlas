@@ -214,95 +214,292 @@
       order: 3,
       title: "MLA",
       fullTitle: "Multi-Head Latent Attention",
-      zhTitle: "多头潜变量注意力：压缩每个 token 的宽度",
+      zhTitle: "一套权重，两种执行图：Prefill 像 MHA，Decode 像 MQA",
       year: "2024",
       category: "dense",
       difficulty: "高阶",
       report: "DeepSeek-V2 Technical Report",
-      deck: R`MLA 先把每个 token 压到低维 \(c_t^{KV}\)，并另存共享的 decoupled-RoPE key \(k_t^R\)。decode 主路径吸收 K/V 上投影，直接读取缓存，而不是逐步显式重建全部多头 K/V。`,
-      takeaway: R`GQA 在头轴共享，MLA 在低秩潜空间共享；DeepSeek-V2 每层每 token 的完整注意力缓存是 \(c_t^{KV}+k_t^R\)，宽度 \(d_c+d_h^R\)。`,
+      deck: R`理解 MLA，先不要从“低秩压缩”开始，而要先问同一层在两个阶段分别怕什么：Prefill 怕大规模矩阵计算，Decode 怕反复搬运历史 KV。MLA 用同一份 512 维 latent 和两侧线性投影，让内容通道在 Prefill 展开成每头 128 维的 MHA 形态，在 Decode 吸收成共享 512 维的 MQA 形态。`,
+      takeaway: R`MLA 最关键的不是“缓存一个 latent”，而是改变计算括号：Prefill 先把 \(c^{KV}\) 展开为多头 K/V，保留 MHA-128 的并行计算形态；Decode 把 K 上投影吸收到 query、把 V 上投影吸收到输出，直接把同一份 \(c^{KV}\) 当作共享 K=V。小型 decoupled-RoPE 支路负责位置。`,
       motivation: [
-        "MQA/GQA 通过减少 KV 头数降缓存，但 K/V 表示容量也随之减少。DeepSeek-V2 希望保留多头差异，同时继续降低 KV cache。",
-        R`MLA 对 K 与 V 做联合低秩压缩：内容 K/V 都由低维 \(c^{KV}\) 上投影；位置相关的共享 \(k^R\) 另行生成和缓存。显式重建便于解释，吸收式计算才是高效 decode 的主路径。`,
-        "RoPE 会阻碍把上投影吸收到查询侧，因此 MLA 把位置相关的 RoPE 子空间与可低秩吸收的内容子空间分开，这就是 decoupled RoPE。"
+        "同一个 Attention 层面对两种完全不同的工作负载。Prefill 一次处理整段 prompt，主要成本是形成并计算大批量 score；逐 token Decode 每步只有一个 query，却要反复读取全部历史 KV，通常受显存带宽与缓存容量约束。",
+        "在固定 num_heads 与计算预算下，Prefill 希望每头内容维较小且 K/V 彼此独立：MHA-128 限制最少、矩阵乘也更轻。把内容 head dim 直接放大到 512，会把主要 score 计算近似放大 4 倍。",
+        R`在固定 KV cache 宽度下，Decode 则希望把预算集中到一份共享表示：把所有历史信息装进 512 维 \(c^{KV}\)，让全部 query heads 读取同一份 K=V，正是缓存友好的 MQA-512 视角。`
       ],
       constraints: [
-        { label: "缓存", title: R`完整宽度是 \(d_c+d_h^R\)`, body: R`每 token 缓存 latent 与共享 RoPE key，不是“只有 \(d_c\)”；收益取决于两者宽度及存储精度。` },
-        { label: "算子", title: "decode 采用两侧吸收", body: "概念图可显式恢复各头 K/V；高效 decode 把 K 上投影吸收到 Q 侧、V 上投影吸收到输出侧。" },
-        { label: "位置编码", title: "RoPE 必须解耦", body: "位置依赖旋转与低秩投影一般不可交换，需要单独保存旋转 key 分量。" }
+        { label: "恒等变换", title: "切换执行图不能改变函数", body: "MLA 依赖 NoPE 内容通道中的线性结合律：投影可以移到 query 侧和输出侧，但 softmax 前后的运算顺序必须严格保持。" },
+        { label: "位置支路", title: "完整 RoPE 会阻断吸收", body: "位置相关旋转随历史位置变化，不能并入一个固定上投影；MLA 只给小型共享 key 支路保留 RoPE，让主要内容通道保持可吸收的 NoPE。" },
+        { label: "结论边界", title: "“几乎最优”是条件化判断", body: "它依赖 full softmax、线性 K/V 上投影、Partial RoPE 足够有效，以及 Prefill/Decode 分别主要受计算与 KV 带宽约束；真实 TP、kernel、量化和参数预算会改变最优点。" }
       ],
+      phaseComparison: {
+        eyebrow: "One Layer · Two Workloads",
+        title: "先选阶段，再选择同一组权重的执行图",
+        intro: "MLA 不要求 Prefill 和 Decode 使用同一个 kernel 形态。两边计算完全等价，但各自把昂贵的维度放在更能承受的位置。",
+        phases: [
+          {
+            label: "Training / Prefill",
+            bottleneck: { label: "主要瓶颈", value: "大批量 Attention 计算" },
+            preferred: "MHA-like · H 个 128-d 内容头",
+            execution: "先由 512-d latent 展开 K_i^C、V_i，再做标准多头 score/read。",
+            note: "prompt 内部可以一次并行材料化；写入长期 cache 的仍是 latent + RoPE key。"
+          },
+          {
+            label: "Token-by-token Decode",
+            bottleneck: { label: "主要瓶颈", value: "历史 KV 容量与 HBM 搬运" },
+            preferred: "MQA-like · 共享 512-d K=V",
+            execution: "先吸收 W_i^UK/W_i^UV，再直接对历史 latent 打分与聚合。",
+            note: "每步只产生一个 query，却会重复读全历史；不重建多头 KV 才有意义。MQA-512 是结构性/NoPE 执行视角，不是标准 MQA 层：分数仍按原口径除以 √(128+64)，64 维 RoPE 支路单独计算。"
+          }
+        ],
+        bridge: {
+          label: "Exact bridge",
+          title: "同一 latent、同一权重，只改变线性运算的结合顺序",
+          body: "NoPE 内容分数和 value 写回满足严格恒等式，所以 Prefill 与 Decode 可以各用最适合自身瓶颈的执行图，而无需训练两套模型。"
+        }
+      },
+      sectionTitles: {
+        motivation: "先把问题拆成 Prefill 与 Decode",
+        constraints: "两种阶段为什么想要相反的 Attention",
+        intuitions: "MLA 的关键：同一组权重，两种执行形态",
+        diagram: "一张图看懂 MHA-128 ↔ MQA-512",
+        position: "RoPE 为什么必须拆成小支路",
+        derivations: "为什么 MLA 在限定条件下几乎最优",
+        exercises: "练习：判断阶段、恒等变换与适用边界",
+        sources: "权威来源与延伸阅读"
+      },
       intuitions: [
-        { label: "类比", title: "保存源文件，不存多份导出", body: "latent 是紧凑源文件，各头按需用不同模板展开。" },
-        { label: "低秩", title: "共享生成基底", body: R`K/V 头都来自同一个 \(d_c\) 维潜空间。` },
-        { label: "RoPE", title: "位置水印另存", body: "内容可压缩吸收，位置旋转通道单独处理。" }
+        { label: "Prefill", title: "一次展开，多头并行", body: "像打开源文件后一次导出所有 128 维 K/V 头：本轮计算材料化多头激活，但长期缓存仍只保存 latent 与 RoPE key。" },
+        { label: "Decode", title: "只搬源文件，不搬导出件", body: "每一步直接读取 512 维 latent；query 和输出权重现场解释它，不为历史 token 重建并搬运全部多头 K/V。" },
+        { label: "同一模型", title: "只换括号，不换权重", body: "Prefill 与 Decode 不是两套训练参数，而是同一线性计算图的两种结合顺序；这就是 MLA 同时贴近 MHA 与 MQA 的关键。" }
       ],
-      diagram: { type: "latent", caption: R`MLA：缓存 \(c_t^{KV}\) 与共享 \(k_t^R\)；decode 通过吸收后的多头 query/输出投影直接读取这份紧凑缓存。` },
+      diagram: { type: "latent", caption: R`MLA 的双执行图：同一份 \(c^{KV}\) 与同一组上投影，Prefill 展开成每头 128 维 K/V 做 MHA 形态计算；Decode 把投影吸收到 query/输出侧，直接以 512 维 latent 作为共享 K=V。64 维 decoupled-RoPE key 同时服务两条路径。` },
       derivations: [
         {
-          title: "KV 联合低秩压缩",
-          body: R`论文 §2.1.2 先定义原始低秩向量
+          title: "固定缓存预算下，为什么共享 MQA 是 MHA/GQA 的超集",
+          body: R`把一个 GQA 层第 \(s\) 个 token 的全部分组 key/value 拼接成一个共享向量
             \[
-            \bar c_t^{KV}=W^{DKV}h_t,\qquad \bar c_t^{KV}\in\mathbb{R}^{d_c}.
+            c_s=[k_s^{(1)};\ldots;k_s^{(g)};v_s^{(1)};\ldots;v_s^{(g)}]\in\mathbb R^{C},\qquad
+            C=g(d_k+d_v).
             \]
-            论文主公式可把它直接记为 \(c_t^{KV}\)；训练细节与发布 checkpoint 在压缩 latent 后施加额外 RMSNorm，可写为
-            \(c_t^{KV}=\operatorname{RMSNorm}(\bar c_t^{KV})\)。各头内容 key/value 由上投影得到
+            对属于第 \(j\) 组的 query 头 \(i\)，取选择矩阵 \(P_j^{K},P_j^{V}\) 使
+            \(k_s^{(j)}=P_j^{K}c_s\)、\(v_s^{(j)}=P_j^{V}c_s\)。于是
             \[
-            k_{t,i}^{C}=W_i^{UK}c_t^{KV},\qquad
-            v_{t,i}=W_i^{UV}c_t^{KV}.
+            q_i^\top k_s^{(j)}=\big((P_j^{K})^\top q_i\big)^\top c_s,\qquad
+            \sum_s a_sv_s^{(j)}=P_j^{V}\sum_s a_sc_s,
             \]
-            checkpoint 缓存的是归一化后的 \(c_t^{KV}\)，而不是全部 \(k_{t,i}^C,v_{t,i}\)；“原始线性 latent”与“实际缓存 latent”不可混称。`
+            即分组选择/投影都能吸收进各头专属的 query 变换与输出变换。还要对齐缩放：原 GQA 头按
+            \(\sqrt{d_k}\) 缩放分数，共享 c 空间形式按 \(\sqrt{C}\) 缩放，因此把补偿因子并入吸收后的 query，
+            \[
+            \widehat q_i=\sqrt{C/d_k}\,(P_j^{K})^\top q_i
+            \quad\Longrightarrow\quad
+            \frac{\widehat q_i^{\,\top}c_s}{\sqrt{C}}
+            =\frac{q_i^\top k_s^{(j)}}{\sqrt{d_k}},
+            \]
+            softmax 温度逐位不变，等价才是精确的。一个只缓存一份共享
+            \(K=V=c_s\)、头维为 \(C\) 的 MQA 形态因此能精确复现原 GQA（MHA 是 \(g=H_q\) 的特例）。
+            要点：这是忽略参数量与算力成本的“表示容量”超集论证，不证明单个巨头维 MQA kernel 在工程上最快。`
         },
         {
-          title: "解耦 RoPE 与缓存通式",
-          body: R`把 key 分为内容与位置两部分：
+          title: "Prefill 视角：为什么展开成 MHA-128",
+          body: R`MLA 的内容通道由共享 latent 生成：
             \[
-            k_{t,i}=[k_{t,i}^{C};k_t^{R}],\qquad
-            q_{t,i}=[q_{t,i}^{C};q_{t,i}^{R}],
+            c_s=W^{DKV}h_s\in\mathbb R^{512},\qquad
+            k_{s,i}^{C}=W_i^{UK}c_s,\quad v_{s,i}=W_i^{UV}c_s,
             \]
-            其中 \(q^R,k^R\) 应用 RoPE，且
-            \(q_{t,i}^C,k_{s,i}^C\in\mathbb R^{d_h}\)、
-            \(q_{t,i}^R,k_s^R\in\mathbb R^{d_h^R}\)。注意力 logit 缩放为
+            每头 \(k^{C},v\) 均为 128 维。Prefill 一次处理长度 \(L\) 的 prompt、\(H\) 个头的内容
+            score 计算量随
             \[
-            \ell_{t,s,i}=\frac{q_{t,i}^{\top}k_{s,i}}{\sqrt{d_h+d_h^R}}.
+            \Theta(H\,L^{2}\,d_h)
             \]
-            §2.1.4 因而给出每层每 token 的总缓存宽度
-            \[
-            d_c+d_h^R
-            \]
-            而不是 MHA 的 \(2H_qd_h\)。`
+            增长：显式展开成 \(d_h=128\) 的多头，比让每个头直接在 512 维共享空间打分便宜约 4 倍。
+            临时展开的 K/V 只是本轮计算的中间量；持久缓存仍然只有 \(c_s\) 与 \(k_s^{R}\)。
+            注意“MHA 形态”指执行图形状：这些每头 K/V 由同一 512 维 latent 低秩派生，不是一组独立无约束的 MHA 权重。`
         },
         {
-          title: "decode 主路径为何能两侧吸收",
-          body: R`内容分数中
+          title: "Decode 视角：为什么吸收成 MQA-512",
+          body: R`对头 \(i\) 的内容分数与读取应用结合律：
             \[
-            q_i^\top k_i^C=q_i^\top W_i^{UK}c^{KV}
-            =\big((W_i^{UK})^\top q_i\big)^\top c^{KV}.
+            q_i^\top W_i^{UK}c_s=\big((W_i^{UK})^\top q_i\big)^\top c_s,\qquad
+            \sum_s a_sW_i^{UV}c_s=W_i^{UV}\sum_s a_sc_s,
             \]
-            因此可把 \(W_i^{UK}\) 合并进查询侧；同理 \(W_i^{UV}\) 可与输出投影合并。decode 直接对 latent 做 core attention，RoPE key 因位置旋转而单独保留；显式恢复 K/V 只是等价说明或训练实现选择。`
+            再把 \(W_i^{UV}\) 折进输出投影对应分块 \(W_i^{O}\)。于是每个头都以同一份 512 维
+            \(c_s\) 作为 K=V 打分与读取，头间差异只体现在变换后的 query 与输出侧。加上
+            64 维共享 RoPE key 后，持久缓存宽度是 \(512+64=576\)，而不是 512。`
         }
       ],
-      warning: R`“KV cache 减少 93.3%”和“最大生成吞吐 5.76×”是 DeepSeek-V2 官方对指定 checkpoint、DeepSeek-67B 基线、层配置、量化与系统实现的自报结果，不是 MLA 算子的固定倍率；结构性缓存公式应单独写成 \(d_c+d_h^R\)。`,
+      warning: "“MLA 在相同训练和推理成本下可能是效果最好的 Full Attention 变体”来自苏剑林在简化假设下的理论解释与消融观察，不是普适定理。完整系统还受 tensor parallel、kernel 可用性、量化、参数量对齐、batch/上下文长度和硬件影响；DeepSeek-V2 的 93.3% cache 降幅与 5.76× 吞吐也只是指定系统对比。",
       exercises: [
         {
-          q: R`若 MHA 每 token 缓存 \(2H d_h=2\times32\times128\) 个元素，而 MLA 缓存 \(d_c+d_h^R=512+64\) 个元素，理论元素数比是多少？`,
-          hint: "用 8192/576。",
-          answer: "约 14.22 倍。该比值未计布局、量化和临时工作区。"
+          q: R`同一个 MLA 层处于两种时刻：(a) Prefill 正在并行处理 4K token 的 prompt；(b) Decode 正在生成第 4097 个 token。分别指出主导成本，以及该阶段更想要的执行形态。`,
+          hint: "一个阶段受计算约束，一个阶段受历史 KV 搬运约束。",
+          answer: R`(a) 主导成本是大批量 score/read 的矩阵计算（约 \(\Theta(HL^2d_h)\)），因此选择展开成每头 128 维的 MHA 形态并行计算；(b) 主导成本是每步重复读取全部历史 KV 的带宽与容量，因此选择吸收式 MQA 形态，让全部头直接读取同一份 512 维 latent（外加共享 RoPE key）。`
         },
         {
-          q: "为什么不能简单把完整 RoPE key 也都吸收到查询投影？",
-          hint: "位置旋转矩阵随 token 位置变化。",
-          answer: R`因为 \(R_tW\) 一般不等于固定矩阵 \(WR_t\)，位置相关旋转破坏固定的低秩吸收。MLA 因而把 RoPE 通道解耦并单独缓存。`
+          q: R`从两组 GQA 出发（\(g=2\)），构造共享向量 \(c=[k^{(1)};k^{(2)};v^{(1)};v^{(2)}]\)，并说明各头专属的投影如何恢复原来的分组行为。`,
+          hint: R`用选择矩阵把 \(c\) 的对应片段取出来，再吸收进 query 与输出。`,
+          answer: R`设第 1 组头使用 \(k^{(1)},v^{(1)}\)。取 \(P_1^K\) 为从 \(c\) 中切出 \(k^{(1)}\) 的选择矩阵，则 \(q_i^\top k_s^{(1)}=((P_1^K)^\top q_i)^\top c_s\)：分数计算等价于用改造后的 query 对共享 \(c_s\) 做点积。value 侧同理，\(\sum_s a_sv_s^{(1)}=P_1^V\sum_s a_sc_s\)，选择矩阵可并入输出投影。因此“一份宽 \(C\) 的共享 K=V + 各头专属变换”完整覆盖两组 GQA 的行为。`
         }
       ],
       sources: [
-        { label: "DeepSeek-AI (2024), DeepSeek-V2 Technical Report", url: "https://arxiv.org/abs/2405.04434" },
+        { label: "DeepSeek-AI (2024), DeepSeek-V2 Technical Report（primary 架构来源）", url: "https://arxiv.org/abs/2405.04434" },
         { label: "DeepSeek-V2 official repository", url: "https://github.com/deepseek-ai/DeepSeek-V2" },
-        { label: "DeepSeek-AI (2024), DeepSeek-V3 Technical Report", url: "https://arxiv.org/abs/2412.19437" }
+        { label: "苏剑林（2025），Transformer升级之路：21、MLA好在哪里？（下）· 解释性解读", url: "https://spaces.ac.cn/archives/11111" },
+        { label: "苏剑林（2024），缓存与效果的极限拉扯：从MHA、MQA、GQA到MLA · 解释性解读", url: "https://spaces.ac.cn/archives/10091" }
+      ]
+    },
+    {
+      id: "mfa",
+      order: 4,
+      title: "MFA",
+      fullTitle: "Multi-matrix Factorization Attention",
+      zhTitle: "多矩阵分解注意力：用共享 C 维 KV 支撑更多、更宽的头",
+      year: "2024",
+      category: "dense",
+      difficulty: "高阶",
+      report: "Multi-matrix Factorization Attention",
+      deck: "在固定 KV cache 预算下，MFA 不再把 head dimension 绑定到 d_model / head 数。它缓存共享的 C 维 key/value，却为每个 attention head 配置 C×C 的 QK 与 VO 变换，用参数和计算换取更高的每头秩与总有效秩。",
+      takeaway: R`MFA 的缓存只有 \(k_t=x_tS_k\) 与 \(v_t=x_tS_v\)，两者各 C 维；head-specific \(Q_c\)、\(O_c\) 只存在于权重中，因此增加 head 数不会复制历史 KV。MFA-KR 进一步把 value 重参数化为 key 的变换，将缓存从 2C 降到 C。`,
+      motivation: [
+        "MQA/GQA 通过共享 K/V 缩小缓存，但共享 latent subspace 与每头 factorization rank 也随缓存预算一起变窄；在严格 KV 约束下，表达能力可能先成为瓶颈。",
+        R`MFA 从 QK/VO circuit 的矩阵分解出发：共享 \(S_q\)、\(S_k\)、\(S_v\) 把 token 投到 C 维，而每个 head 使用独立 \(Q_c,O_c\in\mathbb R^{C\times C}\)，让每头 factorization rank 提升到 C。`,
+        "MFA-KR 令 value projection 成为 key projection 的零初始化可学习变换，只缓存 key；它把内存再减半，但论文实验也显示了相对 MFA 的小幅质量折损。"
+      ],
+      constraints: [
+        { label: "缓存", title: "2C 与 head 数无关", body: "MFA 每 token 每层缓存一份 C 维 key 和一份 C 维 value；MFA-KR 只缓存 key。上下文长度因子仍然存在。" },
+        { label: "参数与算力", title: "head-specific C×C 不是免费的", body: R`增加 head 数会线性增加 \(Q_c\)、\(O_c\) 权重和 score/output 计算；它只是不增加 KV cache。` },
+        { label: "系统证据", title: "论文未给端到端部署加速", body: "主论文验证了 cache 与质量，但明确把系统级端到端推理影响留作未来工作。" }
+      ],
+      intuitions: [
+        { label: "共享底片", title: "所有头读取同一份 C 维 K/V", body: "历史 token 只存一次共享底片，不为每个 head 复制缓存。" },
+        { label: "逐头镜头", title: R`\(Q_c\) 与 \(O_c\) 提供独立视角`, body: "每个 head 用完整 C×C 矩阵改变匹配和写回方式，差异保存在权重而不是缓存。" },
+        { label: "Key Reuse", title: "同一缓存生成 K 与 V", body: "MFA-KR 从 key 通过零初始化门控变换得到 value，进一步节省一半缓存。" }
+      ],
+      diagram: { type: "mfa", caption: R`MFA：token 只缓存共享 C 维 K/V；每个 head 通过独立 \(C\times C\) 的 \(Q_c\) 与 \(O_c\) 获得高秩 QK/VO circuit。MFA-KR 可从 key 重参数化 value。` },
+      derivations: [
+        {
+          title: "共享 K/V、逐头矩阵的推理式",
+          body: R`共享投影把每个 token 映到同一 C 维空间：
+            \[
+            k_s=x_sS_k,\qquad v_s=x_sS_v,\qquad k_s,v_s\in\mathbb R^{C}.
+            \]
+            第 \(c\) 个 head 只在 query 与输出侧拥有独立矩阵：
+            \[
+            q_{t,c}=x_tS_qQ_c\in\mathbb R^{C},\qquad
+            a_{t,s}^{(c)}=\operatorname{softmax}_s\!\left(
+            \frac{q_{t,c}k_s^\top}{\sqrt C}+M\right),
+            \]
+            \[
+            o_t=\sum_{c=1}^{m}\left(\sum_{s}a_{t,s}^{(c)}v_s\right)O_c^\top.
+            \]
+            批量形状：q 为 \([B,m,T,C]\)，k/v 为 \([B,T,C]\)，scores 为 \([B,m,T,T]\)。所有 head 读取同一份 k/v，差异全部由 \(Q_c,O_c\in\mathbb R^{C\times C}\) 承担。`
+        },
+        {
+          title: "缓存与 head count 解耦",
+          body: R`MFA 每 token 每层缓存一份 C 维 key 与一份 C 维 value：
+            \[
+            \mathrm{Cache}_{MFA}=2BNLCb,\qquad
+            \mathrm{Cache}_{MFA\text{-}KR}=BNLCb,
+            \]
+            对比 MHA 的 \(2BNLH_{kv}d_hb\)：MFA 把 \(H_{kv}d_h\) 换成与 head 数无关的 \(C\)。论文 24 层 BF16、\(C=256\) 的配置下，每 token 的全模型缓存为
+            \[
+            24\times2\times256\times2=24{,}576\ \text{字节}\approx24\ \text{KiB};
+            \]
+            MFA-KR 只缓存 key，约 \(12\) KiB。上下文长度因子 \(L\) 仍然存在。`
+        }
+      ],
+      warning: "MFA 的“head dimension=256”是共享 latent 维度 C 和每头 factorization rank，不要求 hidden size 等于 head 数×256。论文的 6.9B/1.2B-activated 模型是研究实验，不是公开生产 checkpoint；24.6 KB/token 是 24 层 BF16 缓存总量，不是单层。",
+      exercises: [
+        {
+          q: R`按论文 24 层、BF16、\(C=256\) 的配置，分别计算 MFA 与 MFA-KR 每 token 的全模型缓存字节数。`,
+          hint: R`MFA 每层 \(2C\) 个元素、MFA-KR 每层 \(C\) 个元素，每元素 2 字节，再乘 24 层。`,
+          answer: R`MFA：\(24\times2\times256\times2=24{,}576\) 字节，约 24 KiB。MFA-KR：\(24\times256\times2=12{,}288\) 字节，约 12 KiB。`
+        },
+        {
+          q: R`把 head 数 \(m\) 从 18 加倍到 36，KV cache、head-specific 参数量与注意力计算分别如何变化？`,
+          hint: R`缓存宽度是 \(2C\)，与 \(m\) 无关；\(Q_c\)、\(O_c\) 逐头存在。`,
+          answer: R`KV cache 不变（仍是每层 \(2C\)）；head-specific \(Q_c\)、\(O_c\) 参数量约 \(2mC^2\)，随 \(m\) 加倍；score 与输出的逐头计算也大致加倍。MFA 用参数和算力换容量，不用缓存换。`
+        }
+      ],
+      sources: [
+        { label: "Multi-matrix Factorization Attention (Findings of ACL 2025)", url: "https://aclanthology.org/2025.findings-acl.1288/" },
+        { label: "Multi-matrix Factorization Attention (arXiv:2412.19255)", url: "https://arxiv.org/abs/2412.19255" }
+      ]
+    },
+    {
+      id: "tpa",
+      order: 5,
+      title: "TPA",
+      fullTitle: "Tensor Product Attention",
+      zhTitle: "张量积注意力：把每个 token 的 head×channel 激活分解成少量秩一因子",
+      year: "2025",
+      category: "dense",
+      difficulty: "高阶",
+      report: "Tensor Product Attention Is All You Need",
+      deck: R`TPA 不对静态权重做 LoRA 式分解，而是让每个 token 动态生成 head-axis 因子 \(a\in\mathbb R^{h}\) 与 channel-axis 因子 \(b\in\mathbb R^{d_h}\)，用少量外积重建 Q/K/V。缓存保存 K/V 因子而非完整 h×d_h 矩阵。`,
+      takeaway: R`\(K_t=\frac1{R_K}A_K(x_t)^\top B_K(x_t)\)，V 同理；每 token KV cache 为 \((R_K+R_V)(h+d_h)\)，而不是 \(2hd_h\)。因子 A、B 都依赖当前 token，因此 rank-1 contextual TPA 不等同于固定共享模式的 MQA。`,
+      motivation: [
+        "MHA 保存完整 head×channel K/V；MQA/GQA 用固定 head-sharing mask 降缓存，能表达的跨 head 结构由预设分组限制。",
+        "TPA 直接分解每个 token 的 Q/K/V 激活矩阵：A 决定一个因子如何分布到各 heads，B 决定它在 head channel 上写入什么模式。",
+        "FlashTPA decoding 用 factorized einsum 顺序计算 score 与 value 聚合，避免为历史 token 物化完整 K/V；若先重建再调用普通 MHA kernel，会保留数值但丢掉主要效率收益。"
+      ],
+      constraints: [
+        { label: "秩预算", title: R`\(R_K\)、\(R_V\) 同时控制质量与缓存`, body: R`更高 rank 能表达更多 head×channel 结构，但 cache 按 \(R_K+R_V\) 线性增长。` },
+        { label: "Kernel", title: "不能依赖先重建再计算", body: "真正 decode 收益需要 factorized contraction 或 FlashTPA kernel；教学重建路径只用于验证。" },
+        { label: "维度", title: R`\(h\times d_h\) 可以大于 \(d_{\text{model}}\)`, body: R`T6 为参数量对齐会扩展 attention inner width，再由 \(W^O\) 写回 d_model；不能假设 \(d_{\text{model}}=hd_h\)。` }
+      ],
+      intuitions: [
+        { label: "秩一瓷砖", title: "一个外积铺满 head×channel 平面", body: "少量瓷砖相加组成当前 token 的 Q/K/V 激活矩阵。" },
+        { label: "A 因子", title: "决定哪些 heads 被写入", body: R`\(A(x_t)\) 是 token-dependent head mixing，不是固定 group mask。` },
+        { label: "B 因子", title: "承载 channel pattern 与 RoPE", body: R`RoPE 逐行作用于 \(B_Q\)/\(B_K\)，A 因子保持不变。` }
+      ],
+      diagram: { type: "tpa", caption: R`TPA：每个 token 动态生成 \(A_{Q/K/V}\) 与 \(B_{Q/K/V}\) 因子；RoPE 只旋转 Q/K 的 B 因子，KV cache 保存低秩因子，FlashTPA 直接收缩而不重建完整历史 K/V。` },
+      derivations: [
+        {
+          title: "Contextual tensor factorization 与形状",
+          body: R`每个 token 的因子由当前 token 生成：
+            \[
+            Q_t=\frac1{R_Q}A_Q(x_t)^\top B_Q(x_t),\qquad
+            A_Q\in\mathbb R^{R_Q\times h},\quad
+            B_Q\in\mathbb R^{R_Q\times d_h},\quad
+            Q_t\in\mathbb R^{h\times d_h},
+            \]
+            K/V 同理使用 \(R_K,R_V\)。这里的 rank 是对每个 token 的激活矩阵 \(Q_t,K_t,V_t\) 的秩预算，而不是对静态权重矩阵做低秩分解。批量实现中 A 因子为 \([B,T,R,h]\)、B 因子为 \([B,T,R,d_h]\)。`
+        },
+        {
+          title: "KV cache 公式与 T6-XL 实例",
+          body: R`TPA 只缓存 K/V 因子：
+            \[
+            \mathrm{Cache}_{TPA}=(R_K+R_V)(h+d_h)\ \text{elements/token/layer}.
+            \]
+            T6-XL 的 \(h=78,d_h=64,R_K=R_V=2\) 给出
+            \[
+            (2+2)(78+64)=568,
+            \]
+            而完整 MHA 形状的缓存为 \(2\times78\times64=9984\)。比值 \(568/9984\approx5.69\%\)，约小 \(17.6\) 倍。`
+        }
+      ],
+      warning: "TPA 论文与官方仓库提供的是最高 1.55B 的 T6 研究模型，而不是公开的超大生产 checkpoint。官方 XL config 使用 h=78、d_h=64，所以 attention inner width 为 4992，明显大于 d_model=1600；这是参数量配平选择，不是维度错误。",
+      exercises: [
+        {
+          q: R`按 T6-XL 的 \(h=78,d_h=64,R_K=R_V=2\)，每层每 token 的因子缓存与完整 MHA 形状缓存各是多少元素？比值是多少？`,
+          hint: R`分别代入 \((R_K+R_V)(h+d_h)\) 与 \(2hd_h\)。`,
+          answer: R`因子缓存 \((2+2)(78+64)=568\) 个元素；完整 MHA 形状 \(2\times78\times64=9984\) 个元素。比值 \(568/9984\approx5.69\%\)，约小 17.6 倍。`
+        },
+        {
+          q: R`给定 \(B,T,R_K,h,d_h\)，写出 \(A_K\)、\(B_K\) 因子张量与重建后完整 K 的形状。`,
+          hint: "A 决定 head 轴，B 决定 channel 轴。",
+          answer: R`\(A_K\) 为 \([B,T,R_K,h]\)，\(B_K\) 为 \([B,T,R_K,d_h]\)；逐 token 重建 \(K_t=A_K^\top B_K/R_K\in\mathbb R^{h\times d_h}\)，批量布局为 \([B,h,T,d_h]\)。`
+        }
+      ],
+      sources: [
+        { label: "Tensor Product Attention Is All You Need (arXiv:2501.06425)", url: "https://arxiv.org/abs/2501.06425" },
+        { label: "Official tensorgi/TPA repository", url: "https://github.com/tensorgi/TPA" },
+        { label: "Official T6-XL training config", url: "https://github.com/tensorgi/TPA/blob/main/config/train_T6_xl_adam_80g8.py" }
       ]
     },
     {
       id: "dsa",
-      order: 4,
+      order: 6,
       title: "DSA",
       fullTitle: "DeepSeek Sparse Attention",
       zhTitle: "DeepSeek 稀疏注意力：先索引，再精读",
@@ -393,7 +590,7 @@
     },
     {
       id: "csa",
-      order: 5,
+      order: 7,
       title: "CSA",
       fullTitle: "Compressed Sparse Attention",
       zhTitle: "压缩稀疏注意力：先缩短历史，再检索摘要",
@@ -477,7 +674,7 @@
     },
     {
       id: "hca",
-      order: 6,
+      order: 8,
       title: "HCA",
       fullTitle: "Heavily Compressed Attention",
       zhTitle: "重压缩注意力：用粗粒度摘要换全局稠密视野",
@@ -555,7 +752,7 @@
     },
     {
       id: "linear",
-      order: 7,
+      order: 9,
       title: "Linear Attention",
       fullTitle: "Kernelized Linear Attention",
       zhTitle: "线性注意力：把历史折叠进固定状态",
@@ -629,7 +826,7 @@
     },
     {
       id: "gated-delta",
-      order: 8,
+      order: 10,
       title: "DeltaNet",
       fullTitle: "DeltaNet & Gated DeltaNet",
       zhTitle: "Delta 更新：让固定状态学会定点改写",
@@ -701,7 +898,7 @@
     },
     {
       id: "kda",
-      order: 9,
+      order: 11,
       title: "KDA",
       fullTitle: "Kimi Delta Attention",
       zhTitle: "Kimi Delta Attention：逐通道控制记忆",
@@ -1104,124 +1301,313 @@
     mla: {
       attentionConfig: {
         model: "DeepSeek-V2 · 236B",
-        scope: "DeepSeek-V2 技术报告与官方 checkpoint 配置；高效 decode 缓存 latent，而非重建后的 128 组 K/V。",
+        scope: "DeepSeek-V2 技术报告与官方 checkpoint 配置；同一组权重按阶段选择执行形态——Prefill 展开成每头 128 维 K/V，Decode 吸收后直读共享 latent，长期缓存始终是 latent + 共享 RoPE key。",
         items: [
           { label: "Hidden size", value: "5120", note: "模型残差宽度" },
-          { label: "Q heads", value: "128", note: "展开后的 query heads" },
-          { label: "Q head dim", value: "192 = 128 + 64", note: "content + RoPE" },
-          { label: "K head dim", value: "192 = 128 + 64", note: "content + shared RoPE key" },
+          { label: "Q heads", value: "128", note: "两种执行形态共享的 query heads" },
+          { label: "Q / K head dim", value: "192 = 128 + 64", note: "content + RoPE" },
           { label: "V head dim", value: "128", note: "value content" },
-          { label: "KV latent rank", value: "512", note: "joint compressed KV width" },
           { label: "Query latent rank", value: "1536", note: "不进入 KV cache" },
+          { label: "KV latent rank", value: "512", note: "joint compressed KV width" },
           { label: "RoPE dim", value: "64", note: "共享 positional key" },
-          { label: "Cache width", value: "576 elements / token / layer", note: "512 latent + 64 RoPE key" }
+          { label: "Prefill content form", value: "128 heads × 128-d K/V", note: "低秩派生的 MHA-like 执行形态" },
+          { label: "Decode content form", value: "128 heads read shared 512-d latent", note: "吸收后的 MQA-like 执行形态" },
+          { label: "Persistent cache", value: "576 elements / token / layer", note: "512 latent + 64 shared RoPE key" }
         ],
         sources: [
           { label: "DeepSeek-V2 Technical Report, §§2.1.2–2.1.3 and §3.1.2", url: "https://arxiv.org/abs/2405.04434" },
           { label: "Official DeepSeek-V2 checkpoint config", url: "https://huggingface.co/deepseek-ai/DeepSeek-V2/blob/main/config.json" }
         ],
-        caveat: "不能把官方配置中的 128 个重建 K/V heads 当成 128 份物理缓存；MLA 的缓存口径是 512-d latent 加 64-d 共享 RoPE key。"
+        caveat: "两种阶段形态在代数上严格等价。Prefill 展开的 128 组 K/V 只是本轮计算的中间量：既不是持久缓存，也不是独立无约束的 MHA 权重；持久缓存口径始终是 512-d latent 加 64-d 共享 RoPE key。"
       },
       positionEncoding: {
-        title: "MLA 原生使用 decoupled RoPE",
-        summary: R`DeepSeek-V2 把 \(d_h\) 维内容子空间与 \(d_h^R\) 维 RoPE 子空间拆开：缓存 \(c_s^{KV}\) 与共享 \(k_s^R\)，attention logit 除以 \(\sqrt{d_h+d_h^R}\)。\(c_t^Q\in\mathbb R^{d_c'}\) 是 query bottleneck，展开后的每头 \(q_{t,i}^C\in\mathbb R^{d_h}\)，两者不能混淆。`,
+        title: "Decoupled RoPE：为位置付一小笔不可吸收的成本",
+        summary: "两种执行图能切换，前提是主要内容通道保持 NoPE。MLA 只把 64 维位置子空间留在外面：query 逐头计算，key 全头共享并随 latent 一起缓存。",
         equation: R`\[
           s_{t,s}^{(i)}=
-          \frac{(q_{t,i}^{C})^\top W_i^{UK}c_s^{KV}
-          +(R_tq_{t,i}^{R})^\top(R_sk_s^{R})}
-          {\sqrt{d_h+d_h^R}}
-        \]
-        \[
-          =(\widetilde q_{t,i}^{C})^\top c_s^{KV}
-          /\sqrt{d_h+d_h^R}
-          +(q_{t,i}^{R})^\top R_{s-t}k_s^{R}/\sqrt{d_h+d_h^R}.
+          \frac{(\widetilde q_{t,i})^{\top}c_s^{KV}
+          +(q_{t,i}^{R})^{\top}R_{s-t}k_s^{R}}
+          {\sqrt{128+64}},\qquad
+          \widetilde q_{t,i}=(W_i^{UK})^{\top}q_{t,i}^{C}.
         \]`,
         steps: [
-          { label: "内容通道", title: "decode 直接读 latent", body: R`\(\widetilde q_{t,i}^{C}=(W_i^{UK})^\top q_{t,i}^{C}\)，V 上投影也吸收到输出侧；这是 decode 主路径，不必显式重建多头 K/V。` },
-          { label: "位置通道", title: "旋转依赖 token 位置", body: R`正交旋转满足 \(R_t^\top R_s=R_{s-t}\)，给出相对位移；但 \(R_sW_i^{UK}\) 不是可预先吸收的固定矩阵。` },
-          { label: "缓存与归一化", title: R`总宽度 \(d_c+d_h^R\)`, body: R`论文代数先定义原始 \(\bar c=W^{DKV}h\)；训练细节/发布 checkpoint 对 compressed latent 做 RMSNorm 并缓存归一化结果，再另存 \(k^R\)。` }
+          { label: "内容主干", title: "512↔128 的切换发生在 NoPE 空间", body: R`内容分数里没有随位置变化的矩阵块，\(W_i^{UK}\) 才能作为固定矩阵移到 query 侧、\(W_i^{UV}\) 移到输出侧；这是两种执行图可以互换的前提。` },
+          { label: "位置 key", title: R`只缓存一份共享 64-d \(k^R\)`, body: R`RoPE key 随位置逐 token 保存；若逐头保存，位置通道宽度变成 \(128\times64\)，一项就吃掉 MLA 的缓存收益，所以 key 侧做 MQA 式共享。` },
+          { label: "位置 query", title: R`逐头 \(q_i^R\) 现算即弃`, body: R`query 侧不进缓存、每步现算，逐头化只花 \(O(Hd_h^R)\) 的一次性投影算量，却保留头间位置敏感度的多样性，且没有任何随序列增长的缓存。` }
         ],
-        caveat: "MLA cache 不是只有 latent：decoupled RoPE key 也必须保存；具体宽度和量化格式应以模型配置为准。"
+        caveat: "Partial/decoupled RoPE 有实验支持和检索直觉，但“少量 RoPE 不逊于完整 RoPE”不是普适定理；具体维度必须通过目标模型消融。"
       },
-      derivationSourceFallback: "DeepSeek-V2 Technical Report (2024), §2.1.2–§2.1.4 与 Appendix C（完整 MLA 公式）",
+      derivationSourceFallback: "DeepSeek-V2 Technical Report (2024), §2.1.2–§2.1.4 与 Appendix C；苏剑林（2024/2025）Scientific Spaces MLA 系列（解释性来源）",
       existingExerciseMeta: [
-        { kind: "complexity", level: "foundation" },
-        { kind: "counterexample", level: "intermediate" }
+        { kind: "concept", level: "foundation" },
+        { kind: "derivation", level: "intermediate" }
       ],
       derivations: [
         {
-          title: "K 与 V 的两侧吸收完整保留输出",
-          body: R`**原式。** 对头 \(i\)，\(k_{s,i}^{C}=W_i^{UK}c_s\)、\(v_{s,i}=W_i^{UV}c_s\)，并令
-            \(a_{t,s,i}\) 为含内容与 RoPE 分数的 softmax 权重。**补全代数。**
+          title: "两种执行图为什么严格等价",
+          body: R`**原式。** 对头 \(i\)，Prefill 形态先展开 \(k_{s,i}^{C}=W_i^{UK}c_s\)、\(v_{s,i}=W_i^{UV}c_s\) 再按标准多头计算；Decode 形态直接使用 \(c_s\)。**补全代数。** K 侧吸收：
             \[
             (q_{t,i}^{C})^\top k_{s,i}^{C}
-            =((W_i^{UK})^\top q_{t,i}^{C})^\top c_s,
+            =(q_{t,i}^{C})^\top W_i^{UK}c_s
+            =\big((W_i^{UK})^\top q_{t,i}^{C}\big)^\top c_s
+            =\widetilde q_{t,i}^{\;\top}c_s.
             \]
+            左端是 Prefill 车道的显式多头打分，右端是 Decode 车道对共享 latent 的打分，逐元素相等，softmax 权重 \(a_{t,s,i}\) 完全一致。V 侧吸收：
             \[
-            o_{t,i}=\sum_sa_{t,s,i}W_i^{UV}c_s
-            =W_i^{UV}\bar c_{t,i},\quad
-            \bar c_{t,i}=\sum_sa_{t,s,i}c_s.
+            o_{t,i}=\sum_sa_{t,s,i}v_{s,i}
+            =\sum_sa_{t,s,i}W_i^{UV}c_s
+            =W_i^{UV}m_{t,i},\qquad
+            m_{t,i}=\sum_sa_{t,s,i}c_s,
             \]
-            再把 \(W_i^{UV}\) 与该头对应的 \(W_i^O\) 合并，即
-            \(W_i^Oo_{t,i}=(W_i^OW_i^{UV})\bar c_{t,i}\)。**张量形状。**
-            \(c_s\in\mathbb R^{d_c}\)、\(W_i^{UK}\in\mathbb R^{d_h\times d_c}\)、
-            \(W_i^{UV}\in\mathbb R^{d_v\times d_c}\)、\(\bar c_{t,i}\in\mathbb R^{d_c}\)。
-            **直观。** K 的展开搬到 query 左侧，V 的展开搬到输出右侧，中间直接读紧凑 latent。**边界。**
-            该恒等式依赖投影线性且 softmax 权重在 V 投影之前确定；RoPE 子空间因位置相关而不能并入同一个固定内容投影。`,
-          source: "DeepSeek-V2 Technical Report (2024), §2.1.2（KV/query compression）、§2.1.3（decoupled RoPE）与 Appendix C"
+            再把 \(W_i^{UV}\) 与输出投影分块合并：\(W_i^{O}o_{t,i}=(W_i^{O}W_i^{UV})m_{t,i}\)。左端仍是 Prefill 的“先重建 value 再加权”，右端是 Decode 的“先聚合 latent 再一次线性写回”。**张量形状。**
+            \(c_s,m_{t,i}\in\mathbb R^{512}\)、\(k^{C},v,q^{C}\in\mathbb R^{128}\)、
+            \(W_i^{UK},W_i^{UV}\in\mathbb R^{128\times512}\)。
+            **直观。** 两条车道是同一线性表达式的两种括号顺序；权重只有一份，结果逐位相同。**边界。**
+            恒等式只覆盖 NoPE 内容通道，且要求 softmax 权重在 value 变换之前确定；位置子空间必须留在支路里（见下一条）。`,
+          source: "DeepSeek-V2 Technical Report (2024), §2.1.2 与 Appendix C；苏剑林（2025），《MLA好在哪里？（下）》（解释性来源）"
         },
         {
-          title: R`为什么 \(q^R\) 逐头、\(k^R\) 却全头共享`,
-          body: R`**设定。** DeepSeek-V2 定义逐头 RoPE query
-            \(q_{t,i}^R=R_tW_i^{QR}c_t^Q\)，却只保留一个全头共享的 RoPE key
-            \(k_t^R=R_tW^{KR}h_t\)。这个不对称不是数学必然，而是一次精确的成本—收益权衡：昂贵的一侧（key 进缓存）做 MQA 式共享，免费的一侧（query 现算即弃）保留逐头自由度。
-            **补全代数。** key 侧：\(k^R\) 在 latent 之外裸缓存，宽度直接线性计入每 token 缓存。共享时总宽为
+          title: "Partial RoPE 是切换执行图的通行证",
+          body: R`**原式。** 若把完整 RoPE 加在内容 key 上，分数变为
+            \(q_{t,i}^\top R_t^\top R_sW_i^{UK}c_s\)。**补全代数。**
+            \(R_sW_i^{UK}\) 随历史位置 \(s\) 变化：除非 \(W_i^{UK}\) 与全部旋转可交换（一般不成立），否则不存在与位置无关的固定矩阵 \(\widetilde W_i\) 使
+            \(q^\top R_t^\top R_sW_i^{UK}=(\widetilde W_iq)^\top\)——K 侧吸收被阻断，Decode 只能退回显式重建。MLA 的解法是拆分：
             \[
-            d_c+d_h^R=512+64=576;
+            s_{t,s}^{(i)}
+            =\underbrace{\widetilde q_{t,i}^{\;\top}c_s}_{\text{NoPE 内容，可吸收}}
+            +\underbrace{(q_{t,i}^{R})^\top R_{s-t}k_s^{R}}_{\text{64 维位置支路}}.
             \]
-            若改为逐头，则变成
-            \[
-            d_c+Hd_h^R=512+128\times64=8704,
-            \]
-            位置通道一项就把 MLA 相对 MHA 的缓存压缩全部吃回。query 侧：\(q_{t,i}^R\) 只为当前 token 计算一次、不进缓存，逐头化的代价仅是可忽略的 \(O(Hd_h^R)\) 投影算量。而每头分数中的位置项
-            \[
-            (R_tq_{t,i}^R)^\top(R_sk_s^R)=(q_{t,i}^R)^\top R_{s-t}k_s^R
-            \]
-            对每个头独立成立相对位置性质：不同头以不同的 \(W_i^{QR}\) 对同一 \(k^R\) 产生不同的幅度与相位响应，位置敏感度的头间多样性完全由 query 侧承担。
-            **张量形状。** 逐头 \(q^R\) 为 \([B,H,L_q,d_h^R]\)；共享 \(k^R\) 缓存为 \([B,1,L,d_h^R]\)，以 stride-0 广播给全部 \(H\) 个头——正是 MQA 的共享技巧在位置通道上的翻版。
-            **直观。** 在随序列长度增长的维度（key cache）上做最激进的共享，在一次性计算的维度（query）上保留全部自由度。
-            **边界。** 共享意味着所有头读取同一个 key 侧位置基底；头间的 key 侧位置差异被放弃，只能靠增大 \(d_h^R\) 换容量并按线性代价计入缓存。DSA/CSA 等后续架构原样继承了这一共享布局。`,
-          source: "DeepSeek-V2 Technical Report (2024), §2.1.3（decoupled RoPE：逐头 RoPE query 与共享 RoPE key 的定义）与 §2.1.4（KV cache 宽度对比）"
+            支路的不对称是成本驱动：key 进缓存，共享一份 \(k^R\) 使持久宽度为
+            \(512+64=576\)；若逐头则为 \(512+128\times64=8704\)，位置一项就吃回全部压缩收益。query 现算即弃，逐头 \(q_i^R\) 只花一次投影算量。**张量形状。**
+            共享 \(k^R\) 缓存为 \([B,1,L,64]\)，stride-0 广播给 128 个头；逐头 \(q^R\) 为 \([B,128,L_q,64]\)。
+            **直观。** 给位置一小块不可吸收的“专用车道”，换来内容主干在两种执行图之间自由切换。**边界。**
+            Partial RoPE 的质量结论来自消融而非定理；64 维是 DeepSeek-V2 的选择，迁移到其他模型需重新消融。`,
+          source: "DeepSeek-V2 Technical Report (2024), §2.1.3（decoupled RoPE）与 §2.1.4；苏剑林（2024），《从MHA、MQA、GQA到MLA》（解释性来源）"
         }
       ],
       exercises: [
         {
           kind: "derivation",
           level: "advanced",
-          q: R`从 \(R_t^\top R_s=R_{s-t}\) 推出 RoPE 点积只依赖相对位移，并说明为什么这不使 \(R_sW^{UK}\) 成为固定矩阵。`,
-          hint: R`写成 \((R_tq)^\top(R_sk)=q^\top R_t^\top R_sk\)。`,
-          answer: R`\((R_tq)^\top(R_sk)=q^\top R_{s-t}k\)，旋转关系只含 \(s-t\)。但对所有历史位置 \(s\)，\(R_sW^{UK}\) 随 \(s\) 改变；除非投影与所有旋转特殊地可交换，否则不存在一个与位置无关的吸收矩阵。`
-        },
-        {
-          kind: "code-shape",
-          level: "advanced",
-          q: R`给定 \(c^Q\in\mathbb R^{d_c'}\)、每头内容 query \(q_i^C\in\mathbb R^{d_h}\)、\(c^{KV}\) 为 \([B,L,d_c]\)。写出展开 query、显式内容 key 与吸收式 query 的形状。`,
-          hint: "先区分 query bottleneck、每头内容维和 KV latent 维。",
-          answer: R`\(W^{UQ}c^Q\) 展开为 \([B,H,L_q,d_h]\)；显式内容 key 为 \([B,H,L,d_h]\)。吸收式再乘 \((W_i^{UK})^\top\) 得 \([B,H,L_q,d_c]\)，与缓存 \([B,1,L,d_c]\) 点积。\(d_c'\)、\(d_h\)、\(d_c\) 是三种不同宽度。`
-        },
-        {
-          kind: "design",
-          level: "advanced",
-          q: R`增大 \(d_c\) 与增大 \(d_h^R\) 分别主要改善什么，又分别增加什么成本？`,
-          hint: "一个控制内容低秩容量，一个控制位置子空间。",
-          answer: R`增大 \(d_c\) 提高 K/V 内容重建容量，但线性增加 latent cache 与吸收式点积宽度；增大 \(d_h^R\) 提高 RoPE 位置通道容量，却线性增加不可吸收的 position-key cache。两者应分别做质量—带宽消融。`
+          q: R`证明 K 侧与 V 侧的两个吸收恒等式，并明确指出哪些运算不能移动到 softmax 的另一侧。`,
+          hint: "线性变换可以跨越点积与加权求和移动，但不能穿过逐元素的非线性。",
+          answer: R`K 侧：\(q_i^\top W_i^{UK}c_s=((W_i^{UK})^\top q_i)^\top c_s\)，这是同一双线性形式的两种结合顺序，对任意 \(q_i,c_s\) 成立。V 侧：\(\sum_s a_sW_i^{UV}c_s=W_i^{UV}\sum_s a_sc_s\)，由矩阵乘对加权和的线性性成立，随后 \(W_i^{UV}\) 可与输出分块 \(W_i^{O}\) 合并成固定矩阵。不能移动的是跨越 softmax 的运算：softmax（连同 mask 与缩放）必须在吸收后的分数上原位执行——把 value 侧变换提前到 softmax 之前作用在分数上，或把位置相关旋转 \(R_s\) 折进固定矩阵，都会改变函数本身。`
         },
         {
           kind: "complexity",
           level: "intermediate",
-          q: R`若每 token 缓存 \(d_c+d_h^R=576\) 个 BF16 元素，40 层、长度 128K、batch 2 的 MLA cache 约多大？`,
-          hint: R`计算 \(BNL(d_c+d_h^R)b\)，这里 K/V 已联合进 latent，不能再乘 2。`,
-          answer: R`\(2\times40\times131072\times576\times2=12{,}079{,}595{,}520\) 字节，约 11.25 GiB。该估算不含对齐、量化元数据与运行时工作区。`
+          q: R`DeepSeek-V2 取 \(H=128\)、内容维 128、latent 512、RoPE 64。求持久缓存与“显式 MHA 形态”每 token 元素数之比，并解释为什么 Prefill 仍选择 128 维内容打分、Decode 却接受 512 维 latent 打分。`,
+          hint: R`持久缓存 576；显式形态是 \(2\times128\times128\)。`,
+          answer: R`显式 MHA 形态每 token 需 \(2\times128\times128=32768\) 个元素，持久缓存只有 \(512+64=576\)，比值约 \(56.9\)（这是与自身展开形态的口径对比；DeepSeek 官方 93.3% 用的是不同基线口径）。Prefill 的成本主项是 \(\Theta(HL^2d_h)\) 的 score 计算，128 维内容头比 512 维共享空间便宜约 4 倍，且展开量不进持久缓存；Decode 的成本主项是每步搬运历史缓存，把打分空间提高到 512 维换来的是每 token 只读 576 个元素、且完全不重建 32768 个元素的多头 K/V——计算多一点、搬运少得多。`
+        },
+        {
+          kind: "counterexample",
+          level: "advanced",
+          q: R`用公式说明：为什么给内容 key 加完整 RoPE 会使“固定吸收后的 query 矩阵”不存在，而单独的共享 64 维 \(k^R\) 支路可行？`,
+          hint: R`比较 \(R_sW^{UK}\) 与 \(R_{s-t}\) 对位置的依赖方式。`,
+          answer: R`完整 RoPE 下分数为 \(q^\top R_t^\top R_sW^{UK}c_s\)。要吸收成 \((\widetilde Wq)^\top c_s\)，需要 \(R_t^\top R_sW^{UK}\) 与 \(s\) 无关；但 \(R_t^\top R_s=R_{s-t}\) 随 \(s\) 变化，除非 \(W^{UK}\) 与所有旋转可交换（一般不成立），固定 \(\widetilde W\) 不存在。而单独支路中 \(k_s^R=R_sW^{KR}h_s\) 在写入缓存时已经完成旋转，位置分数 \((R_tq^R)^\top k_s^R=(q^R)^\top R_{s-t}k_s^R\) 按原样计算、不需要任何吸收——位置项走专用小通道，内容项保持 NoPE 并保留吸收自由。`
+        },
+        {
+          kind: "design",
+          level: "advanced",
+          q: "有人断言“MLA 永远是最优 attention”。请批判这个说法，并列出至少四个可能反转工程选型的条件。",
+          hint: "回到“几乎最优”结论的全部前提假设。",
+          answer: R`该断言把条件化结论当成了定理。可能反转选型的条件包括：(1) tensor parallel 布局——TP 切分下 MLA 的 latent 复制读取或头维切分可能不如 GQA 均衡；(2) kernel 可用性——目标硬件若缺少吸收式/FlashMLA 类 kernel，理论带宽收益无法兑现；(3) 量化——latent 与 RoPE key 对量化误差的敏感度可能高于普通 KV；(4) batch 与上下文长度——短上下文、大 batch 时 Decode 未必 memory-bound；(5) 完整 RoPE 的质量——若任务对位置通道要求高，64 维 Partial RoPE 可能不够；(6) 参数量对齐——上投影参数换成更宽 FFN 或更多层也许收益更高；(7) hybrid/线性替代——KDA、GDN 等方案改变长上下文比较基线。任何一条都可能让“几乎最优”失效。`
+        }
+      ]
+    },
+
+    mfa: {
+      attentionConfig: {
+        model: "MFA · 6.9B MoE / 1.2B activated · 1T tokens",
+        scope: "MFA 论文的规模化研究实验：24 层 MoE 模型、1T tokens 训练，用于验证固定 KV 预算下的缓存与质量；数值属于该实验配置。",
+        items: [
+          { label: "Hidden size", value: "2048", note: "d_model" },
+          { label: "Layers", value: "24", note: "全模型缓存按 24 层合计" },
+          { label: "Attention heads", value: "m = 18", note: "每层 MFA heads" },
+          { label: "Shared latent / head rank", value: "C = 256", note: "共享 K/V 宽度 = 每头 factorization rank" },
+          { label: "Shared K/V heads", value: "1 / 1", note: "全部 heads 读取同一份 C 维 K/V" },
+          { label: "RoPE base", value: "500,000", note: "论文 common settings" },
+          { label: "MFA cache per layer", value: "512 elements/token = 1 KiB BF16", note: "2 × C" },
+          { label: "24-layer cache", value: "24,576 bytes/token ≈ 24 KiB", note: "24 × 2 × 256 × 2 字节" },
+          { label: "MFA-KR cache", value: "256 elements/layer ≈ 12 KiB across 24 layers", note: "只缓存共享 key" }
+        ],
+        sources: [
+          { label: "Multi-matrix Factorization Attention (Findings of ACL 2025)", url: "https://aclanthology.org/2025.findings-acl.1288/" },
+          { label: "Multi-matrix Factorization Attention (arXiv:2412.19255)", url: "https://arxiv.org/abs/2412.19255" }
+        ],
+        caveat: "MFA 的“head dimension=256”是共享 latent 维度 C 和每头 factorization rank，不要求 hidden size 等于 head 数×256。论文的 6.9B/1.2B-activated 模型是研究实验，不是公开生产 checkpoint；24.6 KB/token 是 24 层 BF16 缓存总量，不是单层。"
+      },
+      positionEncoding: {
+        title: "MFA 使用标准 RoPE：逐头 query 与共享 key 在同一 C 维空间旋转",
+        summary: R`标准 RoPE 作用于每头 query \(q_{t,c}=x_tS_qQ_c\) 与共享 key \(k_t=x_tS_k\)；value 不旋转。共享 key 每 token 只需旋转一次即可服务全部 heads。`,
+        equation: R`\[
+          s_{t,s}^{(c)}
+          =\frac{\bigl(R_tq_{t,c}\bigr)^\top\bigl(R_sk_s\bigr)}{\sqrt C}
+          =\frac{q_{t,c}^\top R_{s-t}k_s}{\sqrt C}.
+        \]`,
+        steps: [
+          { label: "共享 key", title: "每个 token 只旋转一次", body: R`共享 \(k_t\) 只有一份，按位置 \(t\) 旋转一次即可被全部 heads 读取；不为每个 head 复制旋转结果。` },
+          { label: "逐头 query", title: "所有 query heads 在同一 C 维空间旋转", body: R`每个 head 的 \(q_{t,c}\) 都是 C 维向量，使用同一组 RoPE 频率；head 差异来自 \(Q_c\)，不来自位置编码。` },
+          { label: "实验配方", title: "base 500,000，另测 ALiBi", body: "论文 common settings 使用 RoPE base 500,000，但 MFA 机制本身与位置编码兼容，ALiBi 是单独消融。" }
+        ],
+        caveat: "RoPE base 500,000 是论文实验选择，不是 MFA 定义；换用其他位置机制不改变共享 C 维 KV 与逐头 C×C 变换的结构。"
+      },
+      derivationSourceFallback: "Multi-matrix Factorization Attention (2024/2025)：MFA 与 MFA-KR 的定义、KV cache 计量与实验配置",
+      existingExerciseMeta: [
+        { kind: "complexity", level: "foundation" },
+        { kind: "architecture", level: "intermediate" }
+      ],
+      derivations: [
+        {
+          title: "总有效秩增加而缓存不变",
+          body: R`**原式。** 论文把每个 head 的 QK circuit 视为经过共享 C 维空间的矩阵分解，其 factorization rank 至多为共享宽度 \(C\)；MFA 让每头达到
+            \[
+            \mathrm{FRH}=C.
+            \]
+            **补全代数。** 对 \(m\) 个 head 求和得到论文的总有效秩
+            \[
+            \mathrm{TER}=m\cdot\mathrm{FRH}=mC,
+            \]
+            而缓存宽度保持 \(2C\)，与 \(m\) 无关。固定缓存预算下，MFA 可以同时增加 head 数与每头秩。**张量形状。** \(S_q,S_k\in\mathbb R^{d\times C}\)、\(Q_c\in\mathbb R^{C\times C}\)；每头 QK circuit 是 \(d\times d\) 矩阵，秩受 \(C\) 限制。**直观。** 缓存决定共享底片的分辨率，权重决定有多少个高秩镜头同时读它。**边界。** FRH/TER 是论文用于比较容量的代理指标，不是“精度随 TER 单调上升”的定理；质量结论仍以论文实验为准。`
+        },
+        {
+          title: "MFA-KR 的零初始化 key reuse",
+          body: R`**原式。** MFA-KR 把 value 投影约束到 key 派生族。教学式写法为
+            \[
+            v_s=k_sM,\qquad M=I+\operatorname{diag}(\alpha)N,
+            \]
+            其中 \(N\in\mathbb R^{C\times C}\) 可学习、\(\alpha\in\mathbb R^{C}\) 零初始化。**补全代数。** 初始时
+            \(\alpha=0\Rightarrow M=I\Rightarrow v_s=k_s\)：训练从“value 等于 key”出发逐步学习偏离量，缓存从 \(2C\) 降到 \(C\)。**张量形状。** \(k_s,v_s\in\mathbb R^{C}\)，\(M\in\mathbb R^{C\times C}\)。**直观。** 同一份缓存底片既当地址又当内容；零初始化 gate 保证重参数化不破坏训练起点。**边界。** 矩阵朝向遵循实现约定（此处按行向量右乘书写）；核心点是 value 投影被约束为 key 派生族，论文实验也显示相对 MFA 的小幅质量折损。`
+        }
+      ],
+      exercises: [
+        {
+          kind: "code-shape",
+          level: "intermediate",
+          q: R`设 hidden size 2048、\(C=256\)、\(m=18\)。写出共享 query/key/value 特征、逐头展开 query、scores 与每层每 token 缓存的形状或元素数。`,
+          hint: R`共享特征都是 C 维；只有 query 有 head 轴。`,
+          answer: R`共享特征 \(x S_q, x S_k, x S_v\) 均为 \([B,T,256]\)；逐头 query 为 \([B,18,T,256]\)；scores 为 \([B,18,T,T]\)。每层每 token 缓存 \(2C=512\) 个元素（MFA-KR 为 256 个），与 \(m=18\) 无关。`
+        },
+        {
+          kind: "counterexample",
+          level: "advanced",
+          q: "构造一个反例说明“每 token 缓存相同的两种注意力，容量也相同”不成立。",
+          hint: R`比较 MFA（\(C=256\)、\(m\) 个 head）与 head dim 为 256 的单头注意力。`,
+          answer: R`单头注意力取 \(d_h=256\)，每 token 缓存 \(2\times256\) 个元素，与 \(C=256\) 的 MFA 完全相同；但它每 token 只有一个 softmax 分布和一套读写变换，按论文的代理指标 TER 为 \(1\times C\)，而 MFA 为 \(mC\)，且 MFA 有 \(m\) 个独立的 \(C\times C\) QK/VO circuit。缓存口径相同不代表表达容量相同；TER 是容量代理，不是精度定理。`
+        },
+        {
+          kind: "design",
+          level: "advanced",
+          q: "给定质量优先或显存受限两类约束，如何在 MFA 与 MFA-KR 之间选择？",
+          hint: "比较缓存宽度与论文报告的质量差异。",
+          answer: R`显存或带宽极紧时选 MFA-KR：缓存从 \(2C\) 减半到 \(C\)，但论文实验显示相对 MFA 的小幅质量折损。质量优先且 \(2C\) 预算可接受时选标准 MFA。决策应在目标上下文长度与 batch 下同时测缓存字节、吞吐与任务质量，而不是只看理论宽度。`
+        },
+        {
+          kind: "derivation",
+          level: "intermediate",
+          q: "解释为什么 RoPE 施加在 MFA 的 query 与 key 上，而不施加在 value 上。",
+          hint: R`相对位置性质来自 \(R_t^\top R_s=R_{s-t}\) 在点积中的配对消去。`,
+          answer: R`score 中 \((R_tq)^\top(R_sk)=q^\top R_{s-t}k\)，两侧旋转配对后只留下相对位移，这正是需要位置信息的地方。value 不参与点积配对：若旋转 \(v_s\)，绝对位置相位会直接进入输出内容且无从消去。MFA-KR 中 value 由未旋转的 key 特征派生，同样保持 value 无旋转。`
+        }
+      ]
+    },
+
+    tpa: {
+      attentionConfig: {
+        model: "T6-XL · 1.55B · FineWeb-Edu-100B",
+        scope: "官方仓库 train_T6_xl_adam_80g8.py 给出的最大 T6 研究模型配置；数值属于该 config，不是生产 checkpoint。",
+        items: [
+          { label: "Hidden size", value: "1600", note: "d_model" },
+          { label: "Layers", value: "48", note: "n_layer" },
+          { label: "Expanded Q heads", value: "78", note: "attention heads h" },
+          { label: "Head dim", value: "64", note: "d_h" },
+          { label: "Q rank", value: "R_Q = 6", note: "query 因子秩" },
+          { label: "K / V rank", value: "R_K = 2 / R_V = 2", note: "决定缓存的秩预算" },
+          { label: "Attention inner width", value: "4992", note: "78 × 64，大于 d_model=1600" },
+          { label: "Factorized KV cache", value: "568 elements/token/layer", note: "(R_K+R_V)(h+d_h)" },
+          { label: "Full-MHA-shaped cache", value: "9984 elements/token/layer", note: "2 × 78 × 64 对照" },
+          { label: "Training block size", value: "1024", note: "官方 config 的上下文长度" },
+          { label: "Position", value: "RoPE", note: "config 未给出 base 数值" }
+        ],
+        sources: [
+          { label: "Tensor Product Attention Is All You Need (arXiv:2501.06425)", url: "https://arxiv.org/abs/2501.06425" },
+          { label: "Official tensorgi/TPA repository", url: "https://github.com/tensorgi/TPA" },
+          { label: "Official T6-XL training config", url: "https://github.com/tensorgi/TPA/blob/main/config/train_T6_xl_adam_80g8.py" }
+        ],
+        caveat: "TPA 论文与官方仓库提供的是最高 1.55B 的 T6 研究模型，而不是公开的超大生产 checkpoint。官方 XL config 使用 h=78、d_h=64，所以 attention inner width 为 4992，明显大于 d_model=1600；这是参数量配平选择，不是维度错误。"
+      },
+      positionEncoding: {
+        title: "TPA 的 RoPE 逐行作用于 B_Q / B_K 因子",
+        summary: R`旋转线性作用在 \(d_h\) 轴上，因此 \(R_t(A^\top B)=A^\top R_t(B)\)：对 \(B_Q\)、\(B_K\) 的每一行做 RoPE 就等价于旋转重建后的每头 Q/K。缓存里保存的是已旋转的 \(\widetilde B_K\)；A 因子与 \(B_V\) 都不旋转。`,
+        equation: R`\[
+          \widetilde B_K=R_t(B_K),\qquad
+          \widetilde K_t=\frac1{R_K}A_K^\top\widetilde B_K,
+          \qquad
+          \bigl(R_tq_{t,i}\bigr)^\top\bigl(R_sk_{s,i}\bigr)
+          =q_{t,i}^\top R_{s-t}k_{s,i}.
+        \]`,
+        steps: [
+          { label: "A 因子", title: "token 依赖但不旋转", body: R`\(A_Q,A_K\) 决定因子在 head 轴上的分布，与位置无关；旋转只发生在 channel 轴。` },
+          { label: "缓存", title: R`写入前预旋转 \(B_K\)`, body: R`按位置 \(t\) 旋转后再缓存 \(\widetilde B_K\)，score 的相对位置性质由两侧配对保持；解码时无需回头重旋历史因子。` },
+          { label: "范围", title: R`只旋转 Q/K 的 B 因子，\(B_V\) 不旋转`, body: R`value 不参与旋转配对；对 \(B_V\) 施 RoPE 会把绝对位置相位注入输出内容。` }
+        ],
+        caveat: "TPA 与位置机制兼容；T6 使用 RoPE，官方 XL config 未暴露 base 数值，不能替它虚构一个。"
+      },
+      derivationSourceFallback: "Tensor Product Attention Is All You Need (2025)：contextual factorization、RoPE 兼容性与 FlashTPA decoding；官方 tensorgi/TPA 仓库",
+      existingExerciseMeta: [
+        { kind: "complexity", level: "foundation" },
+        { kind: "code-shape", level: "intermediate" }
+      ],
+      derivations: [
+        {
+          title: "score 可在因子域展开",
+          body: R`**原式。** head \(i\) 的 score 需要 \(q_{t,i}\cdot k_{s,i}\)。**补全代数。** 代入因子分解：
+            \[
+            q_{t,i}\cdot k_{s,i}
+            =\frac1{R_QR_K}\sum_{p=1}^{R_Q}\sum_{r=1}^{R_K}
+            A_Q[p,i]\,A_K[r,i]\,\bigl(B_Q[p]\cdot B_K[r]\bigr).
+            \]
+            先算 \(R_Q\times R_K\) 个 channel 内积 \(B_Q[p]\cdot B_K[r]\)，再用 A 因子逐头加权，即得全部 \(h\) 个 head 的 score。**张量形状。** channel 内积为 \([B,T,S,R_Q,R_K]\)，与 head 数无关；score 为 \([B,h,T,S]\)。**直观。** 历史 token 只以低秩因子存在，score 是因子域收缩，从不物化 \([B,h,S,d_h]\) 的完整历史 K。**边界。** 这正是 FlashTPA decoding 顺序收缩的代数基础；若先重建 K 再调用普通 MHA kernel，数值不变但主要效率收益消失。`
+        },
+        {
+          title: "RoPE 只作用 channel factor",
+          body: R`**原式。** RoPE 对 head \(i\) 的 key 行向量施位置旋转 \(R_t\)。**补全代数。** \(K_t=A_K^\top B_K/R_K\) 的第 \(i\) 行是 B 行的线性组合
+            \(\frac1{R_K}\sum_rA_K[r,i]B_K[r]\)，而 \(R_t\) 线性作用在 \(d_h\)（右侧）轴上，故
+            \[
+            R_t\!\left(A_K^\top B_K\right)=A_K^\top R_t(B_K),
+            \]
+            其中 \(R_t(B_K)\) 表示对 \(B_K\) 的每一行做同一旋转。因此可以在写入缓存前预旋转 \(\widetilde B_K=R_t(B_K)\)，score 中 \((R_tq)^\top(R_sk)=q^\top R_{s-t}k\) 的相对位置性质保持不变。**张量形状。** \(B_K\in\mathbb R^{R_K\times d_h}\)，旋转不改变形状。**直观。** 位置信息只写进 channel 因子；head-mixing 的 A 因子与位置无关。**边界。** \(B_V\) 不参与 score 的旋转配对，因此保持不旋转；对 value 施 RoPE 会把绝对位置相位注入输出内容。`
+        }
+      ],
+      exercises: [
+        {
+          kind: "counterexample",
+          level: "advanced",
+          q: R`解释为什么 \(R_K=1\) 的 contextual TPA 不等同于 MQA，并给出一个区分它们的具体机制。`,
+          hint: R`MQA 的 head-sharing 模式是固定的；TPA 的 \(A_K(x_t)\) 随 token 变化。`,
+          answer: R`\(R_K=1\) 时 \(K_t=a_K(x_t)^\top b_K(x_t)\)：head 轴权重 \(a_K(x_t)\in\mathbb R^{h}\) 由当前 token 生成，不同 token 可以把同一 channel 模式按不同强度写入不同 heads。MQA 相当于把 \(a_K\) 固定为常向量（全部 head 等权共享一个 key 头），与输入无关。只要存在 \(x_1,x_2\) 使 \(a_K(x_1)\ne a_K(x_2)\)（可训练投影一般如此），这种 token-dependent head mixing 就不能被任何固定 head-sharing mask 复现。`
+        },
+        {
+          kind: "code-shape",
+          level: "advanced",
+          q: R`已知 A 为 \([B,T,R,H]\)、B 为 \([B,T,R,D]\)。写出用 torch.einsum 重建 \([B,H,T,D]\) 激活的表达式。`,
+          hint: R`沿秩轴 \(R\) 收缩，别忘了 \(1/R\) 因子。`,
+          answer: "torch.einsum(\"btrh,btrd->bhtd\", A, B) / R。秩轴 r 被收缩，head 轴来自 A，channel 轴来自 B；除以 R 与论文的 1/R 归一化一致。"
+        },
+        {
+          kind: "design",
+          level: "advanced",
+          q: R`如何为固定缓存预算选择 \(R_K,R_V\)？说明质量与缓存的权衡实验。`,
+          hint: R`缓存按 \((R_K+R_V)(h+d_h)\) 线性增长。`,
+          answer: R`更高的 rank 能表达更多 head×channel 结构，但缓存随 \(R_K+R_V\) 线性增长。应在固定 \((R_K+R_V)(h+d_h)\) 预算下网格比较不同 \((R_K,R_V)\) 组合，同时报告困惑度/下游质量、每 token 缓存字节与目标硬件上的 decode 吞吐；K 与 V 的最优秩不必相等，不能只用一个指标外推。`
+        },
+        {
+          kind: "derivation",
+          level: "intermediate",
+          q: R`证明缓存前预旋转 \(B_K\) 是合法的，并说明为什么 \(B_V\) 不做同样处理。`,
+          hint: R`利用 \(R_t(A^\top B)=A^\top R_t(B)\) 与 \(R_t^\top R_s=R_{s-t}\)。`,
+          answer: R`旋转作用在 channel 轴上且是线性映射，故 \(R_s(A_K^\top B_K)=A_K^\top R_s(B_K)\)：缓存 \(\widetilde B_K=R_s(B_K)\) 与旋转重建后的 key 完全等价，score 中 \((R_tq)^\top(R_sk)=q^\top R_{s-t}k\) 只依赖相对位移。value 侧没有与 query 的旋转配对，\(B_V\) 若被旋转，输出会带上无法消去的绝对位置相位，因此 \(B_V\) 保持不旋转。`
         }
       ]
     },

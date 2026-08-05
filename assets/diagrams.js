@@ -51,13 +51,30 @@
       ["视觉语义", "蓝=计算，绿=控制，玫瑰=缓存/状态，薰衣草=聚合/写回；虚线只表示训练或可选路径。"]
     ],
     mla: [
-      ["Decode 主路径", R`缓存只含 \(c^{KV}\) 与 \(k^R\)；图中主干就是吸收式解码，历史 \(k^C\) / \(v\) 从不显式重建。`],
-      ["两次下投影", R`\(c^Q=W^{DQ}h_t\) 与 \(c^{KV}=W^{DKV}h_t\)；解耦 RoPE 键 \(k^R=\operatorname{RoPE}(W^{KR}h_t)\) 直接来自 \(h_t\)，是全头共享的位置切片。`],
-      ["吸收技巧", R`内容分数把 \(W^{UK}\) 吸收到 query 侧：\(\widetilde q_i=(W_i^{UK})^{\mathsf T}q_i^C\)；输出侧把 \(W^{UV}\) 吸收进写回，一次投影完成。`],
-      ["正确缩放", R`即使内容 query 落在 \(d_c\) 维 latent 空间，分数仍按完整 head 宽度 \(\sqrt{d_h+d_h^R}\) 缩放。`],
-      ["可选 RMSNorm", R`DeepSeek 检查点会对 \(c^Q\) / \(c^{KV}\) 加 RMSNorm；那是实现配方而非 MLA 定义，图中保持原始下投影、此处说明。`],
-      ["重建仅为等价解释", R`虚线橙框 \(k^C=W^{UK}c\)、\(v=W^{UV}c\) 是训练/概念等价视角，不是 decode 路径，也不进缓存。`],
-      ["视觉语义", "玫瑰=持久 latent 缓存，蓝=投影/attention，薰衣草=聚合/写回；橙色虚线=明确可选的概念视角。"]
+      ["先分瓶颈再读图", "左车道是训练/Prefill 的 compute-bound 执行图，右车道是逐 token Decode 的 memory-bound 执行图；先确定阶段瓶颈，再决定沿哪条车道读。"],
+      ["共享投影", R`同一组权重供两条车道使用：\(c^{KV}=W^{DKV}h_t\)（512 维共享源）、每头 query 的 128+64 两段，以及共享 \(k^R=R_tW^{KR}h_t\)（64 维）。`],
+      ["Prefill 车道 · MHA 形态", R`\(k_i^C=W_i^{UK}c^{KV}\)、\(v_i=W_i^{UV}c^{KV}\) 显式展开成每头 128 维，再做标准多头打分与读取；展开量只服务本次并行计算，不作为跨请求的持久缓存。`],
+      ["Decode 车道 · MQA 形态", R`\(\widetilde q_i=(W_i^{UK})^{\mathsf T}q_i^C\) 直接对缓存 latent 打分，softmax 后先聚合 512 维 latent，再经吸收后的 \(W_i^{O}W_i^{UV}\) 一次写回；历史多头 K/V 从不重建。`],
+      ["精确桥梁", "中央绿桥标注 same weights · exact linear reassociation：NoPE 内容通道的线性结合律允许在“先展开”与“先吸收”之间切换，两条车道给出相同结果，不是可选近似。"],
+      ["Partial RoPE 支路", R`64 维逐头 \(q^R\) 与一份共享 \(k^R\) 负责相对位置，同时进入两条车道的分数；内容主干保持 NoPE，吸收才可能成立。`],
+      ["条件化近优", "在 full softmax、线性投影、给定两阶段预算且 Decode 确实 memory-bound 的限定下，MLA 同时逼近 Prefill 想要的 MHA 与 Decode 想要的共享 MQA；超出假设不自动成立。"],
+      ["视觉语义", "蓝=计算，玫瑰=持久缓存/状态，薰衣草=聚合/写回，绿=执行图切换桥；两条车道等宽等重，没有谁是“主路径”。"]
+    ],
+    mfa: [
+      ["共享三投影", R`\(S_q,S_k,S_v\) 把每个 token 投到同一 C 维空间；共享 k/v 形状为 \([B,T,C]\)，没有 head 轴。`],
+      ["逐头 C×C 镜头", R`每个 head 用完整 \(Q_c\in\mathbb R^{C\times C}\) 改写匹配方式；\([B,m,T,C]\) 的逐头 query 只存在于计算中，不进缓存。`],
+      ["缓存与 head 数解耦", R`玫瑰色缓存每 token 只有 \(2C\) 个元素（KR 为 \(C\)）；增加 head 数只增加权重与算力，不复制历史 KV。`],
+      ["标准 RoPE", R`旋转只作用于逐头 \(q_{t,c}\) 与共享 \(k_s\)，value 不旋转；论文 common settings 使用 base 500,000，ALiBi 为单独消融。`],
+      ["KR 变体", R`橙色虚线为 MFA-KR：\(v_s=k_s(I+\operatorname{diag}(\alpha)N)\)，\(\alpha\) 零初始化，初始时 value 精确等于 key，缓存从 2C 降到 C。`],
+      ["视觉语义", "蓝=计算，玫瑰=缓存/状态，薰衣草=聚合/写回；橙色虚线表示可选的 key-reuse 变体。"]
+    ],
+    tpa: [
+      ["六路因子流", R`每个 token 生成 \(A_{Q/K/V}\)（head 轴）与 \(B_{Q/K/V}\)（channel 轴）六路因子；A 为 \([B,T,R,h]\)，B 为 \([B,T,R,d_h]\)。`],
+      ["逐行 RoPE", R`旋转只作用于 \(B_Q\)、\(B_K\) 的每一行：\(R_t(A^\top B)=A^\top R_t(B)\)；A 因子与 \(B_V\) 保持不旋转。`],
+      ["因子缓存", R`玫瑰色缓存保存 \(A_K,\widetilde B_K,A_V,B_V\)，每 token \((R_K+R_V)(h+d_h)\) 个元素；\(\widetilde B_K\) 已预旋转。`],
+      ["因子域收缩", R`score 由 \(R_Q\times R_K\) 个 channel 内积经 A 因子逐头加权得到，从不物化完整历史 K；value 聚合同理直接收缩 \(A_V,B_V\)。`],
+      ["重建仅为验证", "橙色虚线路径显式重建 Q/K/V 以验证代数等价；先重建再调普通 MHA kernel 数值不变，但丢掉 FlashTPA 式 decode 收益。"],
+      ["视觉语义", "蓝=计算，玫瑰=缓存/状态，薰衣草=聚合/写回；橙色虚线表示仅供验证的重建路径。"]
     ],
     dsa: [
       ["两条清晰车道", R`上方 Indexer 生成 \(q^I\)、\(k^I\)、\(w^I\)、全历史 logits 与 TopK；官方实现中 \(q^I\) 由共享的 MLA query latent \(c^Q\) 投影，\(k^I\) 先过 LayerNorm。下方从 MLA latent cache gather 后运行候选 MLA。`],
@@ -115,7 +132,9 @@
     mha: "2017 MHA：缩放 embedding 加正弦位置后投影多头，精确注意力写回，再做 post Add & Norm。",
     mqa: "MQA：很多独立 Q 逻辑广播到唯一共享 K/V；减少历史搬运，不近似 softmax。",
     gqa: R`GQA：T5 query head 用 \(g(h)\) 找组内 K/V；MHA checkpoint 先组内均值再 uptrain。`,
-    mla: R`MLA decode：直接用缓存 \(c^{KV}\)+\(k^R\) 做吸收式打分与读出；\(k^C\)/\(v\) 重建只是等价解释。`,
+    mla: "MLA：Prefill 把 512 维 latent 展开成每头 128 维 MHA；Decode 把展开矩阵吸收到两侧，按 512 维共享 MQA 读取；64 维 RoPE 支路只负责位置。",
+    mfa: R`MFA：共享 C 维 K/V 只存一份，逐头 \(Q_c\)/\(O_c\) 在权重里提供高秩视角；KR 再把 value 折进 key。`,
+    tpa: R`TPA：token 现场生成 A/B 因子，RoPE 只转 \(B_Q\)/\(B_K\)；缓存低秩因子并在因子域直接收缩出 score 与输出。`,
     dsa: "DSA：低维 FP8 Indexer 选地址，Gather 再把原始 MLA latent 交给精确候选 attention。",
     csa: R`CSA：\(K^{I\mathrm{Comp}}\) 负责找地址，\(C^{\mathrm{Comp}}\) 提供内容；再与 SWA 一起进入唯一的 MQA+sink 核心。`,
     hca: "HCA：只缓存已完成的重压缩块，不做 TopK；全部摘要与 SWA 一起 dense 读取。",
@@ -610,63 +629,244 @@
 
   function mlaDiagram(rootId) {
     var b = "";
+    b += panel(24, 380, 426, 478,
+      "TRAINING / PREFILL · COMPUTE-BOUND · MHA-LIKE", "compute");
+    b += panel(650, 380, 426, 478,
+      "TOKEN-BY-TOKEN DECODE · MEMORY-BOUND · MQA-LIKE", "state");
 
-    b += box(470, 84, 160, 60, M("h_t", "Input hidden"),
-      M("[B,1,d]", "[B,1,d]"), "compute", 1, "03");
+    /* Shared top: one set of weights feeding both execution graphs. */
+    b += box(470, 60, 160, 56, M("h_t", "Input hidden"),
+      M("[B,T,d]", "[B,T,d]"), "compute", 1, "03");
+    b += box(60, 156, 220, 64, M("q_i^C,\\;q_i^R", "Per-head queries"),
+      M("W_i^{UQ}c_t^Q,\\;R_tW_i^{QR}c_t^Q", "content 128 + RoPE 64"),
+      "compute", 2, "04", { subSize: 8.2 });
+    b += box(440, 156, 220, 64, M("c_t^{KV}=W^{DKV}h_t", "Joint KV latent"),
+      M("512\\text{-d shared source}", "512-d shared source"),
+      "compute", 3, "05", { subSize: 8.4 });
+    b += box(820, 156, 220, 64, M("k_t^R=R_tW^{KR}h_t", "Decoupled RoPE key"),
+      M("64\\text{-d, shared by all heads}", "64-d shared by all heads"),
+      "compute", 4, "06", { subSize: 8.4 });
 
-    b += box(150, 190, 200, 64, M("c_t^Q=W^{DQ}h_t", "Query down-projection"),
-      M("c_t^Q\\in\\mathbb R^{d_c'}", "raw query latent"), "compute", 2, "04");
-    b += box(450, 190, 200, 64, M("c_t^{KV}=W^{DKV}h_t", "KV down-projection"),
-      M("c_t^{KV}\\in\\mathbb R^{d_c}", "raw joint KV latent"), "compute", 3, "05");
-    b += box(750, 190, 200, 64, M("k_t^R=R_tW^{KR}h_t", "Decoupled RoPE key"),
-      M("d_h^R\\;\\text{shared}", "shared positional slice"), "compute", 4, "06");
+    b += cacheBox(440, 264, 220, 64,
+      M("c_{1:t}^{KV},\\;k_{1:t}^{R}", "Persistent cache"),
+      M("512+64=576\\ /\\ \\text{token}", "512+64=576 per token"), 5, "07");
+    b += box(820, 264, 220, 64,
+      M("(q_i^{R})^{\\mathsf T}k_s^{R}", "Shared RoPE score"),
+      "enters both lanes", "compute", 6, "09", { subSize: 8.4 });
 
-    b += box(150, 300, 200, 72, M("q_i^C,\\;q_i^R", "Up-project queries"),
-      M("W_i^{UQ}c_t^Q,\\;R_tW_i^{QR}c_t^Q", "content + RoPE query"),
-      "compute", 5, "06", { subSize: 8.2 });
-    b += cacheBox(450, 300, 200, 64, M("c_{1:t}^{KV}", "Latent KV cache"),
-      "the only content cache", 6, "07");
-    b += cacheBox(750, 300, 200, 64, M("k_{1:t}^{R}", "RoPE key cache"),
-      "the only positional cache", 7, "06");
+    /* Left lane: prefill expands per-head 128-d content K/V. */
+    b += box(94, 410, 340, 64, M("k_{s,i}^{C}=W_i^{UK}c_s^{KV}", "Expand content keys"),
+      M("128\\text{-d per head}", "128-d per head"), "compute", null, "08");
+    b += box(94, 498, 340, 64, M("v_{s,i}=W_i^{UV}c_s^{KV}", "Expand values"),
+      M("128\\text{-d per head · compute-only}", "128-d per head, compute-only"),
+      "compute", null, "10", { subSize: 8.2 });
+    b += box(94, 586, 340, 76,
+      M("a_i=\\operatorname{softmax}\\!\\Big(\\tfrac{q_i^{C\\mathsf T}k_{s,i}^{C}+q_i^{R\\mathsf T}k_s^R}{\\sqrt{192}}+M\\Big)",
+        "Standard multi-head score"),
+      null, "compute", null, "09", { titleSize: 8.8 });
+    b += box(94, 686, 340, 64,
+      M("o_i=\\textstyle\\sum_s a_{i,s}v_{s,i}", "Per-head value read"),
+      null, "gather", null, "10");
+    b += box(94, 774, 340, 60,
+      M("u_t=\\operatorname{Concat}_i(o_i)\\,W^O", "Concat → WO"),
+      null, "gather", null, "11", { titleSize: 10.2 });
 
-    b += box(150, 420, 200, 64,
-      M("\\widetilde q_i=(W_i^{UK})^{\\mathsf T}q_i^C", "Absorbed query"),
-      "decode main path", "compute", 8, "08", { titleSize: 9.8 });
+    /* Right lane: decode absorbs both up-projections and reads the latent. */
+    b += box(693, 410, 340, 64,
+      M("\\widetilde q_i=(W_i^{UK})^{\\mathsf T}q_i^{C}", "Absorbed query"),
+      M("512\\text{-d, folded into query}", "512-d folded into query"),
+      "compute", null, "08", { subSize: 8.4 });
+    b += box(693, 586, 340, 76,
+      M("a_i=\\operatorname{softmax}\\!\\Big(\\tfrac{\\widetilde q_i^{\\mathsf T}c_s^{KV}+q_i^{R\\mathsf T}k_s^R}{\\sqrt{192}}+M\\Big)",
+        "Latent score, K = latent"),
+      null, "compute", null, "09", { titleSize: 8.8 });
+    b += box(693, 686, 340, 64,
+      M("m_i=\\textstyle\\sum_s a_{i,s}c_s^{KV}", "Shared latent read"),
+      M("512\\text{-d, }K=V=c_s", "512-d, K = V = latent"),
+      "gather", null, "10", { subSize: 8.4 });
+    b += box(693, 774, 340, 60,
+      M("u_t=\\textstyle\\sum_i(W_i^{O}W_i^{UV})m_i", "Absorbed output write"),
+      null, "gather", null, "11", { titleSize: 9.8 });
+
+    /* Central exact bridge: equal paths, not an optional approximation. */
+    b += box(470, 586, 160, 88, "SAME WEIGHTS",
+      "EXACT LINEAR REASSOCIATION", "control", null, "08",
+      { titleSize: 9.8, subSize: 7.6 });
+
+    /* Shared top wiring. */
+    b += edge(rootId, "M510 116V136H170V156", null, "compute");
+    b += edge(rootId, ortho(550, 116, 550, 156), null, "compute");
+    b += edge(rootId, "M590 116V136H930V156", null, "compute");
+    b += edge(rootId, ortho(550, 220, 550, 264), null, "state");
+    b += edge(rootId, "M930 220V240H630V264", null, "state");
+    b += edge(rootId, ortho(930, 220, 930, 264), null, "compute");
+    b += edge(rootId, "M170 220V246H700V296H820", null, "compute");
+
+    /* Queries into both lanes. */
+    b += edge(rootId, "M150 220V356H460V614H434", null, "compute");
+    b += edge(rootId, "M200 220V232H1060V442H1033", null, "compute");
+
+    /* Latent cache into both lanes. */
+    b += edge(rootId, "M510 328V442H434", null, "state");
+    b += edge(rootId, "M490 328V530H434", null, "state");
+    b += edge(rootId, "M654 328V622H693", null, "state");
+    b += edge(rootId, "M646 328V718H693", null, "state");
+
+    /* Shared RoPE score into both lanes. */
+    b += edge(rootId, "M860 328V348H453V646H434", null, "compute");
+    b += edge(rootId, "M1000 328V352H1050V622H1033", null, "compute");
+
+    /* Left lane flow (corridor west of the boxes). */
+    b += edge(rootId, "M94 442H74V610H94", null, "compute");
+    b += edge(rootId, "M94 530H60V718H94", null, "compute");
+    b += edge(rootId, ortho(264, 662, 264, 686), null, "compute");
+    b += edge(rootId, ortho(264, 750, 264, 774), null, "gather");
+
+    /* Right lane flow. */
+    b += edge(rootId, ortho(863, 474, 863, 586), null, "compute");
+    b += edge(rootId, ortho(863, 662, 863, 686), null, "compute");
+    b += edge(rootId, ortho(863, 750, 863, 774), null, "gather");
+
+    /* Bridge connects the two score rows as strict equalities. */
+    b += edge(rootId, "M470 630H434", null, "control");
+    b += edge(rootId, "M630 630H693", null, "control");
+    return baseSvg(rootId, "mla", 880, b,
+      "MLA dual execution graphs: a shared latent and one set of up-projection weights on top, a compute-bound MHA-like prefill lane expanding per-head 128-d keys and values, a memory-bound MQA-like decode lane scoring and reading the shared 512-d latent with absorbed query and output projections, a green same-weights exact-reassociation bridge marking both lanes equal, and a shared 64-d RoPE score entering both lanes");
+  }
+
+  function mfaDiagram(rootId) {
+    var b = "";
+
+    b += box(470, 84, 160, 60, M("x_t", "Input hidden"),
+      M("[B,T,d]", "[B,T,d]"), "compute", 1, "03");
+
+    b += box(150, 190, 200, 64, M("\\bar q_t=x_tS_q", "Shared query features"),
+      M("\\bar q_t\\in\\mathbb R^{C}", "never cached"), "compute", 2, "03");
+    b += box(450, 190, 200, 64, M("k_t=x_tS_k", "Shared key"),
+      M("k_t\\in\\mathbb R^{C}", "one per token"), "compute", 3, "03");
+    b += box(750, 190, 200, 64, M("v_t=x_tS_v", "Shared value"),
+      M("v_t\\in\\mathbb R^{C}", "standard variant"), "compute", 4, "03");
+
+    b += box(150, 300, 200, 68, M("q_{t,c}=\\bar q_tQ_c", "Per-head Qc expansion"),
+      M("[B,m,T,C]", "full C×C per head"), "compute", 5, "04");
+    b += cacheBox(450, 300, 200, 64, M("k_{1:t},v_{1:t}", "Shared KV cache"),
+      M("2C\\ \\text{(KR: }C\\text{)/token}", "no head axis"), 6, "05");
+    b += box(750, 420, 220, 68, M("v_s=k_sM", "MFA-KR key reuse"),
+      M("M=I+\\operatorname{diag}(\\alpha)N", "alpha zero-init"), "orange",
+      null, "06", { dashed: true, subSize: 8.2 });
+
+    b += box(150, 420, 200, 64, M("R_tq_{t,c},\\;R_sk_s", "Standard RoPE"),
+      "value stays unrotated", "compute", 7, "07", { subSize: 8.2 });
     b += box(430, 420, 300, 72,
-      M("s_{i,s}=\\frac{\\widetilde q_i^{\\mathsf T}c_s^{KV}+q_i^{R\\mathsf T}k_s^R}{\\sqrt{d_h+d_h^R}}+M",
-        "Absorbed score + mask"),
-      null, "compute", 9, "09", { titleSize: 9.4 });
+      M("a_{t,s}^{(c)}=\\operatorname{softmax}_s\\!\\left(\\frac{q_{t,c}k_s^\\top}{\\sqrt C}+M\\right)",
+        "Per-head scores + causal mask"),
+      null, "compute", 8, "08", { titleSize: 9.4 });
     b += box(430, 532, 300, 68,
-      M("m_i=\\textstyle\\sum_s a_{i,s}c_s^{KV}", "Latent value read"),
-      M("a_i=\\operatorname{softmax}_s(s_{i,s})", "softmax over history"),
-      "gather", 10, "10");
-    b += box(430, 640, 300, 64,
-      M("u_t=W^O\\operatorname{Concat}_i(W_i^{UV}m_i)", "Absorbed output write"),
-      null, "gather", 11, "11", { titleSize: 9.8 });
-
-    b += box(780, 540, 260, 72,
-      M("k^C=W^{UK}c,\\;v=W^{UV}c", "Conceptual reconstruction"),
-      "training-equivalent · never cached", "orange", null, "08",
-      { dashed: true, titleSize: 9.8, subSize: 8.2 });
+      M("m_{t,c}=\\textstyle\\sum_s a_{t,s}^{(c)}v_s", "Shared value read"),
+      M("[B,m,T,C]", "[B,m,T,C]"), "gather", 9, "09");
+    b += box(430, 640, 300, 60,
+      M("o_t=\\textstyle\\sum_c m_{t,c}O_c^\\top", "Head-specific Oc write-back"),
+      null, "gather", 10, "09");
+    b += box(430, 740, 300, 56, M("u_t=W^Oo_t", "Output projection"),
+      M("[B,T,d]", "[B,T,d]"), "gather", 11, "10");
 
     b += edge(rootId, "M510 144V166H250V190", null, "compute");
     b += edge(rootId, ortho(550, 144, 550, 190), null, "compute");
     b += edge(rootId, "M590 144V166H850V190", null, "compute");
     b += edge(rootId, ortho(250, 254, 250, 300), null, "compute");
     b += edge(rootId, ortho(550, 254, 550, 300), null, "state");
-    b += edge(rootId, ortho(850, 254, 850, 300), null, "state");
-    b += edge(rootId, ortho(250, 372, 250, 420), null, "compute");
-    b += edge(rootId, ortho(350, 452, 430, 452), null, "compute");
-    b += edge(rootId, "M350 336H400V436H430", null, "compute");
-    b += edge(rootId, ortho(550, 364, 550, 420), null, "state");
-    b += edge(rootId, "M850 364V390H650V420", null, "state");
-    b += edge(rootId, "M450 332H410V566H430", null, "state");
+    b += edge(rootId, "M850 254V332H650", null, "state");
+    b += edge(rootId, ortho(250, 368, 250, 420), null, "compute");
+    b += edge(rootId, "M450 332H400V436H350", null, "state");
+    b += edge(rootId, ortho(350, 468, 430, 468), null, "compute");
+    b += edge(rootId, "M620 364V400H745V550H730", null, "state");
+    b += edge(rootId, "M650 348H740V452H750",
+      [700, 388, "OPTIONAL · MFA-KR", 150], "orange", true);
+    b += edge(rootId, "M860 488V582H730",
+      [886, 612, M("v=kM\\ \\text{(KR)}", "OPTIONAL · v = k M"), 150],
+      "orange", true);
     b += edge(rootId, ortho(580, 492, 580, 532), null, "compute");
     b += edge(rootId, ortho(580, 600, 580, 640), null, "gather");
-    b += edge(rootId, "M650 348H740V576H780",
-      [870, 510, "OPTIONAL · conceptual view", 210], "orange", true);
-    return baseSvg(rootId, "mla", 744, b,
-      "MLA following the DeepSeek-V2 block: h_t, two down-projections, highlighted latent caches, absorbed decode attention, and a clearly optional conceptual reconstruction");
+    b += edge(rootId, ortho(580, 700, 580, 740), null, "gather");
+    return baseSvg(rootId, "mfa", 830, b,
+      "MFA with shared C-dimensional key/value features, per-head C by C query and output transforms, a head-count-independent shared KV cache, standard RoPE, and an optional key-reuse value path");
+  }
+
+  function tpaDiagram(rootId) {
+    var b = "";
+
+    b += box(470, 84, 160, 56, M("x_t", "Input hidden"),
+      M("[B,T,d]", "[B,T,d]"), "compute", 1, "03");
+
+    b += box(40, 180, 160, 72, M("A_Q(x_t)", "AQ head factor"),
+      M("[B,T,R_Q,h]", "[B,T,RQ,h]"), "compute", 2, "03");
+    b += box(212, 180, 160, 72, M("B_Q(x_t)", "BQ channel factor"),
+      M("[B,T,R_Q,d_h]", "[B,T,RQ,dh]"), "compute", 3, "03");
+    b += box(384, 180, 160, 72, M("A_K(x_t)", "AK head factor"),
+      M("[B,T,R_K,h]", "[B,T,RK,h]"), "compute", 4, "03");
+    b += box(556, 180, 160, 72, M("B_K(x_t)", "BK channel factor"),
+      M("[B,T,R_K,d_h]", "[B,T,RK,dh]"), "compute", 5, "03");
+    b += box(728, 180, 160, 72, M("A_V(x_t)", "AV head factor"),
+      M("[B,T,R_V,h]", "[B,T,RV,h]"), "compute", 6, "03");
+    b += box(900, 180, 160, 72, M("B_V(x_t)", "BV channel factor"),
+      M("[B,T,R_V,d_h]", "[B,T,RV,dh]"), "compute", 7, "03");
+
+    b += box(212, 300, 160, 64, M("R_t(B_Q)", "Row-wise RoPE"),
+      "each rank row rotated", "compute", 8, "04", { subSize: 8.2 });
+    b += box(556, 300, 160, 64, M("R_t(B_K)", "Row-wise RoPE"),
+      "pre-rotate before cache", "compute", 9, "04", { subSize: 8.2 });
+
+    b += box(140, 410, 280, 84,
+      M("s_{t,s,i}=\\tfrac{1}{R_QR_K}\\sum_{p,r}A_QA_K\\,(B_Q[p]\\!\\cdot\\!B_K[r])",
+        "Factor-domain score contraction"),
+      M("\\text{no full historical }K", "never rebuilds full K"),
+      "compute", 11, "07", { titleSize: 8.8, subSize: 8.2 });
+    b += cacheBox(556, 410, 340, 80,
+      M("A_K,\\widetilde B_K,A_V,B_V", "Factor KV cache"),
+      M("(R_K+R_V)(h+d_h)\\ \\text{/token}", "568 for T6-XL"), 10, "05");
+
+    b += box(140, 540, 280, 68,
+      M("a=\\operatorname{softmax}(s/\\sqrt{d_h}+M)", "Causal mask + softmax"),
+      null, "compute", 12, "08", { titleSize: 10 });
+    b += box(620, 540, 300, 72,
+      M("Q,K,V=\\tfrac1RA^\\top B", "Reference reconstruction"),
+      "materializes full history · verify only", "orange", null, "06",
+      { dashed: true, subSize: 8.2 });
+
+    b += box(140, 650, 280, 72,
+      M("o_{t,i}=\\tfrac1{R_V}\\sum_{s,r}a\\,A_V[r,i]\\,B_V[r]",
+        "Factor-domain value aggregation"),
+      null, "gather", 13, "09", { titleSize: 9.2 });
+    b += box(140, 760, 280, 60,
+      M("\\operatorname{Concat}\\to W^O", "Concat heads → WO"),
+      M("\\text{inner width }h\\,d_h\\to d", "h·dh back to d_model"),
+      "gather", 14, "10", { subSize: 8.2 });
+
+    b += edge(rootId, "M480 140V154H120V180", null, "compute");
+    b += edge(rootId, "M505 140V161H292V180", null, "compute");
+    b += edge(rootId, "M530 140V168H464V180", null, "compute");
+    b += edge(rootId, "M555 140V168H636V180", null, "compute");
+    b += edge(rootId, "M580 140V161H808V180", null, "compute");
+    b += edge(rootId, "M605 140V154H980V180", null, "compute");
+    b += edge(rootId, ortho(292, 252, 292, 300), null, "compute");
+    b += edge(rootId, ortho(636, 252, 636, 300), null, "compute");
+    b += edge(rootId, ortho(636, 364, 636, 410), null, "state");
+    b += edge(rootId, "M464 252V430H556", null, "state");
+    b += edge(rootId, ortho(808, 252, 808, 410), null, "state");
+    b += edge(rootId, "M980 252V450H896", null, "state");
+    b += edge(rootId, "M120 252V426H140", null, "compute");
+    b += edge(rootId, ortho(292, 364, 292, 410), null, "compute");
+    b += edge(rootId, ortho(556, 470, 420, 470), null, "state");
+    b += edge(rootId, ortho(280, 494, 280, 540), null, "compute");
+    b += edge(rootId, ortho(770, 490, 770, 540),
+      [820, 515, "OPTIONAL · rebuild full K/V", 190], "orange", true);
+    b += edge(rootId, ortho(620, 576, 420, 576),
+      [520, 562, "verification only", 140], "orange", true);
+    b += edge(rootId, ortho(280, 608, 280, 650), null, "compute");
+    b += edge(rootId, "M580 490V686H420", null, "state");
+    b += edge(rootId, ortho(280, 722, 280, 760), null, "gather");
+    return baseSvg(rootId, "tpa", 850, b,
+      "TPA with six contextual A and B factor streams, row-wise RoPE on the Q and K channel factors, a factorized KV cache, factor-domain score and value contraction, and an optional reconstruction reference path");
   }
 
   function dsaDiagram(rootId) {
@@ -1016,6 +1216,17 @@
       "KDA following the Kimi Linear block figure: parallel conv and direct-gate projections, one channel-decay delta recurrence cell with a single feedback loop, gated readout, and the exact checkpoint layer order");
   }
 
+  /* Most chapters share one legend; MLA's green tone marks the exact
+     same-weights bridge between its two equal lanes, not a control path. */
+  var badgeOverrides = {
+    mla: [
+      "BLUE · COMPUTE",
+      "ROSE · PERSISTENT CACHE / MEMORY-BOUND LANE",
+      "LAVENDER · GATHER/WRITE",
+      "GREEN · SAME-WEIGHTS EXACT BRIDGE"
+    ]
+  };
+
   function key(config) {
     if (config.type === "heads") return config.mode;
     if (config.type === "compressed") return config.mode;
@@ -1037,6 +1248,8 @@
     if (k === "mqa") svg = mqaDiagram(rootId);
     if (k === "gqa") svg = gqaDiagram(rootId);
     if (k === "mla") svg = mlaDiagram(rootId);
+    if (k === "mfa") svg = mfaDiagram(rootId);
+    if (k === "tpa") svg = tpaDiagram(rootId);
     if (k === "dsa") svg = dsaDiagram(rootId);
     if (k === "csa") svg = csaDiagram(rootId);
     if (k === "hca") svg = hcaDiagram(rootId);
@@ -1048,7 +1261,7 @@
       svg: svg,
       notes: guides[k] || [],
       memory: memories[k] || "",
-      badges: [
+      badges: badgeOverrides[k] || [
         "BLUE · COMPUTE",
         "GREEN · CONTROL",
         "ROSE · CACHE/STATE",

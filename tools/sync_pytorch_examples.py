@@ -23,6 +23,8 @@ CHAPTER_SOURCES = {
     "mqa": "pytorch/mqa.py",
     "gqa": "pytorch/gqa.py",
     "mla": "pytorch/mla.py",
+    "mfa": "pytorch/mfa.py",
+    "tpa": "pytorch/tpa.py",
     "dsa": "pytorch/dsa.py",
     "csa": "pytorch/csa.py",
     "hca": "pytorch/hca.py",

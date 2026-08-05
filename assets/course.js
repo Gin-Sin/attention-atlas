@@ -143,6 +143,47 @@
       sources + "</div></footer></section>";
   }
 
+  /* Default section headings; chapters may override any subset through the
+     optional `sectionTitles` record (currently used by the MLA chapter). */
+  var SECTION_TITLE_DEFAULTS = {
+    motivation: "问题从哪里来",
+    constraints: "设计限定条件",
+    intuitions: "先抓住数学直觉",
+    diagram: "架构图与交互实现",
+    position: "位置编码与时序注入",
+    derivations: "数学推导",
+    exercises: "练习与答案",
+    sources: "权威来源"
+  };
+
+  function sectionTitle(chapter, key) {
+    var overrides = chapter.sectionTitles || {};
+    return overrides[key] || SECTION_TITLE_DEFAULTS[key];
+  }
+
+  function renderPhaseComparison(data) {
+    if (!data) return "";
+    var phases = (data.phases || []).map(function (phase) {
+      return '<article class="phase-compare__phase">' +
+        '<span class="phase-compare__phase-label">' + esc(phase.label) + "</span>" +
+        '<dl class="phase-compare__facts">' +
+        '<div><dt>' + esc(phase.bottleneck.label) + '</dt><dd>' +
+        esc(phase.bottleneck.value) + "</dd></div>" +
+        '<div><dt>偏好执行图</dt><dd class="phase-compare__preferred">' +
+        esc(phase.preferred) + "</dd></div></dl>" +
+        '<p class="phase-compare__execution">' + esc(phase.execution) + "</p>" +
+        '<p class="phase-compare__note">' + esc(phase.note) + "</p></article>";
+    }).join("");
+    return '<section class="phase-compare" aria-label="' + esc(data.title) + '">' +
+      '<header class="phase-compare__header"><span class="phase-compare__eyebrow">' +
+      esc(data.eyebrow) + "</span><h3>" + esc(data.title) + "</h3><p>" +
+      esc(data.intro) + "</p></header>" +
+      '<div class="phase-compare__grid">' + phases + "</div>" +
+      '<footer class="phase-compare__bridge"><span>' + esc(data.bridge.label) +
+      "</span><strong>" + esc(data.bridge.title) + "</strong><p>" +
+      esc(data.bridge.body) + "</p></footer></section>";
+  }
+
   function renderPositionEncoding(position) {
     if (!position) return '<div class="warning" role="status">本章暂无位置编码说明。</div>';
     return '<article class="formula position-encoding"><span class="formula-label">Position &amp; Sequence</span>' +
@@ -454,14 +495,14 @@
       return '<li><span><a href="' + esc(s.url) + '" target="_blank" rel="noreferrer">' + esc(s.label) + "</a></span></li>";
     }).join("");
     var tocEntries = [
-      ["01", "问题从哪里来", "sec-01"],
-      ["02", "设计限定条件", "sec-02"],
-      ["03", "先抓住数学直觉", "sec-03"],
-      ["04", "架构图与交互实现", "sec-04"],
-      ["05", "位置编码与时序注入", "sec-05"],
-      ["06", "数学推导", "sec-06"],
-      ["07", "练习与答案", "sec-07"],
-      ["08", "权威来源", "authoritative-sources"]
+      ["01", sectionTitle(c, "motivation"), "sec-01"],
+      ["02", sectionTitle(c, "constraints"), "sec-02"],
+      ["03", sectionTitle(c, "intuitions"), "sec-03"],
+      ["04", sectionTitle(c, "diagram"), "sec-04"],
+      ["05", sectionTitle(c, "position"), "sec-05"],
+      ["06", sectionTitle(c, "derivations"), "sec-06"],
+      ["07", sectionTitle(c, "exercises"), "sec-07"],
+      ["08", sectionTitle(c, "sources"), "authoritative-sources"]
     ];
     var toc = '<nav class="chapter-toc" aria-label="本章目录"><span class="chapter-toc__label">Contents · 本章目录</span><ol>' +
       tocEntries.map(function (entry) {
@@ -479,15 +520,16 @@
       '<header class="chapter-hero"><p class="eyebrow">Chapter ' + String(c.order).padStart(2, "0") + " · " + esc(c.fullTitle) + '</p><h1>' + esc(c.title) + '</h1><p class="chapter-deck">' + esc(c.zhTitle) + "。 " + esc(c.deck) + '</p><div class="chapter-meta"><b>' + esc(c.category) + "</b><span>" + esc(c.year) + "</span><span>难度 · " + esc(c.difficulty) + "</span><span>" + esc(c.report) + '</span></div></header>' +
       '<aside class="takeaway"><span>Mathematical Takeaway</span><p>' + c.takeaway + "</p></aside>" +
       renderAttentionConfig(c.attentionConfig) + toc +
-      '<main class="chapter-main"><h2 data-no="01" id="sec-01">问题从哪里来</h2>' + motivation +
-      '<h2 data-no="02" id="sec-02">设计限定条件</h2>' + renderCards(c.constraints, "constraint") +
-      '<h2 data-no="03" id="sec-03">先抓住数学直觉</h2>' + renderCards(c.intuitions, "intuition") +
-      '<h2 data-no="04" id="sec-04">架构图与交互实现</h2>' + renderDiagram(c.diagram, implementations[c.id]) +
-      '<h2 data-no="05" id="sec-05">位置编码与时序注入</h2>' + renderPositionEncoding(c.positionEncoding) +
-      '<h2 data-no="06" id="sec-06">数学推导</h2>' + derivations +
+      '<main class="chapter-main"><h2 data-no="01" id="sec-01">' + esc(sectionTitle(c, "motivation")) + "</h2>" + motivation +
+      '<h2 data-no="02" id="sec-02">' + esc(sectionTitle(c, "constraints")) + "</h2>" + renderCards(c.constraints, "constraint") +
+      renderPhaseComparison(c.phaseComparison) +
+      '<h2 data-no="03" id="sec-03">' + esc(sectionTitle(c, "intuitions")) + "</h2>" + renderCards(c.intuitions, "intuition") +
+      '<h2 data-no="04" id="sec-04">' + esc(sectionTitle(c, "diagram")) + "</h2>" + renderDiagram(c.diagram, implementations[c.id]) +
+      '<h2 data-no="05" id="sec-05">' + esc(sectionTitle(c, "position")) + "</h2>" + renderPositionEncoding(c.positionEncoding) +
+      '<h2 data-no="06" id="sec-06">' + esc(sectionTitle(c, "derivations")) + "</h2>" + derivations +
       '<div class="warning"><strong>边界与误区：</strong> ' + esc(c.warning) + "</div>" +
-      '<h2 data-no="07" id="sec-07">练习与答案</h2>' + exercises +
-      '<h2 data-no="08" id="authoritative-sources">权威来源</h2><ol class="source-list">' + sources + "</ol>" +
+      '<h2 data-no="07" id="sec-07">' + esc(sectionTitle(c, "exercises")) + "</h2>" + exercises +
+      '<h2 data-no="08" id="authoritative-sources">' + esc(sectionTitle(c, "sources")) + '</h2><ol class="source-list">' + sources + "</ol>" +
       '<button class="button" id="complete-chapter" type="button">标记本章完成</button>' +
       nav + "</main>";
 

@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta
       name="description"
-      content="沿大模型注意力架构演化学习 MHA、MQA、GQA、MLA、DSA、CSA/HCA、Linear Attention、DeltaNet 与 KDA。"
+      content="沿大模型注意力架构演化学习 MHA、MQA、GQA、MLA、MFA、TPA、DSA、CSA/HCA、Linear Attention、DeltaNet 与 KDA。"
     />
     <title>Attention Atlas · 前沿注意力架构教程</title>
-    <link rel="stylesheet" href="assets/styles.css?v=20260805-2" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260805-4" />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
@@ -21,8 +21,8 @@
       defer
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
     ></script>
-    <script defer src="assets/chapters.js?v=20260805-2"></script>
-    <script defer src="assets/course.js?v=20260805-2"></script>
+    <script defer src="assets/chapters.js?v=20260805-4"></script>
+    <script defer src="assets/course.js?v=20260805-4"></script>
   </head>
   <body>
     <div class="shell">
@@ -87,8 +87,9 @@
             <path class="hero-map__edge" d="M80 174V206" />
             <path class="hero-map__edge" d="M240 174V206" />
             <path class="hero-map__edge" d="M400 174V206" />
+            <path class="hero-map__edge" d="M80 244V276" />
             <path class="hero-map__edge" d="M400 244V276" />
-            <path class="hero-map__edge hero-map__edge--compose" d="M80 244V342H200V372" />
+            <path class="hero-map__edge hero-map__edge--compose" d="M80 314V342H200V372" />
             <path class="hero-map__edge hero-map__edge--compose" d="M240 244V372" />
             <path class="hero-map__edge hero-map__edge--compose" d="M400 314V342H280V372" />
           </g>
@@ -107,6 +108,10 @@
             <g class="hero-map__node hero-map__node--remote">
               <rect x="24" y="206" width="112" height="38" rx="9" />
               <text x="80" y="230">MLA · cache</text>
+            </g>
+            <g class="hero-map__node hero-map__node--remote">
+              <rect x="24" y="276" width="112" height="38" rx="9" />
+              <text x="80" y="300">MFA / TPA</text>
             </g>
 
             <text class="hero-map__lane" x="240" y="123">SELECT POSITIONS</text>
@@ -164,11 +169,11 @@
       </header>
 
       <section class="metric-strip" aria-label="课程统计">
-        <div class="metric"><strong>10</strong><span>核心章节</span></div>
+        <div class="metric"><strong>12</strong><span>核心章节</span></div>
         <div class="metric"><strong>3</strong><span>演化分支</span></div>
-        <div class="metric"><strong>101</strong><span>推导步骤 + 深度练习</span></div>
+        <div class="metric"><strong>121</strong><span>推导步骤 + 深度练习</span></div>
         <div class="metric">
-          <strong data-progress-count>0 / 10</strong><span>本地学习进度</span>
+          <strong data-progress-count>0 / 12</strong><span>本地学习进度</span>
         </div>
       </section>
 
@@ -258,13 +263,15 @@
                 <path class="dag-edge dag-edge--dense" d="M225 145H255" />
                 <path class="dag-edge dag-edge--dense" d="M345 145H515" />
                 <path class="dag-edge dag-edge--dense" d="M605 145H655" />
+                <path class="dag-edge dag-edge--dense" d="M745 145H760V110H775" />
+                <path class="dag-edge dag-edge--dense" d="M745 145H760V180H775" />
                 <path class="dag-edge dag-edge--linear" d="M180 173V430H420V467" />
                 <path class="dag-edge dag-edge--linear" d="M465 495H655" />
                 <path class="dag-edge dag-edge--linear" d="M745 495H795" />
                 <path class="dag-edge dag-edge--sparse" d="M700 173V234H840V292" />
                 <path class="dag-edge dag-edge--sparse" d="M885 320H930V280H995" />
                 <path class="dag-edge dag-edge--sparse" d="M700 173V205H770V360H995" />
-                <path class="dag-edge dag-edge--hybrid" d="M745 145H770V90H1115V495H1035" />
+                <path class="dag-edge dag-edge--hybrid" d="M700 117V70H1115V495H1035" />
                 <path class="dag-edge dag-edge--hybrid" d="M885 495H915" />
                 <text class="dag-cross-label" x="900" y="447">3 KDA : 1 MLA · layerwise hybrid</text>
               </g>
@@ -296,6 +303,20 @@
                   <rect x="655" y="117" width="90" height="56" rx="9" />
                   <text class="dag-node__name" x="700" y="141" text-anchor="middle">MLA</text>
                   <text class="dag-node__note" x="700" y="159" text-anchor="middle">latent KV</text>
+                </g>
+              </a>
+              <a class="dag-link" href="chapter.html?id=mfa" aria-label="MFA，2024，多矩阵分解注意力">
+                <g class="dag-node dag-node--dense">
+                  <rect x="775" y="82" width="90" height="56" rx="9" />
+                  <text class="dag-node__name" x="820" y="106" text-anchor="middle">MFA</text>
+                  <text class="dag-node__note" x="820" y="124" text-anchor="middle">共享 C 维 KV</text>
+                </g>
+              </a>
+              <a class="dag-link" href="chapter.html?id=tpa" aria-label="TPA，2025，张量积注意力">
+                <g class="dag-node dag-node--dense">
+                  <rect x="775" y="152" width="90" height="56" rx="9" />
+                  <text class="dag-node__name" x="820" y="176" text-anchor="middle">TPA</text>
+                  <text class="dag-node__note" x="820" y="194" text-anchor="middle">A/B 因子 KV</text>
                 </g>
               </a>
 
@@ -386,7 +407,7 @@
           <header class="section-head">
             <span class="section-no">III</span>
             <div>
-              <h2>十章课程</h2>
+              <h2>十二章课程</h2>
               <p>建议按时间顺序学习；已有 Transformer 基础时，也可从 MLA、DSA 或 KDA 直接切入。</p>
             </div>
           </header>

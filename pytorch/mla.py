@@ -6,7 +6,14 @@ This module demonstrates the defining DeepSeek-V2 MLA ideas:
 * joint low-rank KV compression ``x -> c_kv`` followed by per-head K/V
   up-projections;
 * decoupled RoPE, with a shared positional key kept outside ``c_kv``; and
-* a latent cache containing ``c_kv`` plus that small rotated positional key.
+* one set of weights that supports two algebraically equivalent execution
+  graphs.  ``implementation="reconstruct"`` is the prefill-flavoured MHA-like
+  graph: it expands per-head content keys and values from the latent before
+  scoring and reading.  ``implementation="absorbed"`` is the decode-flavoured
+  MQA-like graph: it folds the key up-projection into the query, reads the
+  shared latent directly (``m_i = sum_s a_{i,s} c_s``), and folds each head's
+  value up-projection into the matching output-projection slice, so no
+  ``[B, H, S, Dv]`` historical value tensor is ever materialized.
 
 Shapes use ``B`` (batch), ``T`` (new tokens), ``S`` (all cached tokens), ``H``
 (heads), ``Dc`` (KV latent rank), ``Dq`` (query latent rank), ``Dn`` (non-RoPE
@@ -14,11 +21,10 @@ content dimension), ``Dr`` (RoPE dimension), and ``Dv`` (value dimension).
 
 For clarity, this dense CPU reference omits tensor-parallel layout, quantized
 caches, fused kernels, residual/RMSNorm placement around the whole attention
-layer, and dropout.  It exactly absorbs the content-key up-projection into the
-query for scoring.  It reconstructs values from the cached latent before the
-weighted sum; optimized inference kernels can also absorb/rearrange the value
-up-projection with the output projection.  These simplifications change
-execution strategy, not the demonstrated latent cache or attention equation.
+layer, and dropout.  It is an educational, exact implementation of the two
+execution graphs — not a production kernel: both paths compute the same
+function from the same weights and cache only the normalized KV latent plus
+the shared rotated positional key.
 
 ``forward`` returns ``(output, new_cache)``.  The cache is
 ``(latent[B, S, Dc], rope_key[B, 1, S, Dr])`` when ``use_cache=True``.
@@ -163,12 +169,16 @@ class MultiHeadLatentAttention(torch.nn.Module):
     ) -> tuple[torch.Tensor, MLACache | None]:
         """Apply causal MLA to ``x[B, T, d_model]``.
 
-        ``implementation="absorbed"`` evaluates content scores directly
-        against cached ``c_kv`` after folding the key up-projection into the
-        query.  ``"reconstruct"`` explicitly rebuilds content keys and is
-        included to verify that the algebra is exact.  Both paths cache only
-        the normalized KV latent and the shared, already-rotated RoPE key.
-        Cached positions are assumed contiguous and zero-based.
+        ``implementation="absorbed"`` is the decode-flavoured MQA-like graph:
+        it folds the key up-projection into the query, scores and reads the
+        shared cached latent directly, and folds each head's value
+        up-projection into its output-projection slice, never materializing
+        per-head historical K or V.  ``"reconstruct"`` is the
+        prefill-flavoured MHA-like graph: it explicitly expands per-head
+        content keys and values before a standard multi-head score/read.
+        Both graphs compute the same function from the same weights and cache
+        only the normalized KV latent and the shared, already-rotated RoPE
+        key.  Cached positions are assumed contiguous and zero-based.
         """
         if x.ndim != 3 or x.shape[-1] != self.d_model:
             raise ValueError(f"x must have shape [B, T, {self.d_model}]")
@@ -286,22 +296,49 @@ class MultiHeadLatentAttention(torch.nn.Module):
         attention = torch.softmax(scores, dim=-1)
         # [/Block 09]
 
-        # [Block 10] Restore values from latent and perform weighted read
-        values = self.value_up_proj(latent).view(
-            batch,
-            latent.shape[1],
-            self.num_heads,
-            self.value_dim,
-        ).transpose(1, 2)
-        head_outputs = torch.matmul(attention, values)
-        # values: [B, H, S, Dv]; head_outputs: [B, H, T, Dv]
+        # [Block 10] Read history: shared latent (absorbed) or explicit values
+        if implementation == "absorbed":
+            # m_i = sum_s a_{i,s} c_s: every head reads the same shared
+            # 512-d-style latent as its value, so nothing of shape
+            # [B, H, S, Dv] is ever materialized for the history.
+            head_reads = torch.einsum("bhts,bsc->bhtc", attention, latent)
+            # head_reads: [B, H, T, Dc]
+        else:
+            values = self.value_up_proj(latent).view(
+                batch,
+                latent.shape[1],
+                self.num_heads,
+                self.value_dim,
+            ).transpose(1, 2)
+            head_reads = torch.matmul(attention, values)
+            # values: [B, H, S, Dv]; head_reads: [B, H, T, Dv]
         # [/Block 10]
 
-        # [Block 11] Concatenate heads and project output
-        merged = head_outputs.transpose(1, 2).contiguous().view(
-            batch, query_length, self.num_heads * self.value_dim
-        )
-        output = self.out_proj(merged)  # [B, T, d_model]
+        # [Block 11] Write back through an absorbed or standard output path
+        if implementation == "absorbed":
+            # Fold each head's value up-projection into the matching slice of
+            # the output projection: W_i^O o_i = (W_i^O W_i^UV) m_i.
+            value_up_weight = self.value_up_proj.weight.view(
+                self.num_heads,
+                self.value_dim,
+                self.kv_lora_rank,
+            )
+            output_weight = self.out_proj.weight.view(
+                self.d_model,
+                self.num_heads,
+                self.value_dim,
+            )
+            absorbed_output_weight = torch.einsum(
+                "dhv,hvc->hcd", output_weight, value_up_weight
+            )
+            output = torch.einsum(
+                "bhtc,hcd->btd", head_reads, absorbed_output_weight
+            )  # [B, T, d_model]
+        else:
+            merged = head_reads.transpose(1, 2).contiguous().view(
+                batch, query_length, self.num_heads * self.value_dim
+            )
+            output = self.out_proj(merged)  # [B, T, d_model]
         # [/Block 11]
         return output, new_cache
 
@@ -319,11 +356,27 @@ def _smoke_test() -> None:
     ).eval()
     x = torch.randn(2, 6, 32)
 
+    # The absorbed graph must never invoke the value up-projection module:
+    # accidentally reconstructing historical values would silently break the
+    # decode story even though the numbers could still agree.
+    value_up_calls = []
+    hook = model.value_up_proj.register_forward_pre_hook(
+        lambda *_: value_up_calls.append(1)
+    )
+
+    # Prefill-flavoured MHA-like graph (explicit per-head K/V expansion).
+    prefill_output, prefill_cache = model(
+        x, use_cache=True, implementation="reconstruct"
+    )
+    assert len(value_up_calls) == 1
+
+    # Same weights, decode-flavoured MQA-like graph over the full sequence.
     absorbed_output, full_cache = model(
         x, use_cache=True, implementation="absorbed"
     )
-    rebuilt_output, _ = model(x, implementation="reconstruct")
+    assert len(value_up_calls) == 1, "absorbed graph rebuilt values"
 
+    # Token-by-token absorbed decode against the growing latent cache.
     cache = None
     decoded_pieces = []
     for token in range(x.shape[1]):
@@ -335,12 +388,18 @@ def _smoke_test() -> None:
         )
         decoded_pieces.append(piece)
     decoded_output = torch.cat(decoded_pieces, dim=1)
+    assert len(value_up_calls) == 1, "absorbed decode rebuilt values"
+    hook.remove()
 
     assert absorbed_output.shape == (2, 6, 32)
-    assert full_cache is not None
-    assert full_cache[0].shape == (2, 6, 10)
-    assert full_cache[1].shape == (2, 1, 6, 4)
-    assert torch.allclose(absorbed_output, rebuilt_output, atol=1e-5, rtol=1e-5)
+    for reported_cache in (prefill_cache, full_cache, cache):
+        assert reported_cache is not None
+        assert reported_cache[0].shape == (2, 6, 10)  # latent [B, S, Dc]
+        assert reported_cache[1].shape == (2, 1, 6, 4)  # shared RoPE key
+    torch.testing.assert_close(prefill_cache[0], full_cache[0])
+    torch.testing.assert_close(full_cache[0], cache[0])
+    torch.testing.assert_close(full_cache[1], cache[1])
+    assert torch.allclose(absorbed_output, prefill_output, atol=1e-5, rtol=1e-5)
     assert torch.allclose(absorbed_output, decoded_output, atol=1e-5, rtol=1e-5)
     print("MLA smoke test passed:", tuple(absorbed_output.shape))
 

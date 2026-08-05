@@ -12,6 +12,8 @@ const EXPECTED_IDS = [
   "mqa",
   "gqa",
   "mla",
+  "mfa",
+  "tpa",
   "dsa",
   "csa",
   "hca",
@@ -24,6 +26,8 @@ const EXPECTED_SOURCE_PATHS = new Map([
   ["mqa", "pytorch/mqa.py"],
   ["gqa", "pytorch/gqa.py"],
   ["mla", "pytorch/mla.py"],
+  ["mfa", "pytorch/mfa.py"],
+  ["tpa", "pytorch/tpa.py"],
   ["dsa", "pytorch/dsa.py"],
   ["csa", "pytorch/csa.py"],
   ["hca", "pytorch/hca.py"],
@@ -38,6 +42,19 @@ const POSITION_FIELDS = ["title", "summary", "equation", "caveat"];
 const POSITION_STEP_FIELDS = ["label", "title", "body"];
 const DERIVATION_FIELDS = ["title", "body", "source"];
 const EXERCISE_FIELDS = ["kind", "level", "q", "hint", "answer"];
+const SECTION_TITLE_KEYS = new Set([
+  "motivation",
+  "constraints",
+  "intuitions",
+  "diagram",
+  "position",
+  "derivations",
+  "exercises",
+  "sources"
+]);
+const PHASE_COMPARISON_FIELDS = ["eyebrow", "title", "intro"];
+const PHASE_FIELDS = ["label", "preferred", "execution", "note"];
+const PHASE_BRIDGE_FIELDS = ["label", "title", "body"];
 const OPEN_MARKER = /^\s*# \[Block (\d{2})\] (.+?)\s*$/;
 const CLOSE_MARKER = /^\s*# \[\/Block (\d{2})\]\s*$/;
 const MARKER_FRAGMENT = /# \[\/?Block\b/;
@@ -184,6 +201,68 @@ function validateChapters(chapters) {
             addError(`${sourceLocation}.url is invalid (${error.message}): ${source.url}`);
           }
         });
+      }
+    }
+
+    if (chapter.sectionTitles !== undefined) {
+      if (
+        !chapter.sectionTitles ||
+        typeof chapter.sectionTitles !== "object" ||
+        Array.isArray(chapter.sectionTitles)
+      ) {
+        addError(`${location}.sectionTitles must be a plain object when present`);
+      } else {
+        Object.entries(chapter.sectionTitles).forEach(([key, value]) => {
+          if (!SECTION_TITLE_KEYS.has(key)) {
+            addError(
+              `${location}.sectionTitles has unknown section key ${JSON.stringify(key)}`
+            );
+          }
+          if (!isNonEmptyString(value)) {
+            addError(`${location}.sectionTitles.${key} must be a nonempty string`);
+          }
+        });
+      }
+    }
+
+    if (chapter.phaseComparison !== undefined) {
+      const phaseComparison = chapter.phaseComparison;
+      if (!phaseComparison || typeof phaseComparison !== "object") {
+        addError(`${location}.phaseComparison must be an object when present`);
+      } else {
+        PHASE_COMPARISON_FIELDS.forEach((field) => {
+          requireString(phaseComparison, field, `${location}.phaseComparison`);
+        });
+        if (
+          !Array.isArray(phaseComparison.phases) ||
+          phaseComparison.phases.length !== 2
+        ) {
+          addError(`${location}.phaseComparison.phases must contain exactly 2 phases`);
+        } else {
+          phaseComparison.phases.forEach((phase, phaseIndex) => {
+            const phaseLocation = `${location}.phaseComparison.phases[${phaseIndex}]`;
+            PHASE_FIELDS.forEach((field) => {
+              requireString(phase, field, phaseLocation);
+            });
+            if (!phase || !phase.bottleneck || typeof phase.bottleneck !== "object") {
+              addError(`${phaseLocation}.bottleneck must be an object`);
+            } else {
+              requireString(phase.bottleneck, "label", `${phaseLocation}.bottleneck`);
+              requireString(phase.bottleneck, "value", `${phaseLocation}.bottleneck`);
+            }
+          });
+        }
+        if (!phaseComparison.bridge || typeof phaseComparison.bridge !== "object") {
+          addError(`${location}.phaseComparison.bridge must be an object`);
+        } else {
+          PHASE_BRIDGE_FIELDS.forEach((field) => {
+            requireString(
+              phaseComparison.bridge,
+              field,
+              `${location}.phaseComparison.bridge`
+            );
+          });
+        }
       }
     }
 
@@ -346,6 +425,24 @@ function validateRenderer(courseSource, chapterHtml) {
   }
   if (/PyTorch 逐块实现/.test(courseSource)) {
     addError("assets/course.js still renders a separate PyTorch implementation section");
+  }
+  if (
+    !/function renderPhaseComparison\(/.test(courseSource) ||
+    !/renderPhaseComparison\(c\.phaseComparison\)/.test(courseSource) ||
+    !/phase-compare__grid/.test(courseSource)
+  ) {
+    addError(
+      "assets/course.js must render the optional phaseComparison section after constraints"
+    );
+  }
+  if (
+    !/function sectionTitle\(/.test(courseSource) ||
+    !/sectionTitle\(c, "motivation"\)/.test(courseSource) ||
+    !/sectionTitle\(c, "sources"\)/.test(courseSource)
+  ) {
+    addError(
+      "assets/course.js must resolve TOC and section headings through sectionTitle()"
+    );
   }
   if (!/prism-python(?:\.min)?\.js/.test(chapterHtml)) {
     addError("chapter.html must load pinned Prism Python highlighting");

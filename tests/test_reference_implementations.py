@@ -53,6 +53,8 @@ class MarkerAndAssetTests(unittest.TestCase):
                 ("mqa", "pytorch/mqa.py"),
                 ("gqa", "pytorch/gqa.py"),
                 ("mla", "pytorch/mla.py"),
+                ("mfa", "pytorch/mfa.py"),
+                ("tpa", "pytorch/tpa.py"),
                 ("dsa", "pytorch/dsa.py"),
                 ("csa", "pytorch/csa.py"),
                 ("hca", "pytorch/hca.py"),
@@ -325,6 +327,8 @@ class PyTorchReferenceTests(unittest.TestCase):
                 "mqa": "mqa",
                 "gqa": "gqa",
                 "mla": "mla",
+                "mfa": "mfa",
+                "tpa": "tpa",
                 "dsa": "dsa",
                 "csa": "csa",
                 "hca": "hca",
@@ -388,15 +392,201 @@ class PyTorchReferenceTests(unittest.TestCase):
             value_dim=4,
         ).eval()
         x = torch.randn(2, 5, 16)
+
+        # The absorbed (decode-flavoured) graph must never call the value
+        # up-projection module; doing so would mean it silently reconstructed
+        # per-head historical values.
+        value_up_calls = []
+        hook = model.value_up_proj.register_forward_pre_hook(
+            lambda *_: value_up_calls.append(1)
+        )
+        try:
+            with torch.no_grad():
+                # Prefill-flavoured MHA-like graph: explicit K/V expansion.
+                prefill, prefill_cache = model(
+                    x, use_cache=True, implementation="reconstruct"
+                )
+                self.assertEqual(len(value_up_calls), 1)
+
+                # Absorbed MQA-like graph over the full sequence.
+                absorbed, absorbed_cache = model(
+                    x, use_cache=True, implementation="absorbed"
+                )
+                self.assertEqual(
+                    len(value_up_calls), 1,
+                    "absorbed graph reconstructed values",
+                )
+
+                # Token-by-token absorbed decode against the growing cache.
+                decode_cache = None
+                pieces = []
+                for step in range(x.size(1)):
+                    piece, decode_cache = model(
+                        x[:, step : step + 1],
+                        kv_cache=decode_cache,
+                        use_cache=True,
+                        implementation="absorbed",
+                    )
+                    pieces.append(piece)
+                decoded = torch.cat(pieces, dim=1)
+                self.assertEqual(
+                    len(value_up_calls), 1,
+                    "absorbed decode reconstructed values",
+                )
+        finally:
+            hook.remove()
+
+        self.assert_finite_shape(prefill, (2, 5, 16))
+        self.assert_finite_shape(absorbed, (2, 5, 16))
+        self.assert_finite_shape(decoded, (2, 5, 16))
+        torch.testing.assert_close(absorbed, prefill, rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(decoded, prefill, rtol=1e-5, atol=1e-6)
+        for cache in (prefill_cache, absorbed_cache, decode_cache):
+            self.assertIsNotNone(cache)
+            # Persistent cache is latent + shared RoPE key (Dc + Dr per
+            # token), not per-head K/V, in both execution graphs.
+            self.assert_finite_shape(cache[0], (2, 5, 4))
+            self.assert_finite_shape(cache[1], (2, 1, 5, 2))
+        torch.testing.assert_close(absorbed_cache[0], prefill_cache[0])
+        torch.testing.assert_close(decode_cache[0], prefill_cache[0])
+        torch.testing.assert_close(decode_cache[1], prefill_cache[1])
+
+    def test_mla_absorbed_branches_never_call_projection_modules(self) -> None:
+        """Static guard: the absorbed branches must reuse weights, not modules.
+
+        Calling ``value_up_proj``/``key_up_proj``/``out_proj`` inside an
+        ``implementation == "absorbed"`` branch would reconstruct per-head
+        activations and defeat the absorbed execution graph.
+        """
+        source = (ROOT / "pytorch" / "mla.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        class_node = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            and node.name == "MultiHeadLatentAttention"
+        )
+        forward = next(
+            node
+            for node in class_node.body
+            if isinstance(node, ast.FunctionDef) and node.name == "forward"
+        )
+
+        def is_absorbed_test(test: ast.expr) -> bool:
+            return (
+                isinstance(test, ast.Compare)
+                and isinstance(test.left, ast.Name)
+                and test.left.id == "implementation"
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value == "absorbed"
+            )
+
+        absorbed_branches = [
+            node.body
+            for node in ast.walk(forward)
+            if isinstance(node, ast.If) and is_absorbed_test(node.test)
+        ]
+        self.assertGreaterEqual(len(absorbed_branches), 2)
+        forbidden = {"value_up_proj", "key_up_proj", "out_proj"}
+        for branch in absorbed_branches:
+            for statement in branch:
+                for child in ast.walk(statement):
+                    if (
+                        isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr in forbidden
+                    ):
+                        self.fail(
+                            "absorbed branch calls projection module "
+                            f"{child.func.attr}; fold its weight instead"
+                        )
+
+    def test_mfa_tiny_forward_standard_and_key_reuse(self) -> None:
+        module = self.modules["mfa"]
+        # Default matches the paper's common settings (RoPE base 500,000).
+        self.assertEqual(
+            module.MultiMatrixFactorizationAttention(
+                d_model=16, num_heads=3, shared_dim=6
+            ).rope_base,
+            500_000.0,
+        )
+        for key_reuse in (False, True):
+            with self.subTest(key_reuse=key_reuse):
+                model = module.MultiMatrixFactorizationAttention(
+                    d_model=16,
+                    num_heads=3,
+                    shared_dim=6,
+                    key_reuse=key_reuse,
+                ).eval()
+                x = torch.randn(2, 5, 16)
+                with torch.no_grad():
+                    output, cache = model(x, use_cache=True)
+                self.assert_finite_shape(output, (2, 5, 16))
+                self.assertIsNotNone(cache)
+                # The shared cache never gains a head axis.
+                self.assert_finite_shape(cache[0], (2, 5, 6))
+                if key_reuse:
+                    self.assertIsNone(cache[1])
+                else:
+                    self.assert_finite_shape(cache[1], (2, 5, 6))
+
+                decode_cache = None
+                pieces = []
+                with torch.no_grad():
+                    for step in range(x.size(1)):
+                        piece, decode_cache = model(
+                            x[:, step : step + 1],
+                            kv_cache=decode_cache,
+                            use_cache=True,
+                        )
+                        pieces.append(piece)
+                torch.testing.assert_close(
+                    torch.cat(pieces, dim=1), output, rtol=1e-5, atol=1e-6
+                )
+
+    def test_tpa_tiny_forward_factorized_matches_reconstruct(self) -> None:
+        module = self.modules["tpa"]
+        model = module.TensorProductAttention(
+            d_model=16,
+            num_heads=5,
+            head_dim=4,
+            q_rank=3,
+            k_rank=2,
+            v_rank=2,
+        ).eval()
+        x = torch.randn(2, 5, 16)
         with torch.no_grad():
-            output, cache = model(x, use_cache=True, implementation="absorbed")
-            rebuilt, _ = model(x, implementation="reconstruct")
-        self.assert_finite_shape(output, (2, 5, 16))
-        self.assert_finite_shape(rebuilt, (2, 5, 16))
-        torch.testing.assert_close(output, rebuilt, rtol=1e-5, atol=1e-6)
+            factorized, cache = model(
+                x, use_cache=True, implementation="factorized"
+            )
+            reconstructed, _ = model(x, implementation="reconstruct")
+        self.assert_finite_shape(factorized, (2, 5, 16))
+        self.assert_finite_shape(reconstructed, (2, 5, 16))
+        torch.testing.assert_close(
+            factorized, reconstructed, rtol=1e-5, atol=1e-6
+        )
         self.assertIsNotNone(cache)
-        self.assert_finite_shape(cache[0], (2, 5, 4))
-        self.assert_finite_shape(cache[1], (2, 1, 5, 2))
+        self.assert_finite_shape(cache[0], (2, 5, 2, 5))  # a_k
+        self.assert_finite_shape(cache[1], (2, 5, 2, 4))  # rotated b_k
+        self.assert_finite_shape(cache[2], (2, 5, 2, 5))  # a_v
+        self.assert_finite_shape(cache[3], (2, 5, 2, 4))  # b_v
+
+        decode_cache = None
+        pieces = []
+        with torch.no_grad():
+            for step in range(x.size(1)):
+                piece, decode_cache = model(
+                    x[:, step : step + 1],
+                    kv_cache=decode_cache,
+                    use_cache=True,
+                    implementation="factorized",
+                )
+                pieces.append(piece)
+        torch.testing.assert_close(
+            torch.cat(pieces, dim=1), factorized, rtol=1e-5, atol=1e-6
+        )
 
     def test_dsa_tiny_forward(self) -> None:
         module = self.modules["dsa"]

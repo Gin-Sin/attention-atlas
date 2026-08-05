@@ -5,6 +5,8 @@ __all__ = (
     "mqa",
     "gqa",
     "mla",
+    "mfa",
+    "tpa",
     "dsa",
     "csa",
     "hca",
