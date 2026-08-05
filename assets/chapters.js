@@ -844,7 +844,7 @@
         intuitions: "把状态看成在线回归器",
         diagram: "从纠错写入到现代 DeltaNet Block",
         position: "现代 DeltaNet 的神经架构",
-        derivations: "从检索干扰、投影几何到 WY / UT",
+        derivations: "从纯 DeltaNet 到 Gated DeltaNet：纠错与遗忘",
         exercises: "练习：干扰、稳定、并行与混合",
         sources: "原论文、三篇作者博客与实现"
       },
@@ -865,6 +865,100 @@
       ],
       diagram: { type: "delta", caption: "DeltaNet 的完整因果链：加法 fast-weight memory 会累积串扰；delta update 先预测、再沿 key 方向擦除/纠写。现代 block 用 Q/K L2Norm、ShortConv 与输出 RMSNorm 提升稳定和局部寻址，训练则用 chunk checkpoint + WY/UT 把递推改写成矩阵乘；固定状态上限仍可由少量 global attention 补足。" },
       derivations: [
+        {
+          title: "第一步：把记忆状态看成在线线性回归器",
+          body: R`采用作者常用的转置状态
+            \[
+            F_t=S_t^\top\in\mathbb R^{d_v\times d_k},\qquad
+            \hat v=F_tk.
+            \]
+            当前 token 给出一组在线训练样本 \(k_t\mapsto v_t\)：key \(k_t\) 是输入，value \(v_t\) 是目标，而 \(F\) 是在上下文内不断更新的 fast weights。更新之前，旧状态的预测和误差分别为
+            \[
+            \hat v_t=F_{t-1}k_t,\qquad
+            e_t=v_t-\hat v_t=v_t-F_{t-1}k_t.
+            \]
+            这一步揭示了 DeltaNet 与加法线性 attention 的根本区别：如果旧预测已经正确，则 \(e_t\approx0\)，无需重复写入；只有预测错误的部分才需要进入状态。`
+        },
+        {
+          title: "第二步：对瞬时 MSE 做一步梯度下降",
+          body: R`为了让当前 key 的读出接近目标 value，定义瞬时损失
+            \[
+            \ell_t(F)=\frac12\|Fk_t-v_t\|^2.
+            \]
+            对矩阵 \(F\) 求梯度：
+            \[
+            \nabla_F\ell_t=(Fk_t-v_t)k_t^\top.
+            \]
+            在旧状态 \(F_{t-1}\) 上，以 \(\beta_t\) 为步长做一次梯度下降：
+            \[
+            \begin{aligned}
+            F_t
+            &=F_{t-1}-\beta_t\nabla_F\ell_t(F_{t-1})\\
+            &=F_{t-1}
+              +\beta_t\big(v_t-F_{t-1}k_t\big)k_t^\top.
+            \end{aligned}
+            \]
+            因而纯 DeltaNet 的更新式是
+            \[
+            \boxed{
+            F_t=F_{t-1}
+            +\beta_t\big(v_t-F_{t-1}k_t\big)k_t^\top
+            }.
+            \]
+            它不是直接追加 \(v_tk_t^\top\)，而是写入“目标减旧预测”的误差。`
+        },
+        {
+          title: "第三步：把 Delta Rule 改写成定向擦除与写入",
+          body: R`展开纯 DeltaNet 更新：
+            \[
+            \begin{aligned}
+            F_t
+            &=F_{t-1}
+              -\beta_tF_{t-1}k_tk_t^\top
+              +\beta_tv_tk_t^\top\\
+            &=F_{t-1}(I-\beta_tk_tk_t^\top)
+              +\beta_tv_tk_t^\top.
+            \end{aligned}
+            \]
+            第一项沿 \(k_t\) 方向擦除旧关联，第二项沿同一方向写入新 value。若 \(\|k_t\|=1\)，令 \(\hat v_t=F_{t-1}k_t\)，更新后用同一 key 读取：
+            \[
+            F_tk_t
+            =(1-\beta_t)\hat v_t+\beta_tv_t.
+            \]
+            因此 \(\beta_t=0\) 表示不更新，\(0<\beta_t<1\) 在旧预测与新目标之间插值，\(\beta_t=1\) 则精确得到 \(F_tk_t=v_t\)。\(\beta_t\) 控制的是当前 key 方向的改写强度。`
+        },
+        {
+          title: "第四步：为什么要衰减旧记忆，并得到 Gated DeltaNet",
+          body: R`纯 Delta Rule 只能修改与当前 \(k_t\) 重合的方向。若旧记忆位于方向 \(u\)，且 \(u^\top k_t=0\)，那么
+            \[
+            (I-\beta_tk_tk_t^\top)u=u.
+            \]
+            即使这段记忆已经过时，当前更新也完全碰不到它。随着序列增长，过时关联会长期占用固定容量并增加检索串扰；语言中的主题、实体与局部语境却会不断变化，因此状态还需要主动遗忘。
+
+            Gated DeltaNet 先用每头标量 retention \(\alpha_t\in(0,1)\) 衰减旧状态：
+            \[
+            \widetilde F_{t-1}=\alpha_tF_{t-1}.
+            \]
+            再对衰减后的状态执行同一个 Delta update：
+            \[
+            \begin{aligned}
+            F_t
+            &=\widetilde F_{t-1}
+              +\beta_t\big(v_t-\widetilde F_{t-1}k_t\big)k_t^\top\\
+            &=\alpha_tF_{t-1}
+              +\beta_t\big(v_t-\alpha_tF_{t-1}k_t\big)k_t^\top\\
+            &=\boxed{
+              \alpha_tF_{t-1}(I-\beta_tk_tk_t^\top)
+              +\beta_tv_tk_t^\top
+            }.
+            \end{aligned}
+            \]
+            一段历史从位置 \(i\) 传到 \(t\) 时会累乘约
+            \(\prod_{r=i+1}^{t}\alpha_r\)：\(\alpha\approx1\) 支持长期保留，\(\alpha\approx0\) 允许快速重置。两种门分工不同——\(\beta_t\) 负责沿当前 key 方向纠错，\(\alpha_t\) 负责让整个旧状态随上下文需要而遗忘。`
+        },
+        /*
+         * Temporarily hidden: the previous section content is retained here for
+         * later restoration after the DeltaNet-to-Gated-DeltaNet walkthrough.
         {
           title: "线性 fast-weight memory 的检索误差从哪里来",
           body: R`取本站状态约定
@@ -910,6 +1004,7 @@
 
             插入固定窗口 \(w\) 的 attention 仍保持 \(\Theta(Lw)\) 总位置交互，却看不到窗口外原文；插入 \(m\) 个 global-attention 层会增加约 \(\Theta(mL^2d_h)\) 训练算量和 \(\Theta(mLd_h)\) KV cache，但让少数层可精确访问任意历史位置。作者博客 Part III 的 1.3B/100B-token 对比中，平均 retrieval 从纯 DeltaNet 的 34.7 提升到滑窗混合的 39.6、两个 global 层的 47.9；同表 Transformer++ 为 41.8。关键延伸结论因此不是“纯 RNN 或纯 attention 二选一”，而是用少量 global 层购买精确检索。`
         }
+        */
       ],
       warning: R`必须区分三层结论：原始 DeltaNet 只有 \(\beta_t\) 纠错写入；Gated DeltaNet 另加每头标量遗忘 \(\alpha_t\)；KDA 再把遗忘细化到 key channel。本站使用 \(S\in\mathbb R^{d_k\times d_v}\)，而作者博客常用转置状态 \(F=S^\top\)。现代 block 只有 q/k/v 经过 ShortConv，\(\alpha,\beta\) 走 direct projection。1.3B 公开材料对 head count/head dim 有冲突，因此不展示伪精确参数卡。`,
       exercises: [
@@ -2091,6 +2186,8 @@
         { kind: "derivation", level: "intermediate" }
       ],
       derivations: [
+        /*
+         * Temporarily hidden together with the previous sixth-section content.
         {
           title: "L2Norm 为什么让 Delta update 具有清晰投影几何",
           body: R`把纯 DeltaNet 状态更新展开为
@@ -2144,6 +2241,7 @@
             又能利用 Tensor Cores。`,
           source: "Songlin Yang, DeltaNet Explained Part II（failed scan, WY representation and UT transform）"
         }
+        */
       ],
       exercises: [
         {
