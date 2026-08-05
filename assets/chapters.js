@@ -294,8 +294,7 @@
             \frac{\mathrm{Cache}_{\mathrm{MLA}}}{\mathrm{Cache}_{\mathrm{GQA}}}
             =\frac{1}{2G}.
             \]
-            这就是核心结论：**同等有效 head 维度下，MLA 的内容缓存是 MQA 的
-            \(1/2\)，是 \(G\)-head GQA 的 \(1/(2G)\)。**
+            这就是核心结论：**同等有效 head 维度下，MLA 的内容缓存是 MQA 的 \(1/2\)，是 \(G\)-head GQA 的 \(1/(2G)\)。**
 
             **具体例子。** GQA-2-128 的内容缓存为
             \(2\times2\times128=512\) 个元素；MLA-512 也缓存 512 个元素。
