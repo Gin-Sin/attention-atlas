@@ -58,7 +58,7 @@
       ["精确桥梁", "中央绿桥标注 same weights · exact linear reassociation：NoPE 内容通道的线性结合律允许在“先展开”与“先吸收”之间切换，两条车道给出相同结果，不是可选近似。"],
       ["Partial RoPE 支路", R`64 维逐头 \(q^R\) 与一份共享 \(k^R\) 负责相对位置，同时进入两条车道的分数；内容主干保持 NoPE，吸收才可能成立。`],
       ["条件化近优", "在 full softmax、线性投影、给定两阶段预算且 Decode 确实 memory-bound 的限定下，MLA 同时逼近 Prefill 想要的 MHA 与 Decode 想要的共享 MQA；超出假设不自动成立。"],
-      ["视觉语义", "蓝=计算，玫瑰=持久缓存/状态，薰衣草=聚合/写回，绿=执行图切换桥；两条车道等宽等重，没有谁是“主路径”。"]
+      ["视觉语义", "蓝=计算，玫瑰=持久缓存/状态，薰衣草=聚合/写回，绿=执行图切换桥；两条车道等宽等重，没有谁是“主路径”。悬停或键盘聚焦任一节点，可只保留它的上下游数据通路。"]
     ],
     mfa: [
       ["共享三投影", R`\(S_q,S_k,S_v\) 把每个 token 投到同一 C 维空间；共享 k/v 形状为 \([B,T,C]\)，没有 head 轴。`],
@@ -214,16 +214,20 @@
     return textLabel(x, y, value, fontSize, color, weight);
   }
 
-  function panel(x, y, w, h, title, tone, dashed) {
+  function panel(x, y, w, h, title, tone, dashed, options) {
+    options = options || {};
     var stroke = toneStroke(tone);
+    /* titlePos "bottom" frees the panel's top border for entry ports. */
+    var bandY = options.titlePos === "bottom" ? y + h - 9 : y - 9;
+    var textY = options.titlePos === "bottom" ? y + h + 5 : y + 5;
     return (
       '<g class="diagram-panel"><rect x="' + x + '" y="' + y + '" width="' + w +
       '" height="' + h + '" rx="14" fill="' + toneFill(tone) +
       '" fill-opacity=".22" stroke="' + stroke + '" stroke-opacity=".62" stroke-width="1.2" ' +
       (dashed ? 'stroke-dasharray="7 6" ' : "") + '/>' +
-      '<rect x="' + (x + 12) + '" y="' + (y - 9) + '" width="' +
+      '<rect x="' + (x + 12) + '" y="' + bandY + '" width="' +
       Math.max(124, title.length * 7.2 + 20) + '" height="20" fill="' + P.canvas + '"/>' +
-      '<text x="' + (x + 20) + '" y="' + (y + 5) +
+      '<text x="' + (x + 20) + '" y="' + textY +
       '" font-family="JetBrains Mono" font-size="10.5" font-weight="600" fill="' +
       stroke + '">' + escapeText(title) + '</text></g>'
     );
@@ -243,9 +247,13 @@
     var titleY = y + h / 2 - (sub ? 5 : 0);
     var blockId = escapeText(codeBlockId);
     var aria = escapeText("查看代码块 " + codeBlockId + "：" + fallbackLabel(title));
+    /* options.flow opts the node into the hover/keyboard path preview. */
+    var flowAttr = options.flow
+      ? ' data-flow-node="' + escapeText(options.flow) + '"'
+      : "";
     return (
-      '<g class="diagram-code-node" data-code-block="' + blockId +
-      '" role="button" tabindex="0" aria-label="' + aria + '">' +
+      '<g class="diagram-code-node" data-code-block="' + blockId + '"' +
+      flowAttr + ' role="button" tabindex="0" aria-label="' + aria + '">' +
       '<rect class="diagram-node-box" x="' + x + '" y="' + y + '" width="' + w +
       '" height="' + h + '" rx="9" fill="' + fill + '" stroke="' + stroke +
       '" stroke-width="1.35" ' + (options.dashed ? 'stroke-dasharray="6 5" ' : "") + '/>' +
@@ -272,17 +280,29 @@
     return "M" + x1 + " " + y1 + "H" + bendX + "V" + y2 + "H" + x2;
   }
 
-  function edge(rootId, d, label, tone, dashed) {
+  function edge(rootId, d, label, tone, dashed, flow, marker) {
     tone = tone || "muted";
     if (dashed && !label) {
       throw new Error("Dashed diagram edge requires an explicit label");
     }
+    if (flow && (!flow.from || !flow.to)) {
+      throw new Error("Flow edge requires both from and to endpoints: " + d);
+    }
     var color = tone === "muted" ? P.muted : toneStroke(tone);
+    var open = flow
+      ? '<g class="diagram-flow-edge" data-flow-from="' + escapeText(flow.from) +
+        '" data-flow-to="' + escapeText(flow.to) + '">'
+      : "<g>";
+    /* marker === false draws an undirected connector (e.g. an equality
+       bridge); data-plain-edge keeps it visible to the geometry validator. */
+    var tip = marker === false
+      ? 'data-plain-edge="1"'
+      : 'marker-end="url(#' + rootId + '-arrow-' + tone + ')"';
     return (
-      '<g><path d="' + d + '" fill="none" stroke="' + (color || P.muted) + '" stroke-width="1.5" ' +
+      open +
+      '<path d="' + d + '" fill="none" stroke="' + (color || P.muted) + '" stroke-width="1.5" ' +
       (dashed ? 'stroke-dasharray="6 5" ' : "") +
-      'stroke-linecap="square" stroke-linejoin="round" marker-end="url(#' +
-      rootId + '-arrow-' + tone + ')"/>' +
+      'stroke-linecap="square" stroke-linejoin="round" ' + tip + '/>' +
       (label ? labelMarkup(label[0], label[1], label[3] || 190, 24, label[2],
         label[4] || 8.8, color, 600) : "") +
       '</g>'
@@ -327,7 +347,9 @@
   //     shared source fan-out: the first segments of two edges that leave the
   //     exact same start point may run together;
   //  3. dashed edges must carry a label, and every data-code-block id must
-  //     exist in the chapter's implementation blocks.
+  //     exist in the chapter's implementation blocks;
+  //  4. flow-preview metadata must be closed: data-flow-node ids are unique
+  //     and every data-flow-from/to endpoint names an existing flow node.
   function validateStaticGeometry(svg, diagramKey) {
     function attributes(tag) {
       var result = {};
@@ -391,7 +413,7 @@
 
     var edges = [];
     var edgeMatch;
-    var edgePattern = /<path d="([^"]+)"[^>]*marker-end/g;
+    var edgePattern = /<path d="([^"]+)"[^>]*(?:marker-end|data-plain-edge)/g;
     while ((edgeMatch = edgePattern.exec(svg))) {
       edges.push({ d: edgeMatch[1], points: pathPoints(edgeMatch[1]) });
     }
@@ -443,10 +465,34 @@
     }
 
     var dashedMatch;
-    var dashedPattern = /<g><path\b[^>]*stroke-dasharray="[^"]+"[^>]*\/>([\s\S]*?)<\/g>/g;
+    var dashedPattern = /<g(?: [^>]*)?><path\b[^>]*stroke-dasharray="[^"]+"[^>]*\/>([\s\S]*?)<\/g>/g;
     while ((dashedMatch = dashedPattern.exec(svg))) {
       if (!/<(?:text|switch)\b/.test(dashedMatch[1])) {
         throw new Error(diagramKey + ": dashed connector lacks a label");
+      }
+    }
+
+    // Flow-preview graph metadata: unique node ids, resolvable endpoints.
+    var flowNodeIds = {};
+    var flowMatch;
+    var flowNodePattern = /data-flow-node="([^"]+)"/g;
+    while ((flowMatch = flowNodePattern.exec(svg))) {
+      if (flowNodeIds[flowMatch[1]]) {
+        throw new Error(diagramKey + ": duplicate flow node id " + flowMatch[1]);
+      }
+      flowNodeIds[flowMatch[1]] = true;
+    }
+    var flowEdgePattern = /<g class="diagram-flow-edge"[^>]*>/g;
+    while ((flowMatch = flowEdgePattern.exec(svg))) {
+      var flowAttrs = attributes(flowMatch[0]);
+      var flowFrom = flowAttrs["data-flow-from"];
+      var flowTo = flowAttrs["data-flow-to"];
+      if (!flowFrom || !flowTo) {
+        throw new Error(diagramKey + ": flow edge is missing a from/to endpoint");
+      }
+      if (!flowNodeIds[flowFrom] || !flowNodeIds[flowTo]) {
+        throw new Error(diagramKey + ": flow edge references unknown node " +
+          flowFrom + " -> " + flowTo);
       }
     }
 
@@ -629,109 +675,148 @@
 
   function mlaDiagram(rootId) {
     var b = "";
-    b += panel(24, 380, 426, 478,
-      "TRAINING / PREFILL · COMPUTE-BOUND · MHA-LIKE", "compute");
-    b += panel(650, 380, 426, 478,
-      "TOKEN-BY-TOKEN DECODE · MEMORY-BOUND · MQA-LIKE", "state");
+    /* Titles sit on the bottom border so lane tops stay free for ports. */
+    b += panel(24, 460, 426, 480,
+      "TRAINING / PREFILL · COMPUTE-BOUND · MHA-LIKE", "compute", false,
+      { titlePos: "bottom" });
+    b += panel(650, 460, 426, 480,
+      "TOKEN-BY-TOKEN DECODE · MEMORY-BOUND · MQA-LIKE", "state", false,
+      { titlePos: "bottom" });
 
-    /* Shared top: one set of weights feeding both execution graphs. */
-    b += box(470, 60, 160, 56, M("h_t", "Input hidden"),
-      M("[B,T,d]", "[B,T,d]"), "compute", 1, "03");
-    b += box(60, 156, 220, 64, M("q_i^C,\\;q_i^R", "Per-head queries"),
+    /* Shared spine down the center: input, projections, cache, RoPE term. */
+    b += box(470, 56, 160, 56, M("h_t", "Input hidden"),
+      M("[B,T,d]", "[B,T,d]"), "compute", 1, "03", { flow: "input" });
+    b += box(60, 152, 250, 64, M("q_i^C,\\;q_i^R", "Per-head queries"),
       M("W_i^{UQ}c_t^Q,\\;R_tW_i^{QR}c_t^Q", "content 128 + RoPE 64"),
-      "compute", 2, "04", { subSize: 8.2 });
-    b += box(440, 156, 220, 64, M("c_t^{KV}=W^{DKV}h_t", "Joint KV latent"),
+      "compute", 2, "04", { subSize: 8.2, flow: "queries" });
+    b += box(440, 152, 220, 64, M("c_t^{KV}=W^{DKV}h_t", "Joint KV latent"),
       M("512\\text{-d shared source}", "512-d shared source"),
-      "compute", 3, "05", { subSize: 8.4 });
-    b += box(820, 156, 220, 64, M("k_t^R=R_tW^{KR}h_t", "Decoupled RoPE key"),
+      "compute", 3, "05", { subSize: 8.4, flow: "latent" });
+    b += box(810, 152, 230, 64, M("k_t^R=R_tW^{KR}h_t", "Decoupled RoPE key"),
       M("64\\text{-d, shared by all heads}", "64-d shared by all heads"),
-      "compute", 4, "06", { subSize: 8.4 });
+      "compute", 4, "06", { subSize: 8.4, flow: "rope-key" });
 
-    b += cacheBox(440, 264, 220, 64,
+    b += cacheBox(440, 256, 220, 64,
       M("c_{1:t}^{KV},\\;k_{1:t}^{R}", "Persistent cache"),
-      M("512+64=576\\ /\\ \\text{token}", "512+64=576 per token"), 5, "07");
-    b += box(820, 264, 220, 64,
+      M("512+64=576\\ /\\ \\text{token}", "512+64=576 per token"), 5, "07",
+      { flow: "cache" });
+    b += box(470, 360, 160, 56,
       M("(q_i^{R})^{\\mathsf T}k_s^{R}", "Shared RoPE score"),
-      "enters both lanes", "compute", 6, "09", { subSize: 8.4 });
+      "one term · both lanes", "compute", 6, "09",
+      { subSize: 8.2, flow: "rope-score" });
 
-    /* Left lane: prefill expands per-head 128-d content K/V. */
-    b += box(94, 410, 340, 64, M("k_{s,i}^{C}=W_i^{UK}c_s^{KV}", "Expand content keys"),
-      M("128\\text{-d per head}", "128-d per head"), "compute", null, "08");
-    b += box(94, 498, 340, 64, M("v_{s,i}=W_i^{UV}c_s^{KV}", "Expand values"),
-      M("128\\text{-d per head · compute-only}", "128-d per head, compute-only"),
-      "compute", null, "10", { subSize: 8.2 });
-    b += box(94, 586, 340, 76,
+    /* Prefill lane: one expansion box covers per-head K and V, then score,
+       read, write. The read consumes the expanded values from that box. */
+    b += box(194, 496, 240, 64,
+      M("k_{s,i}^{C},\\;v_{s,i}", "Expand per-head K and V"),
+      M("W_i^{UK}c_s^{KV},\\;W_i^{UV}c_s^{KV}\\ \\cdot\\ 128\\text{-d}",
+        "WUK c, WUV c · 128-d per head"),
+      "compute", null, "08", { subSize: 8.2, flow: "prefill-expand" });
+    b += box(94, 640, 340, 76,
       M("a_i=\\operatorname{softmax}\\!\\Big(\\tfrac{q_i^{C\\mathsf T}k_{s,i}^{C}+q_i^{R\\mathsf T}k_s^R}{\\sqrt{192}}+M\\Big)",
         "Standard multi-head score"),
-      null, "compute", null, "09", { titleSize: 8.8 });
-    b += box(94, 686, 340, 64,
+      null, "compute", null, "09", { titleSize: 8.8, flow: "prefill-score" });
+    b += box(94, 760, 340, 72,
       M("o_i=\\textstyle\\sum_s a_{i,s}v_{s,i}", "Per-head value read"),
-      null, "gather", null, "10");
-    b += box(94, 774, 340, 60,
+      M("v_{s,i}\\ \\text{from the expansion above · compute-only}",
+        "v from the expansion above, compute-only"),
+      "gather", null, "10", { subSize: 8.2, flow: "prefill-read" });
+    b += box(94, 866, 340, 56,
       M("u_t=\\operatorname{Concat}_i(o_i)\\,W^O", "Concat → WO"),
-      null, "gather", null, "11", { titleSize: 10.2 });
+      null, "gather", null, "11", { titleSize: 10.2, flow: "prefill-out" });
 
-    /* Right lane: decode absorbs both up-projections and reads the latent. */
-    b += box(693, 410, 340, 64,
+    /* Decode lane: absorbed query, latent score, latent read, folded write.
+       The row-1 box leaves a western corridor for the latent port below. */
+    b += box(766, 496, 240, 64,
       M("\\widetilde q_i=(W_i^{UK})^{\\mathsf T}q_i^{C}", "Absorbed query"),
       M("512\\text{-d, folded into query}", "512-d folded into query"),
-      "compute", null, "08", { subSize: 8.4 });
-    b += box(693, 586, 340, 76,
+      "compute", null, "08",
+      { titleSize: 9.6, subSize: 8.2, flow: "decode-absorb" });
+    b += box(666, 640, 340, 76,
       M("a_i=\\operatorname{softmax}\\!\\Big(\\tfrac{\\widetilde q_i^{\\mathsf T}c_s^{KV}+q_i^{R\\mathsf T}k_s^R}{\\sqrt{192}}+M\\Big)",
         "Latent score, K = latent"),
-      null, "compute", null, "09", { titleSize: 8.8 });
-    b += box(693, 686, 340, 64,
+      null, "compute", null, "09", { titleSize: 8.8, flow: "decode-score" });
+    b += box(666, 760, 340, 72,
       M("m_i=\\textstyle\\sum_s a_{i,s}c_s^{KV}", "Shared latent read"),
       M("512\\text{-d, }K=V=c_s", "512-d, K = V = latent"),
-      "gather", null, "10", { subSize: 8.4 });
-    b += box(693, 774, 340, 60,
+      "gather", null, "10", { subSize: 8.4, flow: "decode-read" });
+    b += box(666, 866, 340, 56,
       M("u_t=\\textstyle\\sum_i(W_i^{O}W_i^{UV})m_i", "Absorbed output write"),
-      null, "gather", null, "11", { titleSize: 9.8 });
+      null, "gather", null, "11", { titleSize: 9.8, flow: "decode-out" });
 
     /* Central exact bridge: equal paths, not an optional approximation. */
-    b += box(470, 586, 160, 88, "SAME WEIGHTS",
+    b += box(470, 640, 160, 76, "SAME WEIGHTS",
       "EXACT LINEAR REASSOCIATION", "control", null, "08",
-      { titleSize: 9.8, subSize: 7.6 });
+      { titleSize: 9.8, subSize: 7.6, flow: "bridge" });
 
-    /* Shared top wiring. */
-    b += edge(rootId, "M510 116V136H170V156", null, "compute");
-    b += edge(rootId, ortho(550, 116, 550, 156), null, "compute");
-    b += edge(rootId, "M590 116V136H930V156", null, "compute");
-    b += edge(rootId, ortho(550, 220, 550, 264), null, "state");
-    b += edge(rootId, "M930 220V240H630V264", null, "state");
-    b += edge(rootId, ortho(930, 220, 930, 264), null, "compute");
-    b += edge(rootId, "M170 220V246H700V296H820", null, "compute");
+    /* Distribution bus from the input into the three projections. */
+    b += edge(rootId, "M510 112V132H185V152", null, "compute", false,
+      { from: "input", to: "queries" });
+    b += edge(rootId, "M550 112V152", null, "compute", false,
+      { from: "input", to: "latent" });
+    b += edge(rootId, "M590 112V132H925V152", null, "compute", false,
+      { from: "input", to: "rope-key" });
 
-    /* Queries into both lanes. */
-    b += edge(rootId, "M150 220V356H460V614H434", null, "compute");
-    b += edge(rootId, "M200 220V232H1060V442H1033", null, "compute");
+    /* Both cached quantities converge on the one persistent cache. */
+    b += edge(rootId, "M520 216V256", null, "state", false,
+      { from: "latent", to: "cache" });
+    b += edge(rootId, "M925 216V232H580V256", null, "state", false,
+      { from: "rope-key", to: "cache" });
 
-    /* Latent cache into both lanes. */
-    b += edge(rootId, "M510 328V442H434", null, "state");
-    b += edge(rootId, "M490 328V530H434", null, "state");
-    b += edge(rootId, "M654 328V622H693", null, "state");
-    b += edge(rootId, "M646 328V718H693", null, "state");
+    /* Cached RoPE keys feed the single shared positional score. */
+    b += edge(rootId, "M550 320V360", null, "state", false,
+      { from: "cache", to: "rope-score" });
 
-    /* Shared RoPE score into both lanes. */
-    b += edge(rootId, "M860 328V348H453V646H434", null, "compute");
-    b += edge(rootId, "M1000 328V352H1050V622H1033", null, "compute");
+    /* One labeled latent port per lane. Prefill: into the K/V expansion,
+       whose products reach the read through the lane. Decode: into the
+       score; the score→read arrow already carries the cached latent. */
+    b += edge(rootId, "M455 320V336H210V496",
+      [270, 320, M("c_s^{KV}", "shared latent"), 90, 8.6], "state", false,
+      { from: "cache", to: "prefill-expand" });
+    b += edge(rootId, "M645 320V336H700V640",
+      [746, 328, M("c_s^{KV}", "shared latent"), 80, 8.6], "state", false,
+      { from: "cache", to: "decode-score" });
 
-    /* Left lane flow (corridor west of the boxes). */
-    b += edge(rootId, "M94 442H74V610H94", null, "compute");
-    b += edge(rootId, "M94 530H60V718H94", null, "compute");
-    b += edge(rootId, ortho(264, 662, 264, 686), null, "compute");
-    b += edge(rootId, ortho(264, 750, 264, 774), null, "gather");
+    /* Queries: straight drop into prefill, one perimeter rail to decode. */
+    b += edge(rootId, "M150 216V640",
+      [198, 384, M("q_i^{C},q_i^{R}", "per-head q"), 84, 8.6], "compute",
+      false, { from: "queries", to: "prefill-score" });
+    b += edge(rootId, "M120 152V36H1060V528H1006",
+      [706, 22, M("q_i^{C}\\ \\to\\ \\text{decode lane}", "qC to decode lane"),
+        190, 8.6], "compute", false,
+      { from: "queries", to: "decode-absorb" });
+    b += edge(rootId, "M270 216V240H430V388H470",
+      [352, 226, M("q_i^{R}", "qR"), 60, 8.6], "compute", false,
+      { from: "queries", to: "rope-score" });
 
-    /* Right lane flow. */
-    b += edge(rootId, ortho(863, 474, 863, 586), null, "compute");
-    b += edge(rootId, ortho(863, 662, 863, 686), null, "compute");
-    b += edge(rootId, ortho(863, 750, 863, 774), null, "gather");
+    /* The shared RoPE term enters each lane score once, symmetrically. */
+    b += edge(rootId, "M510 416V440H462V656H434", null, "compute", false,
+      { from: "rope-score", to: "prefill-score" });
+    b += edge(rootId, "M590 416V440H638V656H666", null, "compute", false,
+      { from: "rope-score", to: "decode-score" });
 
-    /* Bridge connects the two score rows as strict equalities. */
-    b += edge(rootId, "M470 630H434", null, "control");
-    b += edge(rootId, "M630 630H693", null, "control");
-    return baseSvg(rootId, "mla", 880, b,
-      "MLA dual execution graphs: a shared latent and one set of up-projection weights on top, a compute-bound MHA-like prefill lane expanding per-head 128-d keys and values, a memory-bound MQA-like decode lane scoring and reading the shared 512-d latent with absorbed query and output projections, a green same-weights exact-reassociation bridge marking both lanes equal, and a shared 64-d RoPE score entering both lanes");
+    /* Lane-local flow stays vertical inside each panel. */
+    b += edge(rootId, ortho(314, 560, 314, 640), null, "compute", false,
+      { from: "prefill-expand", to: "prefill-score" });
+    b += edge(rootId, ortho(264, 716, 264, 760), null, "compute", false,
+      { from: "prefill-score", to: "prefill-read" });
+    b += edge(rootId, ortho(264, 832, 264, 866), null, "gather", false,
+      { from: "prefill-read", to: "prefill-out" });
+    b += edge(rootId, ortho(886, 560, 886, 640), null, "compute", false,
+      { from: "decode-absorb", to: "decode-score" });
+    b += edge(rootId, ortho(836, 716, 836, 760), null, "compute", false,
+      { from: "decode-score", to: "decode-read" });
+    b += edge(rootId, ortho(836, 832, 836, 866), null, "gather", false,
+      { from: "decode-read", to: "decode-out" });
+
+    /* Bridge: equality is not a one-way data flow, so the short symmetric
+       connectors are drawn without arrowheads. */
+    b += edge(rootId, "M470 678H434", null, "control", false,
+      { from: "bridge", to: "prefill-score" }, false);
+    b += edge(rootId, "M630 678H666", null, "control", false,
+      { from: "bridge", to: "decode-score" }, false);
+    return baseSvg(rootId, "mla", 970, b,
+      "MLA dual execution graphs: a central shared spine with the input, per-head queries, joint 512-d latent, decoupled 64-d RoPE key, one persistent cache, and one shared RoPE score; a compute-bound MHA-like prefill lane expanding per-head 128-d keys and values and reading those values; a memory-bound MQA-like decode lane scoring and reading the shared latent with absorbed query and output projections; one labeled latent port entering each lane; and a green same-weights exact-reassociation bridge joining the two score rows with undirected connectors");
   }
 
   function mfaDiagram(rootId) {

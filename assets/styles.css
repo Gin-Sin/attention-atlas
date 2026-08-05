@@ -1760,6 +1760,37 @@ pre[data-line] {
   pointer-events: none;
 }
 
+/* Flow path preview (diagrams emitting data-flow-node metadata, e.g. MLA):
+   hover or keyboard focus keeps a node plus its upstream/downstream path at
+   full strength and fades unrelated nodes, edges, and lane panels. */
+.diagram-canvas svg .diagram-code-node[data-flow-node],
+.diagram-canvas svg .diagram-flow-edge,
+.diagram-canvas svg .diagram-panel {
+  transition: opacity .18s ease;
+}
+.diagram-canvas svg.has-flow-focus .diagram-code-node[data-flow-node]:not(.is-flow-chain) {
+  opacity: .16;
+}
+.diagram-canvas svg.has-flow-focus .diagram-flow-edge:not(.is-flow-chain) {
+  opacity: .12;
+}
+.diagram-canvas svg.has-flow-focus .diagram-panel {
+  opacity: .38;
+}
+.diagram-canvas svg.has-flow-focus .diagram-flow-edge.is-flow-chain path {
+  stroke-width: 2.25;
+}
+.diagram-canvas svg.has-flow-focus .diagram-code-node.is-flow-focus > rect {
+  stroke-width: 2.6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .diagram-canvas svg .diagram-code-node[data-flow-node],
+  .diagram-canvas svg .diagram-flow-edge,
+  .diagram-canvas svg .diagram-panel {
+    transition: none;
+  }
+}
+
 /* The integrated IDE replaces the former standalone implementation cards. */
 .architecture-workbench .implementation-block,
 .code-ide .implementation-block,

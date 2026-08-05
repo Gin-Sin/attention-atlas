@@ -66,6 +66,8 @@ const counts = {
   exercises: 0,
   diagrams: 0,
   interactiveNodes: 0,
+  flowNodes: 0,
+  flowEdges: 0,
   implementations: 0,
   blocks: 0,
   indexLinks: 0
@@ -385,6 +387,48 @@ function validateDiagrams(chapters, diagramBuilder, implementations) {
         }
       });
       counts.interactiveNodes += interactiveBlocks.length;
+
+      // Flow-preview metadata: node ids must be unique and every edge must
+      // carry both endpoints that resolve to declared flow nodes.
+      const flowNodeIds = Array.from(
+        report.svg.matchAll(/\bdata-flow-node="([^"]+)"/g),
+        (match) => match[1]
+      );
+      const flowNodeSet = new Set(flowNodeIds);
+      if (flowNodeSet.size !== flowNodeIds.length) {
+        addError(`${location} declares duplicate data-flow-node ids`);
+      }
+      const flowEdgeTags = Array.from(
+        report.svg.matchAll(/<g class="diagram-flow-edge"[^>]*>/g),
+        (match) => match[0]
+      );
+      flowEdgeTags.forEach((tag, edgeIndex) => {
+        const from = tag.match(/\bdata-flow-from="([^"]+)"/)?.[1];
+        const to = tag.match(/\bdata-flow-to="([^"]+)"/)?.[1];
+        if (!from || !to) {
+          addError(`${location} flow edge[${edgeIndex}] is missing a from/to endpoint`);
+          return;
+        }
+        for (const endpoint of [from, to]) {
+          if (!flowNodeSet.has(endpoint)) {
+            addError(
+              `${location} flow edge[${edgeIndex}] references unknown node ` +
+                `${JSON.stringify(endpoint)}`
+            );
+          }
+        }
+      });
+      if (chapter.id === "mla") {
+        if (flowNodeIds.length === 0) {
+          addError("diagram for mla must emit data-flow-node metadata for the path preview");
+        }
+        if (flowEdgeTags.length === 0) {
+          addError("diagram for mla must emit data-flow-from/to edge metadata for the path preview");
+        }
+      }
+      counts.flowNodes += flowNodeSet.size;
+      counts.flowEdges += flowEdgeTags.length;
+
       if (!Array.isArray(report.notes) || report.notes.length === 0) {
         addError(`${location} build returned no notes`);
       } else {
@@ -442,6 +486,14 @@ function validateRenderer(courseSource, chapterHtml) {
   ) {
     addError(
       "assets/course.js must resolve TOC and section headings through sectionTitle()"
+    );
+  }
+  if (
+    !/function initDiagramFlowPreview\(/.test(courseSource) ||
+    !/initDiagramFlowPreview\(root\)/.test(courseSource)
+  ) {
+    addError(
+      "assets/course.js must wire the hover/keyboard flow path preview for diagrams"
     );
   }
   if (!/prism-python(?:\.min)?\.js/.test(chapterHtml)) {
@@ -782,6 +834,7 @@ function main() {
       `${counts.chapters} chapters, ${counts.derivations} derivations, ` +
       `${counts.exercises} exercises, ${counts.diagrams} diagrams, ` +
       `${counts.interactiveNodes} interactive nodes, ` +
+      `${counts.flowNodes} flow nodes/${counts.flowEdges} flow edges, ` +
       `${counts.implementations} implementations/${counts.blocks} blocks, ` +
       `${counts.indexLinks} index links; generated bundle synchronized.`
   );

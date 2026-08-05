@@ -465,6 +465,125 @@
     selectBlock(initialId);
   }
 
+  /* Hover / keyboard path preview for diagrams that emit flow metadata
+     (currently MLA). Hovering or keyboard-focusing a node keeps the node
+     plus its upstream/downstream reachable path at full strength and fades
+     the rest; leaving restores everything. Click behavior is untouched:
+     the preview uses its own classes, separate from code selection. */
+  function initDiagramFlowPreview(scope) {
+    var svg = scope.querySelector(".diagram-canvas svg");
+    if (!svg || !svg.querySelector("[data-flow-node]")) return;
+
+    var nodeEls = {};
+    svg.querySelectorAll("[data-flow-node]").forEach(function (el) {
+      nodeEls[el.getAttribute("data-flow-node")] = el;
+    });
+    var edgeItems = [];
+    svg.querySelectorAll(".diagram-flow-edge").forEach(function (el) {
+      edgeItems.push({
+        el: el,
+        from: el.getAttribute("data-flow-from"),
+        to: el.getAttribute("data-flow-to")
+      });
+    });
+
+    var upOf = {};
+    var downOf = {};
+    Object.keys(nodeEls).forEach(function (id) {
+      upOf[id] = [];
+      downOf[id] = [];
+    });
+    edgeItems.forEach(function (item) {
+      if (downOf[item.from]) downOf[item.from].push(item);
+      if (upOf[item.to]) upOf[item.to].push(item);
+    });
+
+    function collectChain(id) {
+      var chainNodes = {};
+      var chainEdges = [];
+      chainNodes[id] = true;
+      [[upOf, "from"], [downOf, "to"]].forEach(function (direction) {
+        var neighbors = direction[0];
+        var nextKey = direction[1];
+        var stack = [id];
+        while (stack.length) {
+          var current = stack.pop();
+          neighbors[current].forEach(function (item) {
+            chainEdges.push(item);
+            var next = item[nextKey];
+            if (!chainNodes[next]) {
+              chainNodes[next] = true;
+              stack.push(next);
+            }
+          });
+        }
+      });
+      return { nodes: chainNodes, edges: chainEdges };
+    }
+
+    var activeId = null;
+
+    function clearPreview() {
+      if (activeId === null) return;
+      activeId = null;
+      svg.classList.remove("has-flow-focus");
+      Object.keys(nodeEls).forEach(function (id) {
+        nodeEls[id].classList.remove("is-flow-chain", "is-flow-focus");
+      });
+      edgeItems.forEach(function (item) {
+        item.el.classList.remove("is-flow-chain");
+      });
+    }
+
+    function applyPreview(id) {
+      if (id === activeId || !nodeEls[id]) return;
+      clearPreview();
+      activeId = id;
+      var chain = collectChain(id);
+      svg.classList.add("has-flow-focus");
+      Object.keys(nodeEls).forEach(function (key) {
+        nodeEls[key].classList.toggle("is-flow-chain", !!chain.nodes[key]);
+        nodeEls[key].classList.toggle("is-flow-focus", key === id);
+      });
+      chain.edges.forEach(function (item) {
+        item.el.classList.add("is-flow-chain");
+      });
+    }
+
+    function flowNodeOf(target) {
+      return target && target.closest ? target.closest("[data-flow-node]") : null;
+    }
+
+    /* Pointer preview only where hover is a real capability; touch devices
+       keep the plain diagram and the existing tap-to-select behavior. */
+    var hoverCapable = !window.matchMedia ||
+      window.matchMedia("(hover: hover)").matches;
+    if (hoverCapable) {
+      svg.addEventListener("mouseover", function (event) {
+        var node = flowNodeOf(event.target);
+        if (node) applyPreview(node.getAttribute("data-flow-node"));
+        else clearPreview();
+      });
+      svg.addEventListener("mouseleave", clearPreview);
+    }
+
+    svg.addEventListener("focusin", function (event) {
+      var node = flowNodeOf(event.target);
+      if (!node) return;
+      var keyboardFocus = true;
+      try {
+        keyboardFocus = node.matches(":focus-visible");
+      } catch (_) {
+        /* Older engines without :focus-visible still get the preview. */
+      }
+      if (keyboardFocus) applyPreview(node.getAttribute("data-flow-node"));
+    });
+    svg.addEventListener("focusout", function (event) {
+      if (flowNodeOf(event.relatedTarget)) return;
+      clearPreview();
+    });
+  }
+
   function renderChapter() {
     var root = document.getElementById("chapter-root");
     if (!root) return;
@@ -550,6 +669,7 @@
     syncButton();
     initDiagramExpand(root);
     initArchitectureWorkbench(root, implementations[c.id]);
+    initDiagramFlowPreview(root);
     initCopyButtons(root);
     renderMath(root);
     initWorkbenchHeightSync(root);
