@@ -863,7 +863,7 @@
         { label: "Projection", title: "单位 key 定义一个定向橡皮擦", body: R`\(\beta=1,\|k\|=1\) 时 \(I-kk^\top\) 擦掉状态在 key 方向上的旧分量，却保留正交方向；随后 \(kv^\top\) 写入新关联。` },
         { label: "Extension", title: "固定状态负责概括，attention 负责精确回看", body: "DeltaNet 擅长用固定预算维护可修改摘要；当任务要求逐字复制、多针检索或任意远程引用时，稀疏插入 global attention 更稳妥。" }
       ],
-      diagram: { type: "delta", caption: "DeltaNet 的完整因果链：加法 fast-weight memory 会累积串扰；delta update 先预测、再沿 key 方向擦除/纠写。现代 block 用 Q/K L2Norm、ShortConv 与输出 RMSNorm 提升稳定和局部寻址，训练则用 chunk checkpoint + WY/UT 把递推改写成矩阵乘；固定状态上限仍可由少量 global attention 补足。" },
+      diagram: { type: "delta", caption: "DeltaNet 的完整因果链：图中省略 head 下标，按单个 head 展示；实际实现中多个 head 并行，每头维护独立的 Q/K/V、状态矩阵与 α/β。加法 fast-weight memory 会累积串扰；delta update 先预测、再沿 key 方向擦除/纠写。现代 block 用 Q/K L2Norm、ShortConv 与输出 RMSNorm 提升稳定和局部寻址，训练则用 chunk checkpoint + WY/UT 把递推改写成矩阵乘；固定状态上限仍可由少量 global attention 补足。" },
       derivations: [
         {
           title: "第一步：把记忆状态看成在线线性回归器",
