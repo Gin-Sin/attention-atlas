@@ -878,7 +878,7 @@
             \(\alpha_t\in(0,1)\) 是每头标量 gate；\(\beta_t\) 控制定点改写强度。`
         }
       ],
-      warning: R`Gated DeltaNet 论文写 \(F_t\in\mathbb R^{d_v\times d_k},\,o_t=F_tq_t\)；本站公式使用转置约定 \(S_t=F_t^\top,\,o_t=S_t^\top q_t\)。官方 block 只有 q/k/v 经过 ShortConv；\(\alpha,\beta\) 走直接线性投影，\(\beta=\sigma(W^\beta x)\)，实现还会把归一化后的 q 乘 \(d_k^{-1/2}\)。`,
+      warning: R`Gated DeltaNet 论文写 \(F_t\in\mathbb R^{d_v\times d_k},\,o_t=F_tq_t\)；本站公式使用转置约定 \(S_t=F_t^\top,\,o_t=S_t^\top q_t\)。官方 block 只有 q/k/v 经过 ShortConv；\(\alpha,\beta\) 走直接线性投影，\(\beta=\sigma(W^\beta x)\)，实现还会把归一化后的 q 乘 \(d_k^{-1/2}\)。1.3B 公开材料对 head count（16 config / 9 implementation）和 head dim（128 paper / 192 clarification）存在冲突，因此本章不展示伪精确的代表参数卡。`,
       exercises: [
         {
           q: R`若 \(\|k\|=1,\beta=1\)，证明 delta 更新后 \(S_t^\top k=v\)。`,
@@ -1905,6 +1905,7 @@
 
     linear: {
       attentionConfig: {
+        omit: true,
         model: "Linear (ours) · autoregressive MNIST",
         scope: "Katharopoulos et al. (2020) 表 1 的代表模型；全 8 层均使用 kernelized causal linear attention。",
         items: [
@@ -2007,6 +2008,7 @@
 
     "gated-delta": {
       attentionConfig: {
+        omit: true,
         model: "Pure Gated DeltaNet · 1.3B",
         scope: "论文 100B-token 对照模型及官方仓库；公开材料对 head count/head dim 存在冲突，以下保留各自口径。",
         items: [
@@ -2126,23 +2128,25 @@
 
     kda: {
       attentionConfig: {
-        model: "Kimi-Linear-48B-A3B-Base",
-        scope: "MoonshotAI 发布 checkpoint；KDA 使用 nested linear_attn_config，不能与同模型 MLA 的 top-level head_dim 混用。",
+        model: "Kimi K3 · 2.8T / 104B activated",
+        scope: "MoonshotAI 官方 Kimi K3 配置；同一 93 层骨干按 3:1 主节奏组合 KDA 与 Gated MLA，并以末层 Gated MLA 收尾。",
         items: [
-          { label: "Hidden size", value: "2304", note: "模型残差宽度" },
-          { label: "KDA heads", value: "32", note: "linear attention heads" },
-          { label: "K / V head dim", value: "128 / 128", note: "linear_attn_config.head_dim" },
+          { label: "Total / activated parameters", value: "2.8T / 104B", note: "稀疏 MoE 总量与单 token 激活量" },
+          { label: "Hidden size", value: "7168", note: "attention residual width" },
+          { label: "Attention heads", value: "96", note: "KDA 与 Gated MLA 的代表头数" },
+          { label: "K / V head dim", value: "128 / 128", note: "KDA q/k/v channel width" },
           { label: "State per head", value: "128 × 128", note: "固定大小 recurrent matrix" },
           { label: "ShortConv width", value: "4", note: "Q/K/V 路径" },
-          { label: "KDA gate", value: "128-channel α + scalar β", note: "每 head、每 token" },
-          { label: "Layer mix", value: "20 KDA + 7 MLA", note: "共 27 层；不是精确 3:1" },
-          { label: "MLA layers", value: "4, 8, 12, 16, 20, 24, 27", note: "1-based layer indices" }
+          { label: "KDA gate", value: "128-channel decay + scalar β", note: "每 head、每 token；输出另有 full-rank gate" },
+          { label: "Layer mix", value: "69 KDA + 24 Gated MLA", note: "共 93 层；23×(3 KDA + 1 MLA) 后再接 1 个 MLA" },
+          { label: "Context length", value: "1,048,576", note: "官方 1M 上下文" }
         ],
         sources: [
-          { label: "Kimi Linear Technical Report, §§3–4", url: "https://arxiv.org/abs/2510.26692" },
-          { label: "Official Kimi-Linear-48B-A3B-Base config", url: "https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Base/blob/main/config.json" }
+          { label: "Kimi K3 Technical Report (2026)", url: "https://arxiv.org/abs/2607.24653" },
+          { label: "Official MoonshotAI/Kimi-K3 repository", url: "https://github.com/MoonshotAI/Kimi-K3" },
+          { label: "Official FlashKDA kernel interface", url: "https://github.com/MoonshotAI/FlashKDA" }
         ],
-        caveat: "top-level head_dim=72 属于 MLA/general-attention 配置；KDA 必须读取 linear_attn_config.head_dim=128。"
+        caveat: "Kimi K3 的 69:24 是层级混合，不是单层内按 head 混合。KDA 使用固定 128×128/头状态；Gated MLA 仍保存随上下文增长的 latent cache。报告未公开的 Gated MLA 细分 rank 不在此处补写；正文递推与教学实现仍以首发 Kimi Linear 的 KDA 定义为算子来源。"
       },
       positionEncoding: {
         title: "Kimi Linear 用 NoPE；KDA 自己承担位置感",
@@ -2220,6 +2224,482 @@
     }
   };
 
+  var attentionConfigMaps = {
+    mha: {
+      modules: [
+        {
+          id: "input", label: "Token representation", summary: "512-d residual stream",
+          description: "每个 token 以模型宽度进入三套独立投影；head 轴尚未展开。", tone: "muted",
+          symbols: [
+            { symbol: "X", label: "Input", shape: "[B, L, 512]", value: "d_model = 512", note: "Transformer base residual width" }
+          ]
+        },
+        {
+          id: "qkv", label: "Independent Q / K / V heads", summary: "8 heads × 64-d",
+          description: "Q、K、V 都保留 8 个独立 heads，每个 head 的 channel width 为 64。", tone: "compute",
+          symbols: [
+            { symbol: "Q,K,V", label: "Projected activations", shape: "[B, 8, L, 64]", value: "H_q = H_kv = 8", note: "三套投影形状相同，参数彼此独立" },
+            { symbol: "W^Q,W^K,W^V", label: "Projection weights", shape: "[512, 512]", value: "8 × 64 = 512", note: "按实现可合并为一次线性投影" }
+          ]
+        },
+        {
+          id: "attention", label: "Scaled dot-product attention", summary: "8 independent score maps", col: 2,
+          description: "每个 head 形成自己的 L×L score 与 softmax 分布。", tone: "control",
+          symbols: [
+            { symbol: "A", label: "Attention weights", shape: "[B, 8, L, L]", value: "scale = 1/√64", note: "causal 或双向取决于所在子层" }
+          ]
+        },
+        {
+          id: "cache", label: "Full KV cache", summary: "1024 elements / token / layer", col: 2,
+          description: "增量解码为 8 个 heads 分别保存 K 与 V，历史宽度含完整 head 轴。", tone: "state",
+          symbols: [
+            { symbol: "K_cache,V_cache", label: "Persistent state", shape: "[B, L, 8, 64] each", value: "2 × 8 × 64 = 1024 elements/token", note: "未计 dtype、分页和对齐开销" }
+          ]
+        },
+        {
+          id: "output", label: "Head concat + output projection", summary: "Back to 512-d", col: 2,
+          description: "8 个 head 输出拼接后经 W^O 写回残差宽度。", tone: "gather",
+          symbols: [
+            { symbol: "Y", label: "Layer output", shape: "[B, L, 512]", value: "H × d_h = 512", note: "与残差流宽度一致" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "qkv", label: "project" },
+        { from: "qkv", to: "attention", label: "score/read" },
+        { from: "qkv", to: "cache", label: "decode store" },
+        { from: "attention", to: "output", label: "concat" }
+      ]
+    },
+    mqa: {
+      modules: [
+        {
+          id: "input", label: "Token representation", summary: "1024-d residual stream",
+          description: "输入同时投影到多头 query 与单份共享 K/V。", tone: "muted",
+          symbols: [
+            { symbol: "X", label: "Input", shape: "[B, L, 1024]", value: "d_model = 1024", note: "Shazeer 2019 WMT representative model" }
+          ]
+        },
+        {
+          id: "queries", label: "Multi-head queries", summary: "8 heads × 128-d",
+          description: "MQA 只共享 K/V，query 仍保留多头以产生不同读取分布。", tone: "compute",
+          symbols: [
+            { symbol: "Q", label: "Query", shape: "[B, 8, L_q, 128]", value: "H_q = 8", note: "每个 head 独立投影" }
+          ]
+        },
+        {
+          id: "shared-kv", label: "Shared K / V", summary: "1 KV head × 128-d",
+          description: "全部 query heads 广播读取同一份 key 与 value，不需要真实 repeat。", tone: "control",
+          symbols: [
+            { symbol: "K,V", label: "Shared activations", shape: "[B, 1, L_k, 128]", value: "H_kv = 1", note: "head 轴长度 1，可用 stride-0 广播" }
+          ]
+        },
+        {
+          id: "attention", label: "Broadcast attention", summary: "8 score maps, one memory",
+          description: "score 仍有 8 个 query heads；减少的是被反复搬运的历史 K/V 副本。", tone: "compute",
+          symbols: [
+            { symbol: "A", label: "Attention weights", shape: "[B, 8, L_q, L_k]", value: "scale = 1/√128", note: "共享 K/V 不消除 query-head 计算" }
+          ]
+        },
+        {
+          id: "cache", label: "Shared KV cache", summary: "256 elements / token / layer",
+          description: "每个历史 token 只持久化一份 128-d key 与一份 128-d value。", tone: "state",
+          symbols: [
+            { symbol: "KV_cache", label: "Persistent state", shape: "[B, L, 1, 128] × 2", value: "2 × 128 = 256 elements/token", note: "相对 8-head MHA 理论缩小 8 倍" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "queries", label: "Q projection" },
+        { from: "input", to: "shared-kv", label: "shared KV" },
+        { from: "queries", to: "attention", label: "8 queries" },
+        { from: "shared-kv", to: "attention", label: "broadcast" },
+        { from: "shared-kv", to: "cache", label: "store once" }
+      ]
+    },
+    gqa: {
+      modules: [
+        {
+          id: "input", label: "Decoder representation", summary: "4096-d T5.1.1-XXL",
+          description: "decoder self/cross-attention 将 64 个 query heads 分配给 8 个 KV groups。", tone: "muted",
+          symbols: [
+            { symbol: "X", label: "Input", shape: "[B, L, 4096]", value: "d_model = 4096", note: "GQA-8-XXL representative configuration" }
+          ]
+        },
+        {
+          id: "queries", label: "Query heads", summary: "64 heads × 64-d",
+          description: "query 多样性保持为 64 heads；每 8 个相邻 query heads 共用一个 KV head。", tone: "compute",
+          symbols: [
+            { symbol: "Q", label: "Query", shape: "[B, 64, L_q, 64]", value: "H_q = 64", note: "decoder query heads" }
+          ]
+        },
+        {
+          id: "grouped-kv", label: "Grouped K / V", summary: "8 groups × 64-d",
+          description: "K/V 只保留 8 组，组映射 g(h)=⌊h/8⌋。", tone: "control",
+          symbols: [
+            { symbol: "K,V", label: "Grouped activations", shape: "[B, 8, L_k, 64]", value: "H_kv = 8", note: "每组服务 8 个 query heads" },
+            { symbol: "g(h)", label: "Head mapping", shape: "[64] → [8]", value: "group ratio = 8", note: "要求 H_q 可被 H_kv 整除" }
+          ]
+        },
+        {
+          id: "attention", label: "Grouped attention", summary: "64 score maps",
+          description: "每个 query head 仍有独立 softmax，只是读取所属组的 K/V。", tone: "compute",
+          symbols: [
+            { symbol: "A", label: "Attention weights", shape: "[B, 64, L_q, L_k]", value: "scale = 1/√64", note: "T5 self-attention另加桶化相对偏置" }
+          ]
+        },
+        {
+          id: "cache", label: "Grouped KV cache", summary: "1024 elements / token / layer",
+          description: "缓存宽度只乘 8 个 KV heads，而不是 64 个 query heads。", tone: "state",
+          symbols: [
+            { symbol: "KV_cache", label: "Persistent state", shape: "[B, L, 8, 64] × 2", value: "2 × 8 × 64 = 1024 elements/token", note: "相对对应 MHA 理论缩小 8 倍" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "queries", label: "Q" },
+        { from: "input", to: "grouped-kv", label: "8 KV groups" },
+        { from: "queries", to: "attention", label: "64 heads" },
+        { from: "grouped-kv", to: "attention", label: "group map" },
+        { from: "grouped-kv", to: "cache", label: "persist" }
+      ]
+    },
+    mla: {
+      modules: [
+        {
+          id: "input", label: "Residual stream", summary: "DeepSeek-V2 · 5120-d",
+          description: "MLA 从同一 hidden state 生成 query latent、KV latent 与位置支路。", tone: "muted",
+          symbols: [
+            { symbol: "h_t", label: "Input", shape: "[B, L, 5120]", value: "d_model = 5120", note: "DeepSeek-V2 representative model" }
+          ]
+        },
+        {
+          id: "query", label: "Query path", summary: "1536 latent → 128 heads",
+          description: "query 先压到 1536 维 latent，再展开为 128 个内容/位置 query heads；query 不进入历史缓存。", tone: "compute",
+          symbols: [
+            { symbol: "c_t^Q", label: "Query latent", shape: "[B, L, 1536]", value: "d_c' = 1536", note: "current-token temporary activation" },
+            { symbol: "q_t", label: "Query heads", shape: "[B, 128, L, 192]", value: "128 content + 64 RoPE", note: "score scaling follows 192-d explicit head" }
+          ]
+        },
+        {
+          id: "latent", label: "Joint KV latent", summary: "One shared 512-d source",
+          description: "同一个 512-d latent 通过逐头上投影生成内容 K/V；Decode 时吸收投影后直接读取 latent。", tone: "control",
+          symbols: [
+            { symbol: "c_t^{KV}", label: "Joint latent", shape: "[B, L, 512]", value: "C = 512", note: "同一份表示同时派生 K 与 V" },
+            { symbol: "k_i^C,v_i", label: "Prefill expansion", shape: "[B, 128, L, 128]", value: "128 heads × 128-d", note: "只作为 Prefill 中间激活" }
+          ]
+        },
+        {
+          id: "decode", label: "Absorbed Decode", summary: "MQA-like 512-d working space",
+          description: "K 上投影吸收到 query，V 上投影吸收到输出；历史不重建多头 K/V。", tone: "compute",
+          symbols: [
+            { symbol: "q̃_i", label: "Absorbed query", shape: "[B, 128, 1, 512]", value: "128 heads read shared latent", note: "结构执行口径，不是无约束标准 MQA-512" }
+          ]
+        },
+        {
+          id: "cache", label: "Latent + RoPE cache", summary: "576 elements / token / layer",
+          description: "持久缓存只含 512-d joint latent 与一份共享 64-d RoPE key。", tone: "state",
+          symbols: [
+            { symbol: "c^{KV},k^R", label: "Persistent state", shape: "[B, L, 512] + [B, L, 64]", value: "512 + 64 = 576 elements/token", note: "没有 128 个 KV-head 副本" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "query", label: "Q LoRA" },
+        { from: "input", to: "latent", label: "KV down" },
+        { from: "query", to: "decode", label: "absorb K" },
+        { from: "latent", to: "decode", label: "shared read" },
+        { from: "latent", to: "cache", label: "persist" }
+      ]
+    },
+    mfa: {
+      modules: [
+        {
+          id: "input", label: "Residual stream", summary: "2048-d model width",
+          description: "输入先进入共享 C 维 query/key/value feature space。", tone: "muted",
+          symbols: [
+            { symbol: "X", label: "Input", shape: "[B, L, 2048]", value: "d_model = 2048", note: "MFA scale-study representative model" }
+          ]
+        },
+        {
+          id: "shared", label: "Shared C-dimensional features", summary: "C = 256",
+          description: "token 只产生一份共享 key/value feature；head 数不会复制历史缓存。", tone: "control",
+          symbols: [
+            { symbol: "q,k,v", label: "Shared features", shape: "[B, L, 256]", value: "C = 256", note: "K/V each have one shared head" }
+          ]
+        },
+        {
+          id: "head-matrices", label: "Head-specific QK / VO matrices", summary: "18 heads × 256×256", col: 2,
+          description: "每个 head 用独立 C×C 矩阵改变匹配与写回，容量保存在权重而非缓存。", tone: "compute",
+          symbols: [
+            { symbol: "Q_c,O_c", label: "Per-head weights", shape: "[18, 256, 256]", value: "m = 18 heads", note: "factorization rank per head up to C" }
+          ]
+        },
+        {
+          id: "attention", label: "Multi-head C-space attention", summary: "18 independent softmax maps", col: 2,
+          description: "共享底片被 18 套 QK/VO circuit 读取，score 仍保留 head 轴。", tone: "compute",
+          symbols: [
+            { symbol: "A", label: "Attention weights", shape: "[B, 18, L, L]", value: "TER proxy = 18 × 256", note: "TER 是容量代理，不是精度定理" }
+          ]
+        },
+        {
+          id: "cache", label: "Shared K / V cache", summary: "512 elements / token / layer", col: 2,
+          description: "标准 MFA 缓存一份 256-d K 和一份 256-d V；MFA-KR 可只存 key。", tone: "state",
+          symbols: [
+            { symbol: "K,V", label: "MFA cache", shape: "[B, L, 256] each", value: "2C = 512 elements/token", note: "BF16 时每层每 token 为 1 KiB" },
+            { symbol: "K", label: "MFA-KR cache", shape: "[B, L, 256]", value: "C = 256 elements/token", note: "key reuse 以小幅质量折损换半数缓存" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "shared", label: "shared project" },
+        { from: "shared", to: "head-matrices", label: "18 views" },
+        { from: "head-matrices", to: "attention", label: "QK / VO" },
+        { from: "shared", to: "cache", label: "store once" }
+      ]
+    },
+    tpa: {
+      modules: [
+        {
+          id: "input", label: "Residual stream", summary: "T6-XL · 1600-d",
+          description: "每个 token 动态生成 head-axis A 因子与 channel-axis B 因子。", tone: "muted",
+          symbols: [
+            { symbol: "X", label: "Input", shape: "[B, L, 1600]", value: "d_model = 1600", note: "T6-XL official research configuration" }
+          ]
+        },
+        {
+          id: "a-factors", label: "Head-axis A factors", summary: "Ranks × 78 heads",
+          description: "A 因子决定每个 token 如何在 78 个 heads 上混合低秩 channel patterns。", tone: "control",
+          symbols: [
+            { symbol: "A_Q", label: "Query head factors", shape: "[B, L, 6, 78]", value: "R_Q = 6", note: "token-dependent head mixing" },
+            { symbol: "A_K,A_V", label: "KV head factors", shape: "[B, L, 2, 78]", value: "R_K = R_V = 2", note: "进入因子缓存" }
+          ]
+        },
+        {
+          id: "b-factors", label: "Channel-axis B factors", summary: "Ranks × 64 channels",
+          description: "B 因子承载 64-d channel patterns；RoPE 逐行作用于 B_Q/B_K。", tone: "compute",
+          symbols: [
+            { symbol: "B_Q", label: "Query channel factors", shape: "[B, L, 6, 64]", value: "d_h = 64", note: "每一 rank row 独立旋转" },
+            { symbol: "B_K,B_V", label: "KV channel factors", shape: "[B, L, 2, 64]", value: "R_K = R_V = 2", note: "B_K 写缓存前预旋转，B_V 不旋转" }
+          ]
+        },
+        {
+          id: "reconstruct", label: "Tensor-product Q / K / V", summary: "78 heads × 64-d",
+          description: "A^T B 沿 rank 轴收缩，逻辑上得到宽于 residual stream 的 attention inner width。", tone: "compute",
+          symbols: [
+            { symbol: "Q,K,V", label: "Logical activations", shape: "[B, 78, L, 64]", value: "inner width = 4992", note: "Decode kernel 可直接在因子域收缩而不重建历史 K/V" }
+          ]
+        },
+        {
+          id: "cache", label: "Factorized KV cache", summary: "568 elements / token / layer",
+          description: "每个 rank 保存一组 78-d head factor 与 64-d channel factor。", tone: "state",
+          symbols: [
+            { symbol: "A_K,B_K,A_V,B_V", label: "Persistent factors", shape: "(2+2) × (78+64)", value: "568 elements/token", note: "完整 MHA-shaped cache 对照为 9984" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "a-factors", label: "A projections" },
+        { from: "input", to: "b-factors", label: "B projections" },
+        { from: "a-factors", to: "reconstruct", label: "head axis" },
+        { from: "b-factors", to: "reconstruct", label: "channel axis" },
+        { from: "a-factors", to: "cache", label: "KV ranks" },
+        { from: "b-factors", to: "cache", label: "KV ranks" }
+      ]
+    },
+    dsa: {
+      modules: [
+        {
+          id: "input", label: "Residual stream", summary: "DeepSeek-V3.2-Exp · 7168-d",
+          description: "同一 hidden state 同时驱动低成本 Lightning Indexer 与 MLA core。", tone: "muted",
+          symbols: [
+            { symbol: "H", label: "Input", shape: "[B, L, 7168]", value: "d_model = 7168", note: "671B representative configuration" }
+          ]
+        },
+        {
+          id: "indexer", label: "Lightning Indexer", summary: "64 query heads × 128-d",
+          description: "低维 indexer 扫描共享 128-d key cache，估计哪些历史 token 值得进入昂贵 core。", tone: "control",
+          symbols: [
+            { symbol: "Q^I", label: "Indexer queries", shape: "[B, L_q, 64, 128]", value: "H^I = 64", note: "per-head query plus learned aggregation weight" },
+            { symbol: "K^I", label: "Shared index cache", shape: "[B, L_k, 128]", value: "d_I = 128", note: "官方路径可用 FP8 + scale" }
+          ]
+        },
+        {
+          id: "topk", label: "Token-level top-k routing", summary: "k = 2048", col: 2,
+          description: "每个 query 只把 2048 个 token positions 交给 MLA core；没有额外固定滑窗。", tone: "orange",
+          symbols: [
+            { symbol: "I_t", label: "Selected positions", shape: "[B, L_q, 2048]", value: "top-k = 2048", note: "离散路由存在漏召回风险" }
+          ]
+        },
+        {
+          id: "core", label: "Sparse MLA core", summary: "128 heads read selected latent entries", col: 2,
+          description: "core 只读取选中位置的 512-d latent 与 64-d RoPE key，并按 MLA 计算。", tone: "compute",
+          symbols: [
+            { symbol: "c^{KV},k^R", label: "Gathered core entries", shape: "[B, L_q, 2048, 576]", value: "512 latent + 64 RoPE", note: "逻辑 gather 形状；实现可分页/分块" }
+          ]
+        },
+        {
+          id: "cache", label: "Dual persistent cache", summary: "MLA 576 + Indexer 128",
+          description: "每个历史 token 同时保存 MLA core entry 与一份共享 index key。", tone: "state",
+          symbols: [
+            { symbol: "Cache", label: "Persistent state", shape: "[B, L, 576] + [B, L, 128]", value: "704 logical elements/token", note: "实际字节取决于 core/indexer dtype" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "indexer", label: "cheap score" },
+        { from: "indexer", to: "topk", label: "rank" },
+        { from: "topk", to: "core", label: "gather positions" },
+        { from: "cache", to: "indexer", label: "index keys" },
+        { from: "cache", to: "core", label: "MLA entries" }
+      ]
+    },
+    csa: {
+      modules: [
+        {
+          id: "input", label: "Raw token stream", summary: "DeepSeek-V4-Pro · 7168-d",
+          description: "CSA 同时构建重叠 compressed KV、独立 Indexer key 与原始局部窗口。", tone: "muted",
+          symbols: [
+            { symbol: "H", label: "Input", shape: "[B, L, 7168]", value: "d_model = 7168", note: "V4-Pro representative configuration" }
+          ]
+        },
+        {
+          id: "compressor", label: "Overlapping compressor", summary: "span 8, stride 4",
+          description: "每个 512-d compressed entry 汇总 2m=8 个 raw tokens，序列长度约缩短 4 倍。", tone: "control",
+          symbols: [
+            { symbol: "C^{Comp}", label: "Compressed KV", shape: "[B, ⌊L/4⌋, 512]", value: "m = 4", note: "同一 entry 兼作 key 与 value" }
+          ]
+        },
+        {
+          id: "indexer", label: "Compressed Indexer", summary: "64 heads × 128-d", col: 2,
+          description: "独立 compressor 产生 128-d compressed index keys，并从约 L/4 个候选中选址。", tone: "orange",
+          symbols: [
+            { symbol: "K^{IComp}", label: "Index keys", shape: "[B, ⌊L/4⌋, 128]", value: "64 query heads × 128-d", note: "与 C^{Comp} 是不同缓存" },
+            { symbol: "𝓢_t", label: "Selected entries", shape: "[B, L, 1024]", value: "top-k = 1024", note: "候选单位是 compressed entry" }
+          ]
+        },
+        {
+          id: "core", label: "Shared-KV compressed core", summary: "128 query heads × 512-d", col: 2,
+          description: "128 个 query heads 读取同一组被选 compressed entries；末 64 维使用 partial/inverse RoPE。", tone: "compute",
+          symbols: [
+            { symbol: "Q", label: "Core queries", shape: "[B, 128, L, 512]", value: "H_q = 128", note: "core 前 per-head RMSNorm" },
+            { symbol: "C_{𝓢_t}^{Comp}", label: "Gathered entries", shape: "[B, L, 1024, 512]", value: "one shared KV head", note: "逻辑形状；含 attention sink" }
+          ]
+        },
+        {
+          id: "local", label: "Raw local branch", summary: "128-token window", col: 1,
+          description: "局部分支保留当前附近未压缩 token，弥补 compressed core 的细节损失。", tone: "gather",
+          symbols: [
+            { symbol: "H_local", label: "Local context", shape: "[B, L, 128, 7168]", value: "window = 128", note: "与 compressed global branch 并行" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "compressor", label: "2m overlap" },
+        { from: "compressor", to: "indexer", label: "compressed pool" },
+        { from: "indexer", to: "core", label: "top-k 1024" },
+        { from: "input", to: "local", label: "raw window" },
+        { from: "local", to: "core", label: "merge" }
+      ]
+    },
+    hca: {
+      modules: [
+        {
+          id: "input", label: "Raw token stream", summary: "DeepSeek-V4-Pro · 7168-d",
+          description: "HCA 把已闭合的 128-token blocks 压成全局摘要，同时保留当前局部窗口。", tone: "muted",
+          symbols: [
+            { symbol: "H", label: "Input", shape: "[B, L, 7168]", value: "d_model = 7168", note: "V4-Pro representative configuration" }
+          ]
+        },
+        {
+          id: "compressor", label: "Non-overlapping block compressor", summary: "128 tokens → 1 entry",
+          description: "每个完整 block 产生一条 512-d compressed KV entry；未闭合 block 不提前进入全局缓存。", tone: "control",
+          symbols: [
+            { symbol: "C^{Comp}", label: "Completed summaries", shape: "[B, ⌊L/128⌋, 512]", value: "m′ = 128", note: "同一 entry 兼作 key 与 value" }
+          ]
+        },
+        {
+          id: "global", label: "Compressed-dense global read", summary: "Read all completed blocks", col: 2,
+          description: "没有 Indexer 或 top-k；每个 query dense 读取全部可见 compressed summaries。", tone: "compute",
+          symbols: [
+            { symbol: "A^{global}", label: "Global weights", shape: "[B, 128, L, ⌊L/128⌋]", value: "H_q = 128", note: "因果 mask 排除当前未闭合块" },
+            { symbol: "Q", label: "Core queries", shape: "[B, 128, L, 512]", value: "core head dim = 512", note: "末 64 维 partial/inverse RoPE" }
+          ]
+        },
+        {
+          id: "local", label: "Raw local branch", summary: "128-token window", col: 1,
+          description: "局部分支读取最近 raw tokens，覆盖当前 block 与精细顺序。", tone: "gather",
+          symbols: [
+            { symbol: "H_local", label: "Local context", shape: "[B, L, 128, 7168]", value: "window = 128", note: "与 compressed-dense global branch 并行" }
+          ]
+        },
+        {
+          id: "cache", label: "Block summaries + local carry", summary: "Length reduced by 128× globally", col: 2,
+          description: "全局缓存随完成 block 数增长，而不是为每个 raw token 保存完整 KV。", tone: "state",
+          symbols: [
+            { symbol: "Cache_global", label: "Persistent summaries", shape: "[B, ⌊L/128⌋, 512]", value: "one shared KV entry/block", note: "另需局部窗口/carry 的运行时状态" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "input", to: "compressor", label: "128→1" },
+        { from: "compressor", to: "global", label: "all completed" },
+        { from: "input", to: "local", label: "raw window" },
+        { from: "global", to: "cache", label: "summaries" },
+        { from: "local", to: "global", label: "merge" }
+      ]
+    },
+    kda: {
+      modules: [
+        {
+          id: "backbone", label: "Kimi K3 hybrid backbone", summary: "93 layers · 69 KDA + 24 Gated MLA",
+          description: "前 92 层重复 23 次“3 KDA + 1 Gated MLA”，第 93 层再追加一个 Gated MLA。", tone: "muted",
+          symbols: [
+            { symbol: "H", label: "Residual stream", shape: "[B, T, 7168]", value: "d_model = 7168", note: "2.8T total / 104B activated parameters" },
+            { symbol: "Layers", label: "Attention schedule", shape: "23 × [KDA,KDA,KDA,GMLA] + [GMLA]", value: "69 KDA + 24 Gated MLA", note: "layerwise hybrid, not headwise mixing" }
+          ]
+        },
+        {
+          id: "qkv", label: "KDA Q / K / V paths", summary: "96 heads × 128-d", col: 1,
+          description: "Q/K/V 经过 width-4 ShortConv；Q/K 再做激活与 L2 normalization。", tone: "compute",
+          symbols: [
+            { symbol: "q,k,v", label: "KDA activations", shape: "[B, T, 96, 128]", value: "H = 96, d_k = d_v = 128", note: "ShortConv width = 4" }
+          ]
+        },
+        {
+          id: "gates", label: "Channel decay + delta rate", summary: "128-channel α and scalar β", col: 2,
+          description: "每个 head 的 128 个 key channels 独立衰减；β 控制 rank-1 delta 写入，输出另有 full-rank gate。", tone: "control",
+          symbols: [
+            { symbol: "α_t", label: "Channel decay", shape: "[B, T, 96, 128]", value: "lower-bounded log decay", note: "每个 key channel 独立" },
+            { symbol: "β_t", label: "Update rate", shape: "[B, T, 96]", value: "scalar / head / token", note: "sigmoid delta-write strength" }
+          ]
+        },
+        {
+          id: "state", label: "Fixed recurrent state", summary: "96 × 128×128 matrices", col: 2,
+          description: "KDA 把历史折叠进每头固定矩阵，状态大小不随 1M context 增长。", tone: "state",
+          symbols: [
+            { symbol: "S_t", label: "KDA state", shape: "[B, 96, 128, 128]", value: "1,572,864 elements / sequence / layer", note: "不含 dtype 与 ShortConv state" }
+          ]
+        },
+        {
+          id: "gated-mla", label: "Periodic Gated MLA", summary: "24 global-attention layers", col: 1,
+          description: "Gated MLA 为全局精确回看保留 token-indexed latent cache，并用数据依赖输出 gate 调节读取。", tone: "gather",
+          symbols: [
+            { symbol: "GMLA", label: "Global layers", shape: "[24 layers, B, T, 7168]", value: "NoPE + output gate", note: "官方报告未明确给出细分 q/kv latent rank，因此不补写" },
+            { symbol: "Context", label: "Maximum context", shape: "[B, 1,048,576]", value: "1M tokens", note: "Gated MLA cache 仍随 token 数增长" }
+          ]
+        }
+      ],
+      edges: [
+        { from: "backbone", to: "qkv", label: "69 KDA layers" },
+        { from: "qkv", to: "gates", label: "decay/write" },
+        { from: "gates", to: "state", label: "update" },
+        { from: "backbone", to: "gated-mla", label: "24 global layers" },
+        { from: "state", to: "gated-mla", label: "hybrid context", back: true }
+      ]
+    }
+  };
+
   window.ATTENTION_CHAPTERS.forEach(function (chapter) {
     var enhancement = chapterEnhancements[chapter.id];
     if (!enhancement) {
@@ -2228,6 +2708,14 @@
 
     chapter.positionEncoding = enhancement.positionEncoding;
     chapter.attentionConfig = enhancement.attentionConfig;
+    if (attentionConfigMaps[chapter.id]) {
+      chapter.attentionConfig.key = chapter.id;
+      chapter.attentionConfig.title = chapter.attentionConfig.model + " 模型结构参数图";
+      chapter.attentionConfig.description =
+        "选择任一模块，查看对应数学符号、张量 shape 与代表模型参数。";
+      chapter.attentionConfig.modules = attentionConfigMaps[chapter.id].modules;
+      chapter.attentionConfig.edges = attentionConfigMaps[chapter.id].edges;
+    }
 
     enhancement.derivations.forEach(function (derivation) {
       chapter.derivations.push(derivation);

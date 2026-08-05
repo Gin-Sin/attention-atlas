@@ -17,7 +17,7 @@ CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容�
 
 - `order` 从 0 连续递增，`category` 只能是 `dense`、`sparse`、`linear` 或 `hybrid`。
 - 动机、约束、数学直觉、架构图、警告和权威来源组成基础教学内容；来源使用可解析的 HTTP(S) URL。
-- `attentionConfig` 必须给出主论文/技术报告中的代表模型、参数口径、至少 4 个带 `label/value/note` 的 Attention 核心参数、来源链接和边界说明。
+- 除 Linear Attention 与 DeltaNet 外，`attentionConfig` 必须给出来源可追溯的代表模型、至少 4 个可交互结构模块、有效模块连线，以及每个模块的数学符号、shape、具体参数和边界说明；上述两章显式标记为不渲染参数图。
 - `positionEncoding` 必须包含标题、摘要、公式、实现边界，以及恰好 3 个带 `label/title/body` 的步骤。
 - 数学推导为 4–6 个；每个推导都必须有 `title/body/source`。
 - 每章恰好 6 道练习；每题都必须有 `kind/level/q/hint/answer`。
@@ -30,7 +30,7 @@ CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容�
 
 ### 代表模型 Attention 参数
 
-章节页在教学内容前展示一张来源可追溯的参数卡，覆盖 hidden size、Q/KV heads、head dimension、位置维度，以及该架构特有的 cache/state/compression/top-k/window 参数。卡片中的数字属于明确命名的论文实验或官方 checkpoint，不代表架构定义强制这些取值；来源未明确的字段保持“未明确给出”，推导值会单独标注，公开材料冲突也不会被拼接成伪精确配置。
+章节页在教学内容前展示来源可追溯的交互式模型结构图。点击或键盘选择 SVG 模块后，右侧详情面板展示对应数学符号、张量 shape、代表模型数值和口径说明；模块图与正文架构图的“点击跳代码”互不复用事件。Linear Attention 与 DeltaNet 不展示参数图。其余章节中的数字属于明确命名的论文实验或官方 checkpoint，不代表架构定义强制这些取值；来源未明确的字段保持“报告未给出”，推导值会单独标注。
 
 ## PyTorch 教学实现
 
@@ -51,7 +51,7 @@ CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容�
 - `hca → pytorch/hca.py`：10 块，非重叠重压缩、逆 RoPE 规范化、完结摘要缓存、局部窗口、dense 摘要读取、输出投影与 smoke test。
 - `linear → pytorch/linear_attention.py`：5 块，ELU+1、prefix/recurrent 等价与固定状态。
 - `gated-delta → pytorch/gated_delta.py`：5 块，ShortConv、标量门控 delta 递推与教学边界。
-- `kda → pytorch/kda.py`：7 块，逐通道 DPLR、NoPE 全局层与 3:1 层级混合。
+- `kda → pytorch/kda.py`：7 块，逐通道 DPLR、NoPE 全局层与 3:1 层级混合；章节参数图另以最新 Kimi K3 展示 69 KDA + 24 Gated MLA 的代表配置。
 
 修改 `pytorch/` 后重新生成浏览器 bundle：
 

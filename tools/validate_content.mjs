@@ -36,8 +36,23 @@ const EXPECTED_SOURCE_PATHS = new Map([
   ["kda", "pytorch/kda.py"]
 ]);
 const VALID_CATEGORIES = new Set(["dense", "sparse", "linear", "hybrid"]);
+const OMITTED_ATTENTION_CONFIG_IDS = new Set(["linear", "gated-delta"]);
 const ATTENTION_CONFIG_FIELDS = ["model", "scope", "caveat"];
 const ATTENTION_CONFIG_ITEM_FIELDS = ["label", "value", "note"];
+const ATTENTION_CONFIG_MODULE_FIELDS = [
+  "id",
+  "label",
+  "summary",
+  "description",
+  "tone"
+];
+const ATTENTION_CONFIG_SYMBOL_FIELDS = [
+  "symbol",
+  "label",
+  "shape",
+  "value",
+  "note"
+];
 const POSITION_FIELDS = ["title", "summary", "equation", "caveat"];
 const POSITION_STEP_FIELDS = ["label", "title", "body"];
 const DERIVATION_FIELDS = ["title", "body", "source"];
@@ -70,6 +85,7 @@ const counts = {
   flowEdges: 0,
   implementations: 0,
   blocks: 0,
+  configModules: 0,
   indexLinks: 0
 };
 
@@ -168,9 +184,14 @@ function validateChapters(chapters) {
       ATTENTION_CONFIG_FIELDS.forEach((field) => {
         requireString(attentionConfig, field, `${location}.attentionConfig`);
       });
-      if (!Array.isArray(attentionConfig.items) || attentionConfig.items.length < 4) {
-        addError(`${location}.attentionConfig.items must contain at least 4 entries`);
-      } else {
+      const shouldOmitConfig = OMITTED_ATTENTION_CONFIG_IDS.has(chapter.id);
+      if (Boolean(attentionConfig.omit) !== shouldOmitConfig) {
+        addError(
+          `${location}.attentionConfig.omit must be ${shouldOmitConfig}; ` +
+            "only linear and gated-delta omit the interactive explorer"
+        );
+      }
+      if (Array.isArray(attentionConfig.items)) {
         attentionConfig.items.forEach((item, itemIndex) => {
           ATTENTION_CONFIG_ITEM_FIELDS.forEach((field) => {
             requireString(
@@ -180,6 +201,62 @@ function validateChapters(chapters) {
             );
           });
         });
+      }
+      if (!shouldOmitConfig) {
+        if (!Array.isArray(attentionConfig.items) || attentionConfig.items.length < 4) {
+          addError(`${location}.attentionConfig.items must contain at least 4 entries`);
+        }
+        if (!Array.isArray(attentionConfig.modules) || attentionConfig.modules.length < 4) {
+          addError(`${location}.attentionConfig.modules must contain at least 4 entries`);
+        } else {
+          counts.configModules += attentionConfig.modules.length;
+          const moduleIds = new Set();
+          attentionConfig.modules.forEach((module, moduleIndex) => {
+            const moduleLocation =
+              `${location}.attentionConfig.modules[${moduleIndex}]`;
+            ATTENTION_CONFIG_MODULE_FIELDS.forEach((field) => {
+              requireString(module, field, moduleLocation);
+            });
+            if (isNonEmptyString(module.id)) {
+              if (moduleIds.has(module.id)) {
+                addError(`${moduleLocation}.id must be unique: ${module.id}`);
+              }
+              moduleIds.add(module.id);
+            }
+            if (!Array.isArray(module.symbols) || module.symbols.length === 0) {
+              addError(`${moduleLocation}.symbols must be a nonempty array`);
+            } else {
+              module.symbols.forEach((symbol, symbolIndex) => {
+                ATTENTION_CONFIG_SYMBOL_FIELDS.forEach((field) => {
+                  requireString(
+                    symbol,
+                    field,
+                    `${moduleLocation}.symbols[${symbolIndex}]`
+                  );
+                });
+              });
+            }
+          });
+          if (!Array.isArray(attentionConfig.edges) || attentionConfig.edges.length === 0) {
+            addError(`${location}.attentionConfig.edges must be a nonempty array`);
+          } else {
+            attentionConfig.edges.forEach((edge, edgeIndex) => {
+              const edgeLocation =
+                `${location}.attentionConfig.edges[${edgeIndex}]`;
+              ["from", "to", "label"].forEach((field) => {
+                requireString(edge, field, edgeLocation);
+              });
+              if (isNonEmptyString(edge.from) && !moduleIds.has(edge.from)) {
+                addError(`${edgeLocation}.from references unknown module ${edge.from}`);
+              }
+              if (isNonEmptyString(edge.to) && !moduleIds.has(edge.to)) {
+                addError(`${edgeLocation}.to references unknown module ${edge.to}`);
+              }
+            });
+          }
+        }
+      } else if (attentionConfig.modules !== undefined) {
+        addError(`${location}.attentionConfig.modules must be absent when omit=true`);
       }
       if (!Array.isArray(attentionConfig.sources) || attentionConfig.sources.length === 0) {
         addError(`${location}.attentionConfig.sources must be a nonempty array`);
@@ -354,6 +431,9 @@ function validateDiagrams(chapters, diagramBuilder, implementations) {
     addError("assets/diagrams.js must expose window.AttentionDiagrams.build");
     return;
   }
+  if (typeof diagramBuilder.buildConfig !== "function") {
+    addError("assets/diagrams.js must expose window.AttentionDiagrams.buildConfig");
+  }
   if (!Array.isArray(chapters)) return;
 
   chapters.forEach((chapter) => {
@@ -450,6 +530,42 @@ function validateDiagrams(chapters, diagramBuilder, implementations) {
     } catch (error) {
       addError(`${location} failed to build: ${error.message}`);
     }
+
+    if (
+      !chapter.attentionConfig?.omit &&
+      typeof diagramBuilder.buildConfig === "function"
+    ) {
+      const configLocation = `attentionConfig diagram for ${chapter.id}`;
+      try {
+        const configReport = diagramBuilder.buildConfig(chapter.attentionConfig);
+        const configSvg =
+          typeof configReport === "string" ? configReport : configReport?.svg;
+        if (!isNonEmptyString(configSvg) || !configSvg.includes("<svg")) {
+          addError(`${configLocation} returned an empty or invalid svg`);
+          return;
+        }
+        const renderedModuleIds = Array.from(
+          configSvg.matchAll(/\bdata-config-module="([^"]+)"/g),
+          (match) => match[1]
+        );
+        const expectedModuleIds = chapter.attentionConfig.modules.map(
+          (module) => module.id
+        );
+        compareOrderedIds(
+          renderedModuleIds,
+          expectedModuleIds,
+          `${configLocation} module ids`
+        );
+        if (
+          renderedModuleIds.length > 0 &&
+          !/\btabindex="0"/.test(configSvg)
+        ) {
+          addError(`${configLocation} modules must be keyboard focusable`);
+        }
+      } catch (error) {
+        addError(`${configLocation} failed to build: ${error.message}`);
+      }
+    }
   });
 }
 
@@ -463,9 +579,14 @@ function validateRenderer(courseSource, chapterHtml) {
   if (
     !/function renderAttentionConfig\(/.test(courseSource) ||
     !/renderAttentionConfig\(c\.attentionConfig\)/.test(courseSource) ||
-    !/attention-config__grid/.test(courseSource)
+    !/function initAttentionConfig\(/.test(courseSource) ||
+    !/initAttentionConfig\(root, c\.attentionConfig\)/.test(courseSource) ||
+    !/AttentionDiagrams\.buildConfig\(config\)/.test(courseSource) ||
+    !/data-config-detail/.test(courseSource)
   ) {
-    addError("assets/course.js must render every chapter attentionConfig as a parameter card");
+    addError(
+      "assets/course.js must render and initialize the interactive attentionConfig explorer"
+    );
   }
   if (/PyTorch 逐块实现/.test(courseSource)) {
     addError("assets/course.js still renders a separate PyTorch implementation section");
@@ -834,6 +955,7 @@ function main() {
       `${counts.chapters} chapters, ${counts.derivations} derivations, ` +
       `${counts.exercises} exercises, ${counts.diagrams} diagrams, ` +
       `${counts.interactiveNodes} interactive nodes, ` +
+      `${counts.configModules} config modules, ` +
       `${counts.flowNodes} flow nodes/${counts.flowEdges} flow edges, ` +
       `${counts.implementations} implementations/${counts.blocks} blocks, ` +
       `${counts.indexLinks} index links; generated bundle synchronized.`

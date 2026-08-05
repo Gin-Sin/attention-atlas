@@ -519,39 +519,117 @@ button { font: inherit; }
   color: var(--ink-2);
   font-size: 13px;
 }
-.attention-config__grid {
+.attention-config__explorer {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 1px;
-  margin: 0;
-  background: var(--rule);
+  grid-template-columns: minmax(0, 1.22fr) minmax(260px, .78fr);
+  min-height: 340px;
 }
-.attention-config__item {
+.attention-config__map {
   min-width: 0;
-  padding: 16px 18px;
-  background: rgb(255 255 255 / 94%);
+  padding: 18px;
+  overflow: auto;
+  background:
+    linear-gradient(rgb(48 54 58 / 3%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(48 54 58 / 3%) 1px, transparent 1px),
+    rgb(255 255 255 / 94%);
+  background-size: 24px 24px;
 }
-.attention-config__item dt {
-  margin-bottom: 7px;
+.attention-config__map svg {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  height: auto;
+}
+.attention-config__map [data-config-module] {
+  cursor: pointer;
+  outline: none;
+}
+.attention-config__map [data-config-module] rect,
+.attention-config__map [data-config-module] polygon {
+  transition: stroke .18s ease, stroke-width .18s ease, filter .18s ease;
+}
+.attention-config__map [data-config-module]:hover rect,
+.attention-config__map [data-config-module]:focus-visible rect,
+.attention-config__map [data-config-module]:hover polygon,
+.attention-config__map [data-config-module]:focus-visible polygon {
+  stroke: var(--category-ink);
+  stroke-width: 2;
+  filter: drop-shadow(0 5px 8px rgb(48 54 58 / 12%));
+}
+.attention-config__map [data-config-module].is-config-selected rect,
+.attention-config__map [data-config-module].is-config-selected polygon {
+  stroke: var(--category-ink);
+  stroke-width: 3;
+  filter: drop-shadow(0 6px 10px rgb(48 54 58 / 16%));
+}
+.attention-config__detail {
+  min-width: 0;
+  padding: 22px;
+  border-left: 1px solid var(--rule);
+  background: var(--paper-2);
+}
+.attention-config__detail-kicker {
+  color: var(--ink);
+  font: 500 9px/1.4 var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.attention-config__detail h3 {
+  margin: 8px 0 6px;
+  color: var(--category-ink);
+  font: 600 19px/1.35 var(--serif);
+}
+.attention-config__detail > p {
+  margin: 0 0 16px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.attention-config__symbols {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+.attention-config__symbol {
+  padding: 10px 11px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 72%);
+}
+.attention-config__symbol dt,
+.attention-config__symbol dd { margin: 0; }
+.attention-config__symbol dt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.attention-config__symbol code {
+  color: var(--category-ink);
+  font: 500 12px/1.4 var(--mono);
+}
+.attention-config__symbol dt span {
   color: var(--muted);
-  font: 500 9px/1.35 var(--mono);
+  font: 500 8px/1.4 var(--mono);
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-.attention-config__item dd { margin: 0; }
-.attention-config__item strong {
-  display: block;
-  color: var(--ink);
-  font: 500 15px/1.4 var(--mono);
-  overflow-wrap: anywhere;
-}
-.attention-config__item dd span {
+.attention-config__symbol dd strong {
   display: block;
   margin-top: 5px;
-  color: var(--ink-2);
-  font-size: 11.5px;
-  line-height: 1.55;
+  color: var(--ink);
+  font: 500 12px/1.45 var(--mono);
+  overflow-wrap: anywhere;
 }
+.attention-config__symbol dd > span,
+.attention-config__symbol small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.attention-config__symbol small { color: var(--muted); }
 .attention-config__footer {
   display: grid;
   gap: 10px;
@@ -581,7 +659,7 @@ button { font: inherit; }
   position: fixed;
   z-index: 30;
   top: 24px;
-  right: max(24px, calc(50vw - 744px));
+  right: 24px;
   width: 280px;
   max-height: calc(100vh - 48px);
   overflow: hidden;
@@ -2056,6 +2134,11 @@ details p { margin-bottom: 0; }
 @media (max-width: 900px) {
   .hero { min-height: auto; grid-template-columns: 1fr; }
   .hero-map { max-width: 560px; }
+  .attention-config__explorer { grid-template-columns: 1fr; }
+  .attention-config__detail {
+    border-top: 1px solid var(--rule);
+    border-left: 0;
+  }
   .path-grid, .chapter-grid { grid-template-columns: repeat(2, 1fr); }
   .section-head { grid-template-columns: 110px 1fr; }
   .legend, .lineage-wrap { margin-left: 158px; }

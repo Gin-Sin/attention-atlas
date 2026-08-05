@@ -123,14 +123,26 @@
   }
 
   function renderAttentionConfig(config) {
-    if (!config || !(config.items || []).length) {
-      return '<div class="warning" role="status">本章暂无可核验的代表模型 Attention 参数。</div>';
+    if (!config || config.omit) return "";
+    if (!(config.modules || []).length) {
+      return '<div class="warning" role="status">本章暂无可核验的交互式模型参数图。</div>';
     }
-    var items = config.items.map(function (item) {
-      return '<div class="attention-config__item"><dt>' + esc(item.label) +
-        '</dt><dd><strong>' + esc(item.value) + '</strong><span>' +
-        esc(item.note) + "</span></dd></div>";
-    }).join("");
+    var diagram = null;
+    if (
+      window.AttentionDiagrams &&
+      typeof window.AttentionDiagrams.buildConfig === "function"
+    ) {
+      try {
+        diagram = window.AttentionDiagrams.buildConfig(config);
+      } catch (_) {
+        diagram = null;
+      }
+    }
+    var diagramSvg = typeof diagram === "string" ? diagram : diagram && diagram.svg;
+    if (!diagramSvg) {
+      return '<div class="warning" role="status">模型参数图未能载入；正文内容仍可正常阅读。</div>';
+    }
+    var initial = config.modules[0];
     var sources = (config.sources || []).map(function (source) {
       return '<a href="' + esc(source.url) +
         '" target="_blank" rel="noreferrer">' + esc(source.label) + " ↗</a>";
@@ -138,10 +150,62 @@
     return '<section class="attention-config" aria-labelledby="attention-config-title">' +
       '<header class="attention-config__header"><span>Representative Attention Configuration</span>' +
       '<h2 id="attention-config-title">' + esc(config.model) + "</h2><p>" +
-      esc(config.scope) + '</p></header><dl class="attention-config__grid">' +
-      items + '</dl><footer class="attention-config__footer"><p><strong>口径说明：</strong>' +
+      esc(config.scope) + '</p></header><div class="attention-config__explorer">' +
+      '<div class="attention-config__map" aria-label="可交互模型结构图">' +
+      diagramSvg + '</div><aside class="attention-config__detail" data-config-detail ' +
+      'aria-live="polite" aria-atomic="true">' + renderAttentionConfigDetail(initial) +
+      '</aside></div><footer class="attention-config__footer"><p><strong>口径说明：</strong>' +
       esc(config.caveat) + '</p><div class="attention-config__sources" aria-label="参数来源">' +
       sources + "</div></footer></section>";
+  }
+
+  function renderAttentionConfigDetail(module) {
+    if (!module) return "";
+    var symbols = (module.symbols || []).map(function (item) {
+      return '<div class="attention-config__symbol"><dt><code>' +
+        esc(item.symbol) + '</code><span>' + esc(item.label || "Shape") +
+        '</span></dt><dd><strong>' + esc(item.shape) + '</strong><span>' +
+        esc(item.value) + '</span><small>' + esc(item.note) + "</small></dd></div>";
+    }).join("");
+    return '<span class="attention-config__detail-kicker">Selected module</span><h3>' +
+      esc(module.label) + '</h3><p>' + esc(module.description) +
+      '</p><dl class="attention-config__symbols">' + symbols + "</dl>";
+  }
+
+  function initAttentionConfig(scope, config) {
+    if (!config || config.omit) return;
+    var explorer = scope.querySelector(".attention-config__explorer");
+    if (!explorer) return;
+    var detail = explorer.querySelector("[data-config-detail]");
+    var nodes = Array.from(explorer.querySelectorAll("[data-config-module]"));
+    var modules = new Map((config.modules || []).map(function (module) {
+      return [module.id, module];
+    }));
+    if (!detail || !nodes.length) return;
+
+    function selectModule(id, focusNode) {
+      var module = modules.get(id);
+      if (!module) return;
+      nodes.forEach(function (node) {
+        var selected = node.getAttribute("data-config-module") === id;
+        node.classList.toggle("is-config-selected", selected);
+        node.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      detail.innerHTML = renderAttentionConfigDetail(module);
+      if (focusNode) focusNode.focus();
+    }
+
+    nodes.forEach(function (node) {
+      node.addEventListener("click", function () {
+        selectModule(node.getAttribute("data-config-module"), false);
+      });
+      node.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        selectModule(node.getAttribute("data-config-module"), node);
+      });
+    });
+    selectModule(config.modules[0].id, false);
   }
 
   /* Default section headings; chapters may override any subset through the
@@ -761,6 +825,7 @@
       syncButton();
     });
     syncButton();
+    initAttentionConfig(root, c.attentionConfig);
     initChapterToc(root);
     initDiagramExpand(root);
     initArchitectureWorkbench(root, implementations[c.id]);

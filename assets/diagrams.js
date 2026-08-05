@@ -23,6 +23,26 @@
     paper: "var(--diagram-paper, #fffdf9)"
   };
 
+  var STYLE_VARS = [
+    "--diagram-canvas:#fbf8f1",
+    "--diagram-paper:#fffdf9",
+    "--diagram-ink:#27323c",
+    "--diagram-muted:#5f6b75",
+    "--diagram-rule:#cbd2d5",
+    "--diagram-compute:#dceafa",
+    "--diagram-compute-stroke:#5c82aa",
+    "--diagram-control:#e2f2e4",
+    "--diagram-control-stroke:#5f8d69",
+    "--diagram-state:#f6e1e4",
+    "--diagram-state-stroke:#a96773",
+    "--diagram-gather:#ece4f6",
+    "--diagram-gather-stroke:#826ca2",
+    "--diagram-cyan:#dff3f5",
+    "--diagram-cyan-stroke:#397f8b",
+    "--diagram-orange:#faead9",
+    "--diagram-orange-stroke:#b87938"
+  ].join(";");
+
   var buildSerial = 0;
 
   var guides = {
@@ -310,28 +330,9 @@
   }
 
   function baseSvg(rootId, diagramKey, height, body, label) {
-    var style = [
-      "--diagram-canvas:#fbf8f1",
-      "--diagram-paper:#fffdf9",
-      "--diagram-ink:#27323c",
-      "--diagram-muted:#5f6b75",
-      "--diagram-rule:#cbd2d5",
-      "--diagram-compute:#dceafa",
-      "--diagram-compute-stroke:#5c82aa",
-      "--diagram-control:#e2f2e4",
-      "--diagram-control-stroke:#5f8d69",
-      "--diagram-state:#f6e1e4",
-      "--diagram-state-stroke:#a96773",
-      "--diagram-gather:#ece4f6",
-      "--diagram-gather-stroke:#826ca2",
-      "--diagram-cyan:#dff3f5",
-      "--diagram-cyan-stroke:#397f8b",
-      "--diagram-orange:#faead9",
-      "--diagram-orange-stroke:#b87938"
-    ].join(";");
     return (
       '<svg viewBox="0 0 1100 ' + height + '" role="img" aria-label="' + escapeText(label) + '" data-diagram-key="' + escapeText(diagramKey) + '" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono">' +
-      '<g style="' + style + '">' + defs(rootId) +
+      '<g style="' + STYLE_VARS + '">' + defs(rootId) +
       '<rect width="1100" height="' + height + '" fill="' + P.canvas + '"/>' +
       body +
       '</g></svg>'
@@ -1356,5 +1357,461 @@
     };
   }
 
-  window.AttentionDiagrams = { build: build };
+  /* ==================================================================== *
+   * Config explorer builder · window.AttentionDiagrams.buildConfig
+   *
+   * A compact, data-driven parameter/model-structure map used by the
+   * interactive attentionConfig explorer. It is deliberately separate
+   * from the hand-drawn chapter diagrams above: modules carry
+   * data-config-module (never data-code-block), so the two interaction
+   * layers cannot collide.
+   *
+   * Schema:
+   *   buildConfig({
+   *     key: "mla",                       // stable diagram key
+   *     title: "…",                       // accessible <title> text
+   *     description: "…",                 // accessible <desc> text
+   *     lanes: [{ id, label, tone }],     // optional horizontal lanes
+   *     nodes: [{                         // array, or an { id: node } map
+   *       id: "wq",                       // required, stable module id
+   *       label: "W^Q" | M(tex, fb),      // display label (text or math)
+   *       value: "[d, H·dh]",             // short summary/value line
+   *                                       //   (alias: summary)
+   *       tone: "compute",                // palette tone key
+   *       lane: "proj", col: 0,           // optional lane / column hints
+   *       x, y, w, h,                     // optional explicit geometry
+   *       dashed: false,                  // optional-path styling
+   *       selected: false,                // initial aria-pressed state
+   *       detail: "wq-detail"             // detail-panel linkage id
+   *     }],
+   *     edges: [{ from, to, label, tone, dashed, back }]
+   *   })
+   *
+   * When x/y are omitted, modules are placed on left-to-right columns
+   * derived from edge topology (edges marked back:true are excluded from
+   * ranking and routed on a return rail). Lanes stack as horizontal
+   * bands sharing the same columns. Returns
+   * { svg, key, modules, width, height }; every module <g> carries
+   * data-config-module, role="button", tabindex="0" and aria-pressed so
+   * an external controller can wire selection without inline scripts.
+   * ==================================================================== */
+
+  var CONFIG_LAYOUT = {
+    nodeW: 156,
+    nodeH: 58,
+    colGap: 54,
+    rowGap: 24,
+    margin: 30,
+    lanePadX: 20,
+    lanePadY: 22,
+    laneGap: 38
+  };
+
+  /* Only these tones have arrow markers in defs(); others fall back. */
+  var CONFIG_MARKER_TONES = {
+    compute: 1, control: 1, state: 1, gather: 1, cyan: 1, orange: 1, muted: 1
+  };
+
+  function configMarkerTone(tone) {
+    return CONFIG_MARKER_TONES[tone] ? tone : "muted";
+  }
+
+  function normalizeConfigNode(id, spec, order) {
+    return {
+      id: id,
+      label: spec.label != null ? spec.label : id,
+      value: spec.value != null ? spec.value
+        : (spec.summary != null ? spec.summary : null),
+      tone: spec.tone || "compute",
+      lane: spec.lane != null ? String(spec.lane) : null,
+      col: typeof spec.col === "number" ? spec.col : null,
+      x: typeof spec.x === "number" ? spec.x : null,
+      y: typeof spec.y === "number" ? spec.y : null,
+      w: typeof spec.w === "number" ? spec.w : CONFIG_LAYOUT.nodeW,
+      h: typeof spec.h === "number" ? spec.h : CONFIG_LAYOUT.nodeH,
+      dashed: !!spec.dashed,
+      selected: !!spec.selected,
+      detail: spec.detail != null ? String(spec.detail) : null,
+      order: order
+    };
+  }
+
+  function resolveLaneId(node, lanes, laneIndex) {
+    if (node.lane && laneIndex[node.lane]) return node.lane;
+    return lanes[0].id;
+  }
+
+  /* Assign x/y to every module that lacks explicit geometry. Columns come
+     from longest-path ranks over forward edges; an explicit col wins. */
+  function layoutConfigNodes(nodes, edges, lanes) {
+    var byId = {};
+    nodes.forEach(function (node) { byId[node.id] = node; });
+
+    var rank = {};
+    nodes.forEach(function (node) {
+      rank[node.id] = node.col != null ? node.col : 0;
+    });
+    for (var pass = 0; pass < nodes.length; pass += 1) {
+      var changed = false;
+      edges.forEach(function (e) {
+        if (e.back || e.from === e.to || byId[e.to].col != null) return;
+        if (rank[e.to] < rank[e.from] + 1) {
+          rank[e.to] = rank[e.from] + 1;
+          changed = true;
+        }
+      });
+      if (!changed) break;
+    }
+
+    var auto = nodes.filter(function (node) {
+      return node.x == null || node.y == null;
+    });
+    if (!auto.length) return;
+
+    /* Compress the rank values in use into consecutive columns. */
+    var used = {};
+    auto.forEach(function (node) { used[rank[node.id]] = true; });
+    var ordered = Object.keys(used).map(Number).sort(function (a, b) {
+      return a - b;
+    });
+    var colOf = {};
+    ordered.forEach(function (value, index) { colOf[value] = index; });
+
+    var columns = ordered.map(function () { return []; });
+    auto.forEach(function (node) {
+      columns[colOf[rank[node.id]]].push(node);
+    });
+    columns.forEach(function (column) {
+      column.sort(function (a, b) { return a.order - b.order; });
+    });
+
+    var L = CONFIG_LAYOUT;
+    var colW = columns.map(function (column) {
+      return column.reduce(function (w, node) {
+        return Math.max(w, node.w);
+      }, L.nodeW);
+    });
+    var colX = [];
+    var cursor = L.margin + (lanes.length ? L.lanePadX : 0);
+    colW.forEach(function (w, index) {
+      colX[index] = cursor;
+      cursor += w + L.colGap;
+    });
+
+    function stack(cell, cellH, top, c) {
+      var y = top;
+      cell.forEach(function (node) {
+        node.x = colX[c] + (colW[c] - node.w) / 2;
+        node.y = y;
+        y += node.h + L.rowGap;
+      });
+    }
+
+    function cellHeight(cell) {
+      return cell.reduce(function (h, node) { return h + node.h; }, 0) +
+        Math.max(0, cell.length - 1) * L.rowGap;
+    }
+
+    if (!lanes.length) {
+      var colH = columns.map(cellHeight);
+      var maxH = colH.reduce(function (a, b) { return Math.max(a, b); }, 0);
+      columns.forEach(function (column, c) {
+        stack(column, colH[c], L.margin + (maxH - colH[c]) / 2, c);
+      });
+      return;
+    }
+
+    /* Lane layout: one horizontal band per lane, columns shared across
+       lanes so cross-lane edges stay aligned. */
+    var laneIndex = {};
+    lanes.forEach(function (lane) { laneIndex[lane.id] = lane; });
+    var laneY = L.margin + 14;
+    lanes.forEach(function (lane) {
+      var cells = columns.map(function (column) {
+        return column.filter(function (node) {
+          return resolveLaneId(node, lanes, laneIndex) === lane.id;
+        });
+      });
+      var cellH = cells.map(cellHeight);
+      var contentH = Math.max(L.nodeH, cellH.reduce(function (a, b) {
+        return Math.max(a, b);
+      }, 0));
+      cells.forEach(function (cell, c) {
+        stack(cell, cellH[c], laneY + L.lanePadY + (contentH - cellH[c]) / 2, c);
+      });
+      laneY += contentH + 2 * L.lanePadY + L.laneGap;
+    });
+  }
+
+  /* Default orthogonal route between two resolved module geometries.
+     backIndex offsets stacked return rails so they do not overlap. */
+  function routeConfigEdge(a, b, backIndex) {
+    if (a === b) {
+      var loopX = a.x + a.w;
+      var loopY = a.y + a.h / 2;
+      return {
+        d: "M" + loopX + " " + (loopY - 9) + "H" + (loopX + 20) +
+          "V" + (loopY + 9) + "H" + loopX,
+        lx: loopX + 34, ly: loopY - 20, lw: 96,
+        maxX: loopX + 20, maxY: loopY + 9
+      };
+    }
+    var sx;
+    var sy;
+    var tx;
+    var ty;
+    if (b.x >= a.x + a.w + 8) {
+      sx = a.x + a.w;
+      sy = a.y + a.h / 2;
+      tx = b.x;
+      ty = b.y + b.h / 2;
+      return {
+        d: ortho(sx, sy, tx, ty, "x"),
+        lx: (sx + tx) / 2,
+        ly: (sy === ty ? sy : (sy + ty) / 2) - 11,
+        lw: Math.max(72, tx - sx - 8),
+        maxX: tx, maxY: Math.max(sy, ty)
+      };
+    }
+    if (a.x >= b.x + b.w + 8) {
+      sx = a.x + a.w / 2;
+      tx = b.x + b.w / 2;
+      var rail = Math.max(a.y + a.h, b.y + b.h) + 18 + backIndex * 14;
+      return {
+        d: "M" + sx + " " + (a.y + a.h) + "V" + rail + "H" + tx +
+          "V" + (b.y + b.h),
+        lx: (sx + tx) / 2, ly: rail - 10,
+        lw: Math.max(88, Math.abs(sx - tx) - 16),
+        maxX: Math.max(sx, tx), maxY: rail
+      };
+    }
+    /* Same column: connect the facing horizontal borders. */
+    sx = a.x + a.w / 2;
+    tx = b.x + b.w / 2;
+    if (b.y >= a.y + a.h) {
+      sy = a.y + a.h;
+      ty = b.y;
+    } else {
+      sy = a.y;
+      ty = b.y + b.h;
+    }
+    return {
+      d: ortho(sx, sy, tx, ty, "y"),
+      lx: Math.max(sx, tx) + 58, ly: (sy + ty) / 2, lw: 104,
+      maxX: Math.max(sx, tx), maxY: Math.max(sy, ty)
+    };
+  }
+
+  function configModule(node) {
+    var fill = toneFill(node.tone);
+    var stroke = toneStroke(node.tone);
+    var cx = node.x + node.w / 2;
+    var titleY = node.y + node.h / 2 - (node.value != null ? 7 : 0);
+    var aria = "配置模块 " + fallbackLabel(node.label) +
+      (node.value != null ? "：" + fallbackLabel(node.value) : "");
+    return (
+      '<g class="config-module" data-config-module="' + escapeText(node.id) + '"' +
+      (node.detail ? ' data-config-detail="' + escapeText(node.detail) + '"' : "") +
+      ' role="button" tabindex="0" aria-pressed="' +
+      (node.selected ? "true" : "false") +
+      '" aria-label="' + escapeText(aria) + '">' +
+      '<rect class="config-module-box" x="' + node.x + '" y="' + node.y +
+      '" width="' + node.w + '" height="' + node.h +
+      '" rx="9" fill="' + fill + '" stroke="' + stroke +
+      '" stroke-width="1.35" ' +
+      (node.dashed ? 'stroke-dasharray="6 5" ' : "") + '/>' +
+      labelMarkup(cx, titleY, node.w - 18, 30, node.label, 10.4, P.ink, 600) +
+      (node.value != null
+        ? labelMarkup(cx, node.y + node.h / 2 + 14, node.w - 16, 22,
+            node.value, 8.4, P.muted, 500)
+        : "") +
+      '</g>'
+    );
+  }
+
+  function configEdgeMarkup(rootId, route, e) {
+    var color = e.tone === "muted" ? P.muted : toneStroke(e.tone);
+    return (
+      '<g class="config-edge" data-config-edge-from="' + escapeText(e.from) +
+      '" data-config-edge-to="' + escapeText(e.to) + '">' +
+      '<path d="' + route.d + '" fill="none" stroke="' + color +
+      '" stroke-width="1.4" ' +
+      (e.dashed ? 'stroke-dasharray="6 5" ' : "") +
+      'stroke-linecap="square" stroke-linejoin="round" marker-end="url(#' +
+      rootId + '-arrow-' + e.tone + ')"/>' +
+      (e.label != null
+        ? labelMarkup(route.lx, route.ly, route.lw, 22, e.label, 8.2, color, 600)
+        : "") +
+      '</g>'
+    );
+  }
+
+  function buildConfig(config) {
+    if (!config || typeof config !== "object") {
+      throw new Error("buildConfig: a config object is required");
+    }
+    var key = String(config.key || config.id || config.type || "config");
+    buildSerial += 1;
+    var rootId = "attention-config-" +
+      key.replace(/[^A-Za-z0-9_-]/g, "-") + "-" + buildSerial;
+
+    var rawNodes = config.nodes || config.modules;
+    var nodes = [];
+    if (Array.isArray(rawNodes)) {
+      rawNodes.forEach(function (spec, index) {
+        if (!spec || spec.id == null) {
+          throw new Error(key + ": config node #" + index + " is missing an id");
+        }
+        nodes.push(normalizeConfigNode(String(spec.id), spec, index));
+      });
+    } else if (rawNodes && typeof rawNodes === "object") {
+      Object.keys(rawNodes).forEach(function (id, index) {
+        nodes.push(normalizeConfigNode(id, rawNodes[id] || {}, index));
+      });
+    }
+    if (!nodes.length) {
+      throw new Error(key + ": config.nodes must declare at least one module");
+    }
+    var byId = {};
+    nodes.forEach(function (node) {
+      if (byId[node.id]) {
+        throw new Error(key + ": duplicate config module id " + node.id);
+      }
+      byId[node.id] = node;
+    });
+
+    var edges = (config.edges || []).map(function (spec, index) {
+      if (!spec || spec.from == null || spec.to == null) {
+        throw new Error(key + ": config edge #" + index + " needs from and to");
+      }
+      var from = String(spec.from);
+      var to = String(spec.to);
+      if (!byId[from] || !byId[to]) {
+        throw new Error(key + ": config edge references unknown module " +
+          from + " -> " + to);
+      }
+      return {
+        from: from,
+        to: to,
+        label: spec.label != null ? spec.label : null,
+        tone: configMarkerTone(spec.tone || "muted"),
+        dashed: !!spec.dashed,
+        back: !!spec.back
+      };
+    });
+
+    var lanes = [];
+    if (Array.isArray(config.lanes)) {
+      config.lanes.forEach(function (lane, index) {
+        if (!lane || lane.id == null) {
+          throw new Error(key + ": config lane #" + index + " is missing an id");
+        }
+        lanes.push({
+          id: String(lane.id),
+          label: lane.label != null ? String(lane.label) : String(lane.id),
+          tone: lane.tone || "paper"
+        });
+      });
+    } else {
+      var seenLanes = {};
+      nodes.forEach(function (node) {
+        if (node.lane && !seenLanes[node.lane]) {
+          seenLanes[node.lane] = true;
+          lanes.push({ id: node.lane, label: node.lane, tone: "paper" });
+        }
+      });
+    }
+
+    layoutConfigNodes(nodes, edges, lanes);
+
+    var L = CONFIG_LAYOUT;
+    var maxRight = 0;
+    var maxBottom = 0;
+    nodes.forEach(function (node) {
+      maxRight = Math.max(maxRight, node.x + node.w);
+      maxBottom = Math.max(maxBottom, node.y + node.h);
+    });
+
+    /* Lane panels sit behind the modules; band extents come from the
+       members' bounding boxes, so explicit-geometry modules are covered. */
+    var laneBody = "";
+    if (lanes.length) {
+      var laneIndex = {};
+      lanes.forEach(function (lane) { laneIndex[lane.id] = lane; });
+      lanes.forEach(function (lane) {
+        var top = Infinity;
+        var bottom = -Infinity;
+        nodes.forEach(function (node) {
+          if (resolveLaneId(node, lanes, laneIndex) !== lane.id) return;
+          top = Math.min(top, node.y);
+          bottom = Math.max(bottom, node.y + node.h);
+        });
+        if (top === Infinity) return;
+        var panelX = L.margin;
+        var panelY = top - L.lanePadY;
+        var panelW = maxRight + L.lanePadX - panelX;
+        var panelH = bottom - top + 2 * L.lanePadY;
+        maxRight = Math.max(maxRight, panelX + panelW);
+        maxBottom = Math.max(maxBottom, panelY + panelH);
+        laneBody += panel(panelX, panelY, panelW, panelH, lane.label, lane.tone);
+      });
+    }
+
+    var nodeBody = nodes.map(configModule).join("");
+
+    var edgeBody = "";
+    var backCount = 0;
+    edges.forEach(function (e) {
+      var a = byId[e.from];
+      var b = byId[e.to];
+      var isBack = a !== b && a.x >= b.x + b.w + 8;
+      var route = routeConfigEdge(a, b, isBack ? backCount : 0);
+      if (isBack) backCount += 1;
+      maxRight = Math.max(maxRight, route.maxX);
+      maxBottom = Math.max(maxBottom, route.maxY);
+      if (e.label != null) {
+        maxRight = Math.max(maxRight, route.lx + route.lw / 2);
+        maxBottom = Math.max(maxBottom, route.ly + 12);
+      }
+      edgeBody += configEdgeMarkup(rootId, route, e);
+    });
+
+    var width = Math.ceil(maxRight + L.margin);
+    var height = Math.ceil(maxBottom + L.margin);
+    var titleId = rootId + "-title";
+    var descId = rootId + "-desc";
+    var title = config.title != null
+      ? String(config.title)
+      : key + " 参数与模块结构";
+    var description = config.description != null
+      ? String(config.description)
+      : "包含 " + nodes.length + " 个可选模块的参数结构图；聚焦任一模块可查看对应配置详情。";
+
+    var svg =
+      '<svg viewBox="0 0 ' + width + " " + height +
+      '" class="attention-config-svg" role="group" aria-labelledby="' +
+      titleId + " " + descId + '" data-config-key="' + escapeText(key) +
+      '" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono">' +
+      '<title id="' + titleId + '">' + escapeText(title) + '</title>' +
+      '<desc id="' + descId + '">' + escapeText(description) + '</desc>' +
+      '<g style="' + STYLE_VARS + '">' + defs(rootId) +
+      '<rect width="' + width + '" height="' + height + '" fill="' +
+      P.canvas + '"/>' +
+      laneBody + edgeBody + nodeBody +
+      '</g></svg>';
+
+    if (/<script\b/i.test(svg)) {
+      throw new Error(key + ": config svg must not contain inline scripts");
+    }
+
+    return {
+      svg: svg,
+      key: key,
+      modules: nodes.map(function (node) { return node.id; }),
+      width: width,
+      height: height
+    };
+  }
+
+  window.AttentionDiagrams = { build: build, buildConfig: buildConfig };
 })();
