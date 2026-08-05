@@ -294,6 +294,23 @@ button { font: inherit; }
   min-width: 1020px;
   height: auto;
 }
+
+/* Keep every intentionally wide surface swipeable on touch devices. */
+.lineage-wrap,
+.compare,
+.formula,
+.position-equation,
+.diagram-canvas,
+.architecture-pane .diagram-canvas,
+.code-ide__editor,
+.code-block pre,
+.implementation-code pre,
+.full-source pre,
+.code-full-source pre,
+.implementation-source pre {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
 .dag-year-line { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 3 5; }
 .dag-lane-line { stroke-width: 1; opacity: .25; }
 .dag-edge {
@@ -1727,6 +1744,46 @@ details p { margin-bottom: 0; }
   .metric { border-bottom: 1px solid var(--rule); }
   .metric:nth-child(2) { border-right: 0; }
   .path-grid, .chapter-grid, .constraint-grid, .intuition-grid { grid-template-columns: 1fr; }
+  .chapter-main,
+  .chapter-main > *,
+  .path-grid > *,
+  .chapter-grid > *,
+  .constraint-grid > *,
+  .intuition-grid > *,
+  .position-steps > *,
+  .position-step-grid > *,
+  .position-grid > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .path-card,
+  .chapter-card,
+  .takeaway,
+  .constraint,
+  .intuition,
+  .formula,
+  .diagram,
+  .diagram-memory,
+  .diagram-guide li,
+  .position-section,
+  .position-encoding,
+  .position-mechanism,
+  .position-step,
+  .position-card,
+  .code-block,
+  .implementation-code,
+  .code-mapping,
+  .code-map,
+  .implementation-mapping,
+  .full-source,
+  .code-full-source,
+  .implementation-source,
+  .exercise {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-inline: contain;
+  }
   .calculator { grid-template-columns: 1fr 1fr; }
   .section { padding: 58px 0; }
   .section-head { grid-template-columns: 1fr; gap: 12px; }
