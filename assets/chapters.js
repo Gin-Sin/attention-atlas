@@ -239,16 +239,16 @@
           {
             label: "Training / Prefill",
             bottleneck: { label: "主要瓶颈", value: "大批量 Attention 计算" },
-            preferred: "MHA-like · H 个 128-d 内容头",
-            execution: "先由 512-d latent 展开 K_i^C、V_i，再做标准多头 score/read。",
+            preferred: R`MHA-like · \(H\) 个 128-d 内容头`,
+            execution: R`先由 512-d latent 展开 \(K_i^{C}\)、\(V_i\)，再做标准多头 score/read。`,
             note: "prompt 内部可以一次并行材料化；写入长期 cache 的仍是 latent + RoPE key。"
           },
           {
             label: "Token-by-token Decode",
             bottleneck: { label: "主要瓶颈", value: "历史 KV 容量与 HBM 搬运" },
-            preferred: "MQA-like · 共享 512-d K=V",
-            execution: "先吸收 W_i^UK/W_i^UV，再直接对历史 latent 打分与聚合。",
-            note: "每步只产生一个 query，却会重复读全历史；不重建多头 KV 才有意义。MQA-512 是结构性/NoPE 执行视角，不是标准 MQA 层：分数仍按原口径除以 √(128+64)，64 维 RoPE 支路单独计算。"
+            preferred: R`MQA-like · 共享 512-d \(K=V\)`,
+            execution: R`先吸收 \(W_i^{UK}/W_i^{UV}\)，再直接对历史 latent 打分与聚合。`,
+            note: R`每步只产生一个 query，却会重复读全历史；不重建多头 KV 才有意义。MQA-512 是结构性/NoPE 执行视角，不是标准 MQA 层：分数仍按原口径除以 \(\sqrt{128+64}\)，64 维 RoPE 支路单独计算。`
           }
         ],
         bridge: {
