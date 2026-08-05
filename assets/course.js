@@ -198,8 +198,8 @@
         esc(module.kind) + '">' + esc(CONFIG_KIND_BADGES[module.kind]) + "</span>"
       : "";
     var symbols = (module.symbols || []).map(function (item) {
-      return '<div class="attention-config__symbol"><dt><code>\\(' +
-        esc(item.tex) + '\\)</code><span>' + esc(item.label || "Shape") +
+      return '<div class="attention-config__symbol"><dt><span class="attention-config__tex">\\(' +
+        esc(item.tex) + '\\)</span><span>' + esc(item.label || "Shape") +
         '</span></dt><dd><strong>\\(' + esc(item.shape) + '\\)</strong><span>' +
         esc(item.value) + '</span><small>' + esc(item.note) + "</small></dd></div>";
     }).join("");

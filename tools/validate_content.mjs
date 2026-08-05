@@ -751,6 +751,11 @@ function validateRenderer(courseSource, chapterHtml) {
         "weight/activation relations"
     );
   }
+  if (/<(?:code|pre)\b[^>]*>\\\\\(/.test(courseSource)) {
+    addError(
+      "assets/course.js must not put KaTeX auto-render delimiters inside code/pre elements"
+    );
+  }
   if (/PyTorch 逐块实现/.test(courseSource)) {
     addError("assets/course.js still renders a separate PyTorch implementation section");
   }

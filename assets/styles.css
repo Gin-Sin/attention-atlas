@@ -695,9 +695,10 @@ button { font: inherit; }
   justify-content: space-between;
   gap: 10px;
 }
-.attention-config__symbol code {
+.attention-config__tex {
   color: var(--category-ink);
-  font: 500 12px/1.4 var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .attention-config__symbol dt span {
   color: var(--muted);
