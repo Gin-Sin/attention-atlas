@@ -17,6 +17,7 @@ CSA 与 HCA 是两章独立内容。全站共 10 章、40 个推导和 60 道练
 
 - `order` 从 0 连续递增，`category` 只能是 `dense`、`sparse`、`linear` 或 `hybrid`。
 - 动机、约束、数学直觉、架构图、警告和权威来源组成基础教学内容；来源使用可解析的 HTTP(S) URL。
+- `attentionConfig` 必须给出主论文/技术报告中的代表模型、参数口径、至少 4 个带 `label/value/note` 的 Attention 核心参数、来源链接和边界说明。
 - `positionEncoding` 必须包含标题、摘要、公式、实现边界，以及恰好 3 个带 `label/title/body` 的步骤。
 - 数学推导为 4–6 个；每个推导都必须有 `title/body/source`。
 - 每章恰好 6 道练习；每题都必须有 `kind/level/q/hint/answer`。
@@ -26,6 +27,10 @@ CSA 与 HCA 是两章独立内容。全站共 10 章、40 个推导和 60 道练
 ### 位置编码与时序注入
 
 位置部分不是通用 RoPE 模板，而是逐章说明原论文或报告实际采用的机制：原始 MHA 的加性正弦编码、MQA/GQA 与位置机制的正交关系、MLA/DSA 的 decoupled 或 partial RoPE、CSA/HCA 的 partial + inverse RoPE，以及 Linear/Delta/KDA 中由前缀、ShortConv、衰减和有序状态转移承担的时序信息。具体模型配方与架构定义会明确分开。
+
+### 代表模型 Attention 参数
+
+章节页在教学内容前展示一张来源可追溯的参数卡，覆盖 hidden size、Q/KV heads、head dimension、位置维度，以及该架构特有的 cache/state/compression/top-k/window 参数。卡片中的数字属于明确命名的论文实验或官方 checkpoint，不代表架构定义强制这些取值；来源未明确的字段保持“未明确给出”，推导值会单独标注，公开材料冲突也不会被拼接成伪精确配置。
 
 ## PyTorch 教学实现
 

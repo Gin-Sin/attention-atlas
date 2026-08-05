@@ -487,6 +487,96 @@ button { font: inherit; }
 .takeaway > span { color: var(--category-ink); font: 500 10px/1.4 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
 .takeaway p { margin: 7px 0 0; font-family: var(--serif); }
 
+.attention-config {
+  margin: -26px 0 52px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: 0 10px 34px rgb(48 54 58 / 7%);
+}
+.attention-config__header {
+  display: grid;
+  gap: 6px;
+  padding: 20px 22px 18px;
+  border-bottom: 1px solid var(--rule);
+  background: linear-gradient(115deg, var(--category-soft), rgb(255 255 255 / 88%) 68%);
+}
+.attention-config__header > span {
+  color: var(--category-ink);
+  font: 500 9px/1.4 var(--mono);
+  letter-spacing: .15em;
+  text-transform: uppercase;
+}
+.attention-config__header h2 {
+  margin: 0;
+  color: var(--ink);
+  font: 500 23px/1.25 var(--display);
+}
+.attention-config__header p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.attention-config__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1px;
+  margin: 0;
+  background: var(--rule);
+}
+.attention-config__item {
+  min-width: 0;
+  padding: 16px 18px;
+  background: rgb(255 255 255 / 94%);
+}
+.attention-config__item dt {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font: 500 9px/1.35 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.attention-config__item dd { margin: 0; }
+.attention-config__item strong {
+  display: block;
+  color: var(--ink);
+  font: 500 15px/1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+.attention-config__item dd span {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.attention-config__footer {
+  display: grid;
+  gap: 10px;
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--rule);
+  background: var(--paper-2);
+}
+.attention-config__footer p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.attention-config__footer p strong { color: var(--category-ink); }
+.attention-config__sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+}
+.attention-config__sources a {
+  color: var(--category-ink);
+  font: 500 9px/1.5 var(--mono);
+  border-bottom: 1px solid rgb(48 54 58 / 18%);
+}
+.attention-config__sources a:hover { border-bottom-color: var(--category); }
+
 .chapter-toc {
   margin: -26px 0 0;
   padding: 16px 22px;
@@ -1758,6 +1848,7 @@ details p { margin-bottom: 0; }
   }
   .path-card,
   .chapter-card,
+  .attention-config,
   .takeaway,
   .constraint,
   .intuition,

@@ -121,6 +121,28 @@
     }).join("") + "</div>";
   }
 
+  function renderAttentionConfig(config) {
+    if (!config || !(config.items || []).length) {
+      return '<div class="warning" role="status">本章暂无可核验的代表模型 Attention 参数。</div>';
+    }
+    var items = config.items.map(function (item) {
+      return '<div class="attention-config__item"><dt>' + esc(item.label) +
+        '</dt><dd><strong>' + esc(item.value) + '</strong><span>' +
+        esc(item.note) + "</span></dd></div>";
+    }).join("");
+    var sources = (config.sources || []).map(function (source) {
+      return '<a href="' + esc(source.url) +
+        '" target="_blank" rel="noreferrer">' + esc(source.label) + " ↗</a>";
+    }).join("");
+    return '<section class="attention-config" aria-labelledby="attention-config-title">' +
+      '<header class="attention-config__header"><span>Representative Attention Configuration</span>' +
+      '<h2 id="attention-config-title">' + esc(config.model) + "</h2><p>" +
+      esc(config.scope) + '</p></header><dl class="attention-config__grid">' +
+      items + '</dl><footer class="attention-config__footer"><p><strong>口径说明：</strong>' +
+      esc(config.caveat) + '</p><div class="attention-config__sources" aria-label="参数来源">' +
+      sources + "</div></footer></section>";
+  }
+
   function renderPositionEncoding(position) {
     if (!position) return '<div class="warning" role="status">本章暂无位置编码说明。</div>';
     return '<article class="formula position-encoding"><span class="formula-label">Position &amp; Sequence</span>' +
@@ -455,7 +477,8 @@
     root.innerHTML =
       '<nav class="breadcrumbs"><a href="index.html">Attention Atlas</a> &nbsp;/&nbsp; Chapter ' + String(c.order).padStart(2, "0") + " &nbsp;/&nbsp; " + esc(c.title) + "</nav>" +
       '<header class="chapter-hero"><p class="eyebrow">Chapter ' + String(c.order).padStart(2, "0") + " · " + esc(c.fullTitle) + '</p><h1>' + esc(c.title) + '</h1><p class="chapter-deck">' + esc(c.zhTitle) + "。 " + esc(c.deck) + '</p><div class="chapter-meta"><b>' + esc(c.category) + "</b><span>" + esc(c.year) + "</span><span>难度 · " + esc(c.difficulty) + "</span><span>" + esc(c.report) + '</span></div></header>' +
-      '<aside class="takeaway"><span>Mathematical Takeaway</span><p>' + c.takeaway + "</p></aside>" + toc +
+      '<aside class="takeaway"><span>Mathematical Takeaway</span><p>' + c.takeaway + "</p></aside>" +
+      renderAttentionConfig(c.attentionConfig) + toc +
       '<main class="chapter-main"><h2 data-no="01" id="sec-01">问题从哪里来</h2>' + motivation +
       '<h2 data-no="02" id="sec-02">设计限定条件</h2>' + renderCards(c.constraints, "constraint") +
       '<h2 data-no="03" id="sec-03">先抓住数学直觉</h2>' + renderCards(c.intuitions, "intuition") +

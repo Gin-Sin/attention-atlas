@@ -32,6 +32,8 @@ const EXPECTED_SOURCE_PATHS = new Map([
   ["kda", "pytorch/kda.py"]
 ]);
 const VALID_CATEGORIES = new Set(["dense", "sparse", "linear", "hybrid"]);
+const ATTENTION_CONFIG_FIELDS = ["model", "scope", "caveat"];
+const ATTENTION_CONFIG_ITEM_FIELDS = ["label", "value", "note"];
 const POSITION_FIELDS = ["title", "summary", "equation", "caveat"];
 const POSITION_STEP_FIELDS = ["label", "title", "body"];
 const DERIVATION_FIELDS = ["title", "body", "source"];
@@ -138,6 +140,51 @@ function validateChapters(chapters) {
         `${location}.category must be one of ${Array.from(VALID_CATEGORIES).join(", ")}; ` +
           `found ${JSON.stringify(chapter.category)}`
       );
+    }
+
+    const attentionConfig = chapter.attentionConfig;
+    if (!attentionConfig || typeof attentionConfig !== "object") {
+      addError(`${location}.attentionConfig must be an object`);
+    } else {
+      ATTENTION_CONFIG_FIELDS.forEach((field) => {
+        requireString(attentionConfig, field, `${location}.attentionConfig`);
+      });
+      if (!Array.isArray(attentionConfig.items) || attentionConfig.items.length < 4) {
+        addError(`${location}.attentionConfig.items must contain at least 4 entries`);
+      } else {
+        attentionConfig.items.forEach((item, itemIndex) => {
+          ATTENTION_CONFIG_ITEM_FIELDS.forEach((field) => {
+            requireString(
+              item,
+              field,
+              `${location}.attentionConfig.items[${itemIndex}]`
+            );
+          });
+        });
+      }
+      if (!Array.isArray(attentionConfig.sources) || attentionConfig.sources.length === 0) {
+        addError(`${location}.attentionConfig.sources must be a nonempty array`);
+      } else {
+        attentionConfig.sources.forEach((source, sourceIndex) => {
+          const sourceLocation =
+            `${location}.attentionConfig.sources[${sourceIndex}]`;
+          requireString(source, "label", sourceLocation);
+          if (!requireString(source, "url", sourceLocation)) return;
+          try {
+            const parsed = new URL(source.url);
+            if (
+              !["http:", "https:"].includes(parsed.protocol) ||
+              !parsed.hostname ||
+              parsed.username ||
+              parsed.password
+            ) {
+              throw new Error("expected an absolute HTTP(S) URL without credentials");
+            }
+          } catch (error) {
+            addError(`${sourceLocation}.url is invalid (${error.message}): ${source.url}`);
+          }
+        });
+      }
     }
 
     const position = chapter.positionEncoding;
@@ -289,6 +336,13 @@ function validateRenderer(courseSource, chapterHtml) {
   }
   if (!/data-architecture-ide/.test(courseSource) || !/data-workbench-editor/.test(courseSource)) {
     addError("assets/course.js must render the integrated diagram/code workbench");
+  }
+  if (
+    !/function renderAttentionConfig\(/.test(courseSource) ||
+    !/renderAttentionConfig\(c\.attentionConfig\)/.test(courseSource) ||
+    !/attention-config__grid/.test(courseSource)
+  ) {
+    addError("assets/course.js must render every chapter attentionConfig as a parameter card");
   }
   if (/PyTorch 逐块实现/.test(courseSource)) {
     addError("assets/course.js still renders a separate PyTorch implementation section");

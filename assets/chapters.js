@@ -791,6 +791,22 @@
   // duplicating or rewriting the original chapter objects above.
   var chapterEnhancements = {
     mha: {
+      attentionConfig: {
+        model: "Transformer base · WMT14 English–German",
+        scope: "《Attention Is All You Need》表 3 的 base 配置；数值属于该实验，不是 MHA 的固定常数。",
+        items: [
+          { label: "Hidden size", value: "512", note: "d_model" },
+          { label: "Q heads", value: "8", note: "独立 query heads" },
+          { label: "KV heads", value: "8", note: "每个 Q head 对应一套 K/V" },
+          { label: "Q / K / V head dim", value: "64 / 64 / 64", note: "512 ÷ 8" },
+          { label: "Position", value: "512-d sinusoidal PE", note: "与 token embedding 相加" },
+          { label: "KV cache width", value: "1024 elements / token / layer", note: "由 2 × 8 × 64 推导" }
+        ],
+        sources: [
+          { label: "Vaswani et al. (2017), §§3.2.2, 3.5 and Table 3", url: "https://arxiv.org/abs/1706.03762" }
+        ],
+        caveat: "论文没有把 KV cache width 作为超参数列出；1024 是按论文维度计算的 K 与 V 元素总数。"
+      },
       positionEncoding: {
         title: "原始 Transformer：缩放 embedding + 加性正弦 PE",
         summary: R`《Attention Is All You Need》把 token embedding 乘 \(\sqrt{d_{\text{model}}}\)，再加固定正弦位置编码；learned PE 只是对照实验且结果接近。每个 encoder/decoder sublayer 采用 post Add&Norm。MHA 算子本身不强制这些外围选择。`,
@@ -883,6 +899,22 @@
     },
 
     mqa: {
+      attentionConfig: {
+        model: "Multi-query Transformer · WMT14 English–German",
+        scope: "Shazeer (2019) 的 encoder–decoder 代表实验；三类 attention 都替换为 MQA。",
+        items: [
+          { label: "Hidden size", value: "1024", note: "模型维度" },
+          { label: "Q heads", value: "8", note: "query 仍保持多头" },
+          { label: "KV heads", value: "1", note: "全部 Q heads 共享" },
+          { label: "Q / K / V head dim", value: "128 / 128 / 128", note: "每头维度" },
+          { label: "Position", value: "Learned absolute PE", note: "论文未明确给出 PE 向量维度" },
+          { label: "KV cache width", value: "256 elements / token / layer", note: "由 1 × 128 K + 1 × 128 V 推导" }
+        ],
+        sources: [
+          { label: "Shazeer (2019), §§3–4.1 and Table 1", url: "https://arxiv.org/abs/1911.02150" }
+        ],
+        caveat: "H_kv=1 是 MQA 定义；8 heads、128 head dim 与 learned PE 是该论文实验配置。"
+      },
       positionEncoding: {
         title: "MQA 论文评测 learned absolute PE；机制仍与 PE 正交",
         summary: R`Shazeer 的 WMT 基线明确使用 learned positional embeddings，并把 encoder self-attention、decoder self-attention 和 cross-attention 全部替换为 MQA；decoder-only LM 也另行评测。MQA 定义只规定共享 K/V，不能虚构一个适用于所有 PE 的通用加性 \(B_{\rm pos}\)。`,
@@ -969,6 +1001,24 @@
     },
 
     gqa: {
+      attentionConfig: {
+        model: "GQA-8-XXL · T5.1.1-XXL uptraining",
+        scope: "论文主实验的 decoder self-attention 与 cross-attention；encoder self-attention 仍为 64-head MHA。",
+        items: [
+          { label: "Hidden size", value: "4096", note: "T5.1.1-XXL emb_dim" },
+          { label: "Q heads", value: "64", note: "decoder query heads" },
+          { label: "KV heads / groups", value: "8", note: "GQA-8" },
+          { label: "Q / K / V head dim", value: "64 / 64 / 64", note: "官方 T5X 配置" },
+          { label: "Group ratio", value: "8 Q heads / KV head", note: "64 ÷ 8" },
+          { label: "Position bias", value: "32 buckets · max distance 128", note: "T5 self-attention；cross-attention 不套用此项" },
+          { label: "KV cache width", value: "1024 elements / token / layer", note: "由 2 × 8 × 64 推导" }
+        ],
+        sources: [
+          { label: "Ainslie et al. (2023), §§2.2–3.1 and Table 1", url: "https://aclanthology.org/2023.emnlp-main.298/" },
+          { label: "Official T5.1.1-XXL T5X config", url: "https://github.com/google-research/t5x/blob/main/t5x/examples/t5/t5_1_1/xxl.gin" }
+        ],
+        caveat: "GQA 只规定分组共享关系；G=8、64 个 Q heads 与 T5 relative bias 都是该代表模型的选择。"
+      },
       positionEncoding: {
         title: "GQA 与位置机制正交",
         summary: "GQA 论文从 T5.1.1 checkpoint uptrain；其 self-attention 沿用按 query head 索引的桶化相对位置偏置。实验把 GQA/MQA 用于 decoder self-attention 与 cross-attention，不改 encoder self-attention；cross-attention 不应被凭空补上同一桶化 bias。",
@@ -1052,6 +1102,26 @@
     },
 
     mla: {
+      attentionConfig: {
+        model: "DeepSeek-V2 · 236B",
+        scope: "DeepSeek-V2 技术报告与官方 checkpoint 配置；高效 decode 缓存 latent，而非重建后的 128 组 K/V。",
+        items: [
+          { label: "Hidden size", value: "5120", note: "模型残差宽度" },
+          { label: "Q heads", value: "128", note: "展开后的 query heads" },
+          { label: "Q head dim", value: "192 = 128 + 64", note: "content + RoPE" },
+          { label: "K head dim", value: "192 = 128 + 64", note: "content + shared RoPE key" },
+          { label: "V head dim", value: "128", note: "value content" },
+          { label: "KV latent rank", value: "512", note: "joint compressed KV width" },
+          { label: "Query latent rank", value: "1536", note: "不进入 KV cache" },
+          { label: "RoPE dim", value: "64", note: "共享 positional key" },
+          { label: "Cache width", value: "576 elements / token / layer", note: "512 latent + 64 RoPE key" }
+        ],
+        sources: [
+          { label: "DeepSeek-V2 Technical Report, §§2.1.2–2.1.3 and §3.1.2", url: "https://arxiv.org/abs/2405.04434" },
+          { label: "Official DeepSeek-V2 checkpoint config", url: "https://huggingface.co/deepseek-ai/DeepSeek-V2/blob/main/config.json" }
+        ],
+        caveat: "不能把官方配置中的 128 个重建 K/V heads 当成 128 份物理缓存；MLA 的缓存口径是 512-d latent 加 64-d 共享 RoPE key。"
+      },
       positionEncoding: {
         title: "MLA 原生使用 decoupled RoPE",
         summary: R`DeepSeek-V2 把 \(d_h\) 维内容子空间与 \(d_h^R\) 维 RoPE 子空间拆开：缓存 \(c_s^{KV}\) 与共享 \(k_s^R\)，attention logit 除以 \(\sqrt{d_h+d_h^R}\)。\(c_t^Q\in\mathbb R^{d_c'}\) 是 query bottleneck，展开后的每头 \(q_{t,i}^C\in\mathbb R^{d_h}\)，两者不能混淆。`,
@@ -1157,6 +1227,26 @@
     },
 
     dsa: {
+      attentionConfig: {
+        model: "DeepSeek-V3.2-Exp · 671B",
+        scope: "官方 671B 配置；DSA 在 MLA cache 之外增加低维 Indexer cache，并让 core 只读取 top-k entries。",
+        items: [
+          { label: "Hidden size", value: "7168", note: "dim" },
+          { label: "Q heads", value: "128", note: "core MLA query heads" },
+          { label: "Q / K head dim", value: "192 = 128 + 64", note: "non-RoPE + RoPE" },
+          { label: "V head dim", value: "128", note: "core value width" },
+          { label: "MLA cache", value: "576 elements / token / layer", note: "512 latent + 64 RoPE key" },
+          { label: "Indexer heads", value: "64", note: "lightning indexer queries" },
+          { label: "Indexer head / cache dim", value: "128 / 128", note: "共享 index key 每 token 128 维" },
+          { label: "Selected entries", value: "top-k 2048", note: "每个 query 的 core 候选" },
+          { label: "Local window", value: "None", note: "原型 DSA 没有额外 raw-token 滑窗" }
+        ],
+        sources: [
+          { label: "Official DeepSeek-V3.2-Exp 671B config", url: "https://github.com/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/inference/config_671B_v3.2.json" },
+          { label: "DeepSeek-V3.2 report, §2.1", url: "https://arxiv.org/abs/2512.02556" }
+        ],
+        caveat: "64×128 的 Indexer 与 k=2048 是 V3.2-Exp 实例参数；DSA 方法本身只要求低成本索引器和 token-level sparse core。"
+      },
       positionEncoding: {
         title: "DSA：core 继承 MLA，Indexer 两侧 pRoPE + Hadamard",
         summary: "DeepSeek-V3.2 的 core 以 MQA-mode MLA 读取选中的 latent entries。Lightning Indexer 对 q 与共享 k 的指定子维都施 pRoPE；FP8 实现再对两侧施同一正交 Hadamard rotation。只转一侧会改变点积。",
@@ -1234,6 +1324,26 @@
     },
 
     csa: {
+      attentionConfig: {
+        model: "DeepSeek-V4-Pro · 1.6T",
+        scope: "官方 V4-Pro 配置中的 CSA layers（compress ratio 4）；core 使用一个共享 compressed KV head。",
+        items: [
+          { label: "Hidden size", value: "7168", note: "模型残差宽度" },
+          { label: "Q heads", value: "128", note: "compressed core queries" },
+          { label: "Effective KV heads", value: "1", note: "共享 compressed KV entry" },
+          { label: "Core head dim", value: "512", note: "同一 512-d entry 兼作 K/V" },
+          { label: "RoPE slice", value: "64", note: "末 64 维 partial RoPE" },
+          { label: "Compression", value: "m=4 · span 8 · stride 4", note: "重叠 2m receptive field" },
+          { label: "Indexer", value: "64 heads × 128 dim", note: "compressed index keys 为 128-d" },
+          { label: "Selected entries", value: "top-k 1024", note: "compressed candidates" },
+          { label: "Raw local window", value: "128 tokens", note: "与 compressed core 并行" }
+        ],
+        sources: [
+          { label: "DeepSeek-V4 Technical Report, §§2.3.1 and 2.3.3", url: "https://arxiv.org/abs/2606.19348" },
+          { label: "Official DeepSeek-V4-Pro inference config", url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/config.json" }
+        ],
+        caveat: "m=4、top-k=1024、window=128 与各维度属于 V4-Pro；CSA 的结构不变量是重叠压缩、索引选择和共享-KV core。"
+      },
       positionEncoding: {
         title: "CSA 使用 partial RoPE，并对输出 inverse RoPE",
         summary: R`DeepSeek-V4 的 \(C_s^{Comp}\) 同时充当 key 与 value。报告只旋转 query/KV entry 的末 64 维；compressed entry 使用实现给定的位置 \(\pi_s\)，输出再按原 query 位置 \(t\) 施 inverse RoPE。core 前还做 per-head RMSNorm，并在 softmax 分母加入 sink。`,
@@ -1306,6 +1416,25 @@
     },
 
     hca: {
+      attentionConfig: {
+        model: "DeepSeek-V4-Pro · 1.6T",
+        scope: "官方 V4-Pro 配置中的 HCA layers（compress ratio 128）；对所有已完成 compressed blocks 做 dense attention。",
+        items: [
+          { label: "Hidden size", value: "7168", note: "模型残差宽度" },
+          { label: "Q heads", value: "128", note: "compressed-dense queries" },
+          { label: "Effective KV heads", value: "1", note: "共享 compressed KV entry" },
+          { label: "Core head dim", value: "512", note: "同一 512-d entry 兼作 K/V" },
+          { label: "RoPE slice", value: "64", note: "末 64 维 partial RoPE" },
+          { label: "Compression", value: "m′=128", note: "非重叠 128-to-1" },
+          { label: "Global selection", value: "All completed blocks", note: "dense；没有 top-k/indexer" },
+          { label: "Raw local window", value: "128 tokens", note: "覆盖当前未闭合块" }
+        ],
+        sources: [
+          { label: "DeepSeek-V4 Technical Report, §§2.3.2–2.3.3", url: "https://arxiv.org/abs/2606.19348" },
+          { label: "Official DeepSeek-V4-Pro inference config", url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/config.json" }
+        ],
+        caveat: "HCA 没有 Indexer 或 top-k；m′=128、window=128 与 512-d compressed entry 是 V4-Pro 的实例选择。"
+      },
       positionEncoding: {
         title: "HCA 与 CSA 共享 partial/inverse RoPE",
         summary: R`HCA 是 compressed-dense MQA，不是 sparse attention。宽度 \(c\) 的压缩 KV entry 兼作 value，末 64 维按 compressed position \(\pi_j\) 做 partial RoPE，输出同一 slice 按 raw query 位置 \(t\) inverse RoPE；core 同样使用 RMSNorm 与 sink。`,
@@ -1387,6 +1516,22 @@
     },
 
     linear: {
+      attentionConfig: {
+        model: "Linear (ours) · autoregressive MNIST",
+        scope: "Katharopoulos et al. (2020) 表 1 的代表模型；全 8 层均使用 kernelized causal linear attention。",
+        items: [
+          { label: "Hidden size", value: "256", note: "embedding / model width" },
+          { label: "Attention heads", value: "8", note: "每层" },
+          { label: "Head width", value: "32", note: "论文给出的 dimensions per head" },
+          { label: "Feature map", value: "ELU(x) + 1", note: "正值 kernel feature" },
+          { label: "Recurrent state", value: "S: C×M · z: C", note: "论文未分别给出数值 C、M" },
+          { label: "ShortConv / gates", value: "None / None", note: "不是 2020 原始结构的一部分" }
+        ],
+        sources: [
+          { label: "Katharopoulos et al. (2020), §3.2, §4.2.1 and Table 1", url: "https://proceedings.mlr.press/v119/katharopoulos20a.html" }
+        ],
+        caveat: "论文只统一报告每头 32 维，没有分别列出 d_k、d_v、C、M；状态数值形状不作额外推断。"
+      },
       positionEncoding: {
         title: "核线性化不自动提供位置编码",
         summary: "《Transformers are RNNs》的核心是核分解与因果递推，不是 prefix-scan/chunk 实现。整个 causal 输出序列对顺序敏感，因为每个时刻看到的前缀不同；但给定同一组写入，无衰减加法状态的最终汇总对排列不敏感，限制了状态内部编码顺序的能力。",
@@ -1473,6 +1618,25 @@
     },
 
     "gated-delta": {
+      attentionConfig: {
+        model: "Pure Gated DeltaNet · 1.3B",
+        scope: "论文 100B-token 对照模型及官方仓库；公开材料对 head count/head dim 存在冲突，以下保留各自口径。",
+        items: [
+          { label: "Hidden size", value: "2400", note: "官方 1.3B config" },
+          { label: "Layers", value: "16", note: "全部为 Gated DeltaNet layers" },
+          { label: "Head count", value: "16 config / 9 implementation", note: "仓库 config 未把 n_head 传给 block；作者确认实验使用 9" },
+          { label: "Head dim", value: "128 paper / 192 author clarification", note: "两份一级材料不一致" },
+          { label: "ShortConv width", value: "4", note: "官方实现默认值；仅 Q/K/V 路径" },
+          { label: "State per head", value: "d_v × d_k", note: "冲突未解，避免给出伪精确数值" },
+          { label: "Gates", value: "scalar α and scalar β / head / token", note: "decay 与 update rate" }
+        ],
+        sources: [
+          { label: "Yang et al. (2024), §§3.1–3.3 and Appendix Table S.1", url: "https://arxiv.org/abs/2412.06464" },
+          { label: "Official NVlabs GatedDeltaNet config", url: "https://github.com/NVlabs/GatedDeltaNet/blob/main/lit_gpt/config.py" },
+          { label: "Author clarification on released experiment dimensions", url: "https://github.com/NVlabs/GatedDeltaNet/issues/10" }
+        ],
+        caveat: "这里不能把 16 heads、9 heads、128 dim 与 192 dim 拼成一个并不存在的统一 checkpoint；卡片主动暴露论文、config 与实际实现的冲突。"
+      },
       positionEncoding: {
         title: "DeltaNet/Gated DeltaNet 依赖 ShortConv 与有序状态",
         summary: R`Gated DeltaNet 不给 q/k 套 RoPE。只有 q/k/v 走 ShortConv+SiLU；\(\alpha,\beta\) 都由 hidden state 直接线性投影，\(\beta=\sigma(W^\beta x)\)。q/k L2Norm 后，官方/主流 kernel 还把 q 乘 \(d_k^{-1/2}\)。`,
@@ -1573,6 +1737,25 @@
     },
 
     kda: {
+      attentionConfig: {
+        model: "Kimi-Linear-48B-A3B-Base",
+        scope: "MoonshotAI 发布 checkpoint；KDA 使用 nested linear_attn_config，不能与同模型 MLA 的 top-level head_dim 混用。",
+        items: [
+          { label: "Hidden size", value: "2304", note: "模型残差宽度" },
+          { label: "KDA heads", value: "32", note: "linear attention heads" },
+          { label: "K / V head dim", value: "128 / 128", note: "linear_attn_config.head_dim" },
+          { label: "State per head", value: "128 × 128", note: "固定大小 recurrent matrix" },
+          { label: "ShortConv width", value: "4", note: "Q/K/V 路径" },
+          { label: "KDA gate", value: "128-channel α + scalar β", note: "每 head、每 token" },
+          { label: "Layer mix", value: "20 KDA + 7 MLA", note: "共 27 层；不是精确 3:1" },
+          { label: "MLA layers", value: "4, 8, 12, 16, 20, 24, 27", note: "1-based layer indices" }
+        ],
+        sources: [
+          { label: "Kimi Linear Technical Report, §§3–4", url: "https://arxiv.org/abs/2510.26692" },
+          { label: "Official Kimi-Linear-48B-A3B-Base config", url: "https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Base/blob/main/config.json" }
+        ],
+        caveat: "top-level head_dim=72 属于 MLA/general-attention 配置；KDA 必须读取 linear_attn_config.head_dim=128。"
+      },
       positionEncoding: {
         title: "Kimi Linear 用 NoPE；KDA 自己承担位置感",
         summary: "Kimi Linear 报告明确让全局 MLA 层使用 NoPE：不添加显式 RoPE/absolute PE，但仍对每个历史 token 的 low-rank MLA cache 做 causal global softmax。位置与 recency 主要来自 KDA 的数据依赖逐通道 decay、有序转移和 q/k/v ShortConv。",
@@ -1656,6 +1839,7 @@
     }
 
     chapter.positionEncoding = enhancement.positionEncoding;
+    chapter.attentionConfig = enhancement.attentionConfig;
 
     enhancement.derivations.forEach(function (derivation) {
       chapter.derivations.push(derivation);
