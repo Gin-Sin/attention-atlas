@@ -41,15 +41,23 @@ const ATTENTION_CONFIG_FIELDS = ["model", "scope", "caveat"];
 const ATTENTION_CONFIG_ITEM_FIELDS = ["label", "value", "note"];
 const ATTENTION_CONFIG_MODULE_FIELDS = [
   "id",
+  "kind",
   "label",
-  "summary",
   "description",
-  "tone"
+  "tex"
 ];
+const ATTENTION_CONFIG_MODULE_KINDS = new Set([
+  "activation",
+  "weight",
+  "operator",
+  "state",
+  "block"
+]);
+const ATTENTION_CONFIG_EDGE_SIDES = new Set(["top", "bottom", "left", "right"]);
 const ATTENTION_CONFIG_SYMBOL_FIELDS = [
-  "symbol",
-  "label",
+  "tex",
   "shape",
+  "label",
   "value",
   "note"
 ];
@@ -107,6 +115,30 @@ function requireString(record, field, location) {
     return false;
   }
   return true;
+}
+
+/* Focused static TeX sanity: nonempty, balanced braces, no raw HTML or
+   dollar-sign delimiters (the renderer supplies \( … \) itself). */
+function requireTex(value, location) {
+  if (!isNonEmptyString(value)) {
+    addError(`${location} must be a nonempty TeX string`);
+    return;
+  }
+  let depth = 0;
+  for (const char of value) {
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (depth < 0) break;
+  }
+  if (depth !== 0) {
+    addError(`${location} has unbalanced braces: ${value}`);
+  }
+  if (/[<>]/.test(value)) {
+    addError(`${location} must not contain raw angle brackets: ${value}`);
+  }
+  if (value.includes("$")) {
+    addError(`${location} must not contain $ delimiters: ${value}`);
+  }
 }
 
 function compareOrderedIds(actual, expected, location) {
@@ -211,31 +243,80 @@ function validateChapters(chapters) {
         } else {
           counts.configModules += attentionConfig.modules.length;
           const moduleIds = new Set();
+          const kindCounts = {};
           attentionConfig.modules.forEach((module, moduleIndex) => {
             const moduleLocation =
               `${location}.attentionConfig.modules[${moduleIndex}]`;
             ATTENTION_CONFIG_MODULE_FIELDS.forEach((field) => {
               requireString(module, field, moduleLocation);
             });
+            if (isNonEmptyString(module.kind)) {
+              if (!ATTENTION_CONFIG_MODULE_KINDS.has(module.kind)) {
+                addError(
+                  `${moduleLocation}.kind must be one of ` +
+                    `${Array.from(ATTENTION_CONFIG_MODULE_KINDS).join(", ")}; ` +
+                    `found ${JSON.stringify(module.kind)}`
+                );
+              } else {
+                kindCounts[module.kind] = (kindCounts[module.kind] || 0) + 1;
+              }
+            }
             if (isNonEmptyString(module.id)) {
               if (moduleIds.has(module.id)) {
                 addError(`${moduleLocation}.id must be unique: ${module.id}`);
               }
               moduleIds.add(module.id);
             }
+            if (
+              !Number.isFinite(module.x) ||
+              !Number.isFinite(module.y)
+            ) {
+              addError(`${moduleLocation} must declare numeric x/y geometry`);
+            }
+            if (isNonEmptyString(module.tex)) {
+              requireTex(module.tex, `${moduleLocation}.tex`);
+            }
+            if (module.kind !== "operator") {
+              requireTex(module.texShape, `${moduleLocation}.texShape`);
+            } else if (module.texShape != null) {
+              requireTex(module.texShape, `${moduleLocation}.texShape`);
+            }
+            if (module.tone !== undefined) {
+              requireString(module, "tone", moduleLocation);
+            }
+            if (module.relates !== undefined && !Array.isArray(module.relates)) {
+              addError(`${moduleLocation}.relates must be an array when present`);
+            }
             if (!Array.isArray(module.symbols) || module.symbols.length === 0) {
               addError(`${moduleLocation}.symbols must be a nonempty array`);
             } else {
               module.symbols.forEach((symbol, symbolIndex) => {
+                const symbolLocation = `${moduleLocation}.symbols[${symbolIndex}]`;
                 ATTENTION_CONFIG_SYMBOL_FIELDS.forEach((field) => {
-                  requireString(
-                    symbol,
-                    field,
-                    `${moduleLocation}.symbols[${symbolIndex}]`
-                  );
+                  requireString(symbol, field, symbolLocation);
                 });
+                requireTex(symbol?.tex, `${symbolLocation}.tex`);
+                requireTex(symbol?.shape, `${symbolLocation}.shape`);
               });
             }
+          });
+          if (!kindCounts.weight || !kindCounts.activation) {
+            addError(
+              `${location}.attentionConfig.modules must contain at least one ` +
+                "weight module and one activation module"
+            );
+          }
+          attentionConfig.modules.forEach((module, moduleIndex) => {
+            (Array.isArray(module.relates) ? module.relates : []).forEach(
+              (relatedId) => {
+                if (!moduleIds.has(String(relatedId))) {
+                  addError(
+                    `${location}.attentionConfig.modules[${moduleIndex}]` +
+                      `.relates references unknown module ${relatedId}`
+                  );
+                }
+              }
+            );
           });
           if (!Array.isArray(attentionConfig.edges) || attentionConfig.edges.length === 0) {
             addError(`${location}.attentionConfig.edges must be a nonempty array`);
@@ -243,16 +324,58 @@ function validateChapters(chapters) {
             attentionConfig.edges.forEach((edge, edgeIndex) => {
               const edgeLocation =
                 `${location}.attentionConfig.edges[${edgeIndex}]`;
-              ["from", "to", "label"].forEach((field) => {
+              ["from", "to"].forEach((field) => {
                 requireString(edge, field, edgeLocation);
               });
-              if (isNonEmptyString(edge.from) && !moduleIds.has(edge.from)) {
+              if (edge?.label !== undefined) {
+                requireString(edge, "label", edgeLocation);
+              }
+              for (const side of ["fromSide", "toSide"]) {
+                if (
+                  edge?.[side] !== undefined &&
+                  !ATTENTION_CONFIG_EDGE_SIDES.has(edge[side])
+                ) {
+                  addError(`${edgeLocation}.${side} must be top/bottom/left/right`);
+                }
+              }
+              for (const at of ["fromAt", "toAt"]) {
+                if (
+                  edge?.[at] !== undefined &&
+                  (!Number.isFinite(edge[at]) || edge[at] < 0 || edge[at] > 1)
+                ) {
+                  addError(`${edgeLocation}.${at} must be a number in [0, 1]`);
+                }
+              }
+              if (isNonEmptyString(edge?.from) && !moduleIds.has(edge.from)) {
                 addError(`${edgeLocation}.from references unknown module ${edge.from}`);
               }
-              if (isNonEmptyString(edge.to) && !moduleIds.has(edge.to)) {
+              if (isNonEmptyString(edge?.to) && !moduleIds.has(edge.to)) {
                 addError(`${edgeLocation}.to references unknown module ${edge.to}`);
               }
             });
+          }
+          if (attentionConfig.groups !== undefined) {
+            if (!Array.isArray(attentionConfig.groups)) {
+              addError(`${location}.attentionConfig.groups must be an array when present`);
+            } else {
+              attentionConfig.groups.forEach((group, groupIndex) => {
+                const groupLocation =
+                  `${location}.attentionConfig.groups[${groupIndex}]`;
+                requireString(group, "id", groupLocation);
+                requireString(group, "label", groupLocation);
+                if (!Array.isArray(group?.members) || group.members.length === 0) {
+                  addError(`${groupLocation}.members must be a nonempty array`);
+                } else {
+                  group.members.forEach((memberId) => {
+                    if (!moduleIds.has(String(memberId))) {
+                      addError(
+                        `${groupLocation}.members references unknown module ${memberId}`
+                      );
+                    }
+                  });
+                }
+              });
+            }
           }
         }
       } else if (attentionConfig.modules !== undefined) {
@@ -556,6 +679,34 @@ function validateDiagrams(chapters, diagramBuilder, implementations) {
           expectedModuleIds,
           `${configLocation} module ids`
         );
+        // Every module group must expose its node kind so the visual
+        // grammar (activation block vs weight trapezoid vs operator vs
+        // state) is machine-checkable.
+        const renderedKinds = new Map(
+          Array.from(
+            configSvg.matchAll(
+              /\bdata-config-module="([^"]+)" data-config-kind="([^"]+)"/g
+            ),
+            (match) => [match[1], match[2]]
+          )
+        );
+        chapter.attentionConfig.modules.forEach((module) => {
+          if (renderedKinds.get(module.id) !== module.kind) {
+            addError(
+              `${configLocation} module ${module.id} must render ` +
+                `data-config-kind="${module.kind}"`
+            );
+          }
+        });
+        if (!/class="svg-math-label"/.test(configSvg)) {
+          addError(
+            `${configLocation} must render TeX labels through the ` +
+              "math-label foreignObject mechanism"
+          );
+        }
+        if (!/class="svg-math-fallback"/.test(configSvg)) {
+          addError(`${configLocation} must keep plain-text math fallbacks`);
+        }
         if (
           renderedModuleIds.length > 0 &&
           !/\btabindex="0"/.test(configSvg)
@@ -586,6 +737,18 @@ function validateRenderer(courseSource, chapterHtml) {
   ) {
     addError(
       "assets/course.js must render and initialize the interactive attentionConfig explorer"
+    );
+  }
+  if (
+    !/renderMath\(detail\)/.test(courseSource) ||
+    !/renderAttentionConfigLegend\(/.test(courseSource) ||
+    !/attention-config__kind/.test(courseSource) ||
+    !/is-config-related/.test(courseSource)
+  ) {
+    addError(
+      "assets/course.js must rerun KaTeX on config detail updates, render the " +
+        "visual-grammar legend, show module kind badges, and highlight " +
+        "weight/activation relations"
     );
   }
   if (/PyTorch 逐块实现/.test(courseSource)) {

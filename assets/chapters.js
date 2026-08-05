@@ -831,71 +831,106 @@
       order: 10,
       title: "DeltaNet",
       fullTitle: "DeltaNet & Gated DeltaNet",
-      zhTitle: "Delta 更新：让固定状态学会定点改写",
-      year: "2024–25",
+      zhTitle: "从累加记忆到在线纠错：为什么 Delta Rule 更会检索",
+      year: "2024–2025",
       category: "linear",
       difficulty: "前沿",
-      report: "Gated Delta Networks · ICLR 2025",
-      deck: R`普通线性注意力不断叠加写入；Delta rule 先读再写残差，Gated DeltaNet 再加入遗忘。论文用 \(F_t\in\mathbb R^{d_v\times d_k}\)，本站统一转置为 \(S_t=F_t^\top\in\mathbb R^{d_k\times d_v}\)。`,
-      takeaway: "加法记忆是“追加”；Delta rule 是“按 key 修正”；gate 是“先清场再修正”。三者逐步减少固定状态中的干扰。",
+      report: "Parallelizing Linear Transformers with the Delta Rule · NeurIPS 2024",
+      deck: R`线性注意力把历史压进 \(d_k\times d_v\) 的 fast-weight 矩阵，省掉随长度增长的 KV cache，却会把相似 key 的 value 不断叠加成检索噪声。DeltaNet 不再盲目追加：它先读出当前预测，再只写入目标与预测之间的误差；现代架构再用 L2Norm、ShortConv、输出归一化和 chunkwise WY/UT 把这个在线学习器变成可训练的语言模型模块。`,
+      takeaway: R`把状态看成一个在线回归器：线性注意力执行 \(S\leftarrow S+kv^\top\)，DeltaNet 则对 \(\frac12\|S^\top k-v\|^2\) 做一步梯度下降。单位范数 key、\(\beta=1\) 时，它会精确改写当前 key 的读出；但固定状态仍有容量上限，所以全局 attention 是重要的延伸方向。`,
+      sectionTitles: {
+        motivation: "为什么线性记忆会过载",
+        constraints: "Delta rule 解决什么，又没有解决什么",
+        intuitions: "把状态看成在线回归器",
+        diagram: "从纠错写入到现代 DeltaNet Block",
+        position: "现代 DeltaNet 的神经架构",
+        derivations: "从检索干扰、投影几何到 WY / UT",
+        exercises: "练习：干扰、稳定、并行与混合",
+        sources: "原论文、三篇作者博客与实现"
+      },
       motivation: [
-        R`普通线性状态 \(S\leftarrow S+kv^{\mathsf T}\) 对相同或相近 key 反复写入时会累积冲突，无法像字典一样覆盖旧值。`,
-        R`Delta rule 计算当前状态对 key 的预测 \(S^{\mathsf T}k\)，用目标 value 与预测之差作为写入量，因此更新集中在尚未记住的信息。`,
-        "Gated DeltaNet 在 delta 更新前对整个状态乘可学习衰减 αt，兼具快速遗忘与精确键值修改；论文还给出并行 chunk 算法。"
+        R`先看线性注意力为什么诱人：结合律把全部历史折叠为 \(S_t=\sum_{i\le t}k_iv_i^\top\)，单步只更新/读取固定矩阵；当 \(L\gg d\) 时，Decode 不再反复搬运 \(O(Ld)\) 的 KV cache，矩阵状态还把 RNN 记忆从 \(O(d)\) 便宜地扩到 \(O(d^2)\)。`,
+        R`再看代价：用单位 key \(k_j\) 读取时，\(S^\top k_j=v_j+\sum_{i\ne j}(k_i^\top k_j)v_i\)。只有互相正交的 key 才没有串扰，而 \(d_k\) 维空间最多容纳 \(d_k\) 个正交方向；序列继续增长时，“其他记忆”会成为检索误差。`,
+        R`Delta rule 的动机不是多加一个 gate，而是让记忆可修改：它先算旧预测 \(\hat v_t=S_{t-1}^\top k_t\)，再写 \(\beta_tk_t(v_t-\hat v_t)^\top\)。已经记住的内容几乎不写，错误答案才被擦除并替换；Gated DeltaNet 的 \(\alpha_t\) 是后续加入的时间遗忘机制。`
       ],
       constraints: [
-        { label: "状态", title: "仍是有限容量矩阵", body: "delta 改善冲突，但不能让固定大小状态拥有无限无损记忆。" },
-        { label: "并行", title: "递推需转成 chunk 算法", body: "逐 token 写法直观但训练低效，需要 WY/扫描类变换使用 Tensor Cores。" },
-        { label: "混合", title: "精确检索仍可能不足", body: "实际前沿模型常周期性插入 full/sliding attention 层补充显式读取。" }
+        { label: "容量上限", title: "纠错不等于无限无损记忆", body: "Delta update 减少同方向覆盖冲突，但相近 key 仍会互相影响；固定 \(d_k\times d_v\) 状态不可能精确保留任意长历史。" },
+        { label: "训练执行", title: "可结合不代表朴素 scan 高效", body: "把每步 transition 当稠密矩阵做 parallel scan 会产生高昂矩阵乘和 \(O(Ld^2)\) 中间状态写回；实用路线是 chunk checkpoint + WY/UT。" },
+        { label: "延伸性", title: "局部混合与全局回看解决不同问题", body: "ShortConv/滑窗增强局部顺序但仍受固定范围限制；少量 global-attention 层恢复显式远程读取，代价是重新引入部分 KV cache 与平方项。" }
       ],
       intuitions: [
-        { label: "累加", title: "每次把答案叠上去", body: "相同 key 的多个值会互相污染。" },
-        { label: "Delta", title: "只写纠错量", body: "先问记忆当前答什么，再写入目标与答案之差。" },
-        { label: "Gate", title: "可学习橡皮擦", body: "αt 控制全局旧记忆保留多少。" }
+        { label: "Fast weights", title: "状态就是在线训练的权重", body: R`token 内的 \(k_t\) 是训练样本，\(v_t\) 是目标，\(S\) 是上下文内不断更新的线性回归器；query \(q_t\) 用同一组 fast weights 读答案。` },
+        { label: "Projection", title: "单位 key 定义一个定向橡皮擦", body: R`\(\beta=1,\|k\|=1\) 时 \(I-kk^\top\) 擦掉状态在 key 方向上的旧分量，却保留正交方向；随后 \(kv^\top\) 写入新关联。` },
+        { label: "Extension", title: "固定状态负责概括，attention 负责精确回看", body: "DeltaNet 擅长用固定预算维护可修改摘要；当任务要求逐字复制、多针检索或任意远程引用时，稀疏插入 global attention 更稳妥。" }
       ],
-      diagram: { type: "delta", caption: "Delta rule：读取旧预测，计算误差，再沿 key 方向定点修正；gate 控制遗忘。" },
+      diagram: { type: "delta", caption: "DeltaNet 的完整因果链：加法 fast-weight memory 会累积串扰；delta update 先预测、再沿 key 方向擦除/纠写。现代 block 用 Q/K L2Norm、ShortConv 与输出 RMSNorm 提升稳定和局部寻址，训练则用 chunk checkpoint + WY/UT 把递推改写成矩阵乘；固定状态上限仍可由少量 global attention 补足。" },
       derivations: [
         {
-          title: "Delta rule 是一步在线梯度下降",
+          title: "线性 fast-weight memory 的检索误差从哪里来",
+          body: R`取本站状态约定
+            \[
+            S_t=\sum_{i\le t}k_iv_i^\top\in\mathbb R^{d_k\times d_v},
+            \qquad o_t=S_t^\top q_t.
+            \]
+            若用单位 key \(q_t=k_j\) 查询已写入的第 \(j\) 项，则
+            \[
+            S_t^\top k_j
+            =\sum_i v_i(k_i^\top k_j)
+            =v_j+\underbrace{\sum_{i\ne j}(k_i^\top k_j)v_i}_{\text{retrieval error}}.
+            \]
+            误差由 key 的非正交性直接产生。\(d_k\) 维空间最多只有 \(d_k\) 个两两正交方向，因此增加序列长度而不增加状态维度，最终必然让关联发生碰撞。线性 attention 的加法写入还无法删除旧关联，所以相同 key 改绑新 value 时会把两个答案叠加。`
+        },
+        {
+          title: "Delta rule 是一步在线 MSE 梯度下降",
           body: R`令状态 \(S\in\mathbb R^{d_k\times d_v}\)，希望 \(S^\top k_t\approx v_t\)。瞬时损失
             \[
             \ell_t(S)=\frac12\|S^\top k_t-v_t\|^2.
             \]
-            对 S 做步长 \(\beta_t\) 的梯度下降：
+            其梯度为 \(k_t(S^\top k_t-v_t)^\top\)，做步长 \(\beta_t\) 的一步更新：
             \[
             S_t=S_{t-1}+\beta_t k_t\big(v_t-S_{t-1}^\top k_t\big)^\top.
             \]
-            展开后得到 rank-1 状态转移。`
+            这既是在线回归，也是最简 TTT-linear 视角：状态不是静态摘要，而是上下文中被每个样本训练的 fast weights。对照之下，加法线性 attention 的 \(S_t=S_{t-1}+k_tv_t^\top\) 可视为对线性目标 \(-\langle S^\top k_t,v_t\rangle\) 做一步更新；梯度里没有“当前预测减目标”，所以无论旧关联是否已经正确都会继续追加。
+
+            若 \(\|k_t\|=1,\beta_t=1\)，则
+            \[
+            S_t^\top k_t=S_{t-1}^\top k_t+
+            (v_t-S_{t-1}^\top k_t)(k_t^\top k_t)=v_t,
+            \]
+            即当前 key 的读出被精确改写。`
         },
         {
-          title: "Gated DeltaNet 的标量遗忘",
-          body: R`在单位范数 key 的常用约定下，Gated DeltaNet 写为
+          title: "固定状态的收益与混合模型的代价",
+          body: R`单头 recurrent state 为 \(S\in\mathbb R^{d_k\times d_v}\)，与上下文长度 \(L\) 无关。逐 token Decode 的写入和读取均为
             \[
-            S_t=\alpha_t(I-\beta_tk_tk_t^\top)S_{t-1}
-            +\beta_tk_tv_t^\top,
-            \qquad o_t=S_t^\top q_t.
+            \Theta(d_kd_v),\qquad
+            M_{\rm state}=\Theta(d_kd_v),
             \]
-            \(\alpha_t\in(0,1)\) 是每头标量 gate；\(\beta_t\) 控制定点改写强度。`
+            而 dense softmax Decode 每步读取 \(\Theta(Ld_v)\) 的历史 KV。前者在 \(L\gg d_k\) 时更适合 memory-bound generation，但固定状态也给精确回看设了上限。
+
+            插入固定窗口 \(w\) 的 attention 仍保持 \(\Theta(Lw)\) 总位置交互，却看不到窗口外原文；插入 \(m\) 个 global-attention 层会增加约 \(\Theta(mL^2d_h)\) 训练算量和 \(\Theta(mLd_h)\) KV cache，但让少数层可精确访问任意历史位置。作者博客 Part III 的 1.3B/100B-token 对比中，平均 retrieval 从纯 DeltaNet 的 34.7 提升到滑窗混合的 39.6、两个 global 层的 47.9；同表 Transformer++ 为 41.8。关键延伸结论因此不是“纯 RNN 或纯 attention 二选一”，而是用少量 global 层购买精确检索。`
         }
       ],
-      warning: R`Gated DeltaNet 论文写 \(F_t\in\mathbb R^{d_v\times d_k},\,o_t=F_tq_t\)；本站公式使用转置约定 \(S_t=F_t^\top,\,o_t=S_t^\top q_t\)。官方 block 只有 q/k/v 经过 ShortConv；\(\alpha,\beta\) 走直接线性投影，\(\beta=\sigma(W^\beta x)\)，实现还会把归一化后的 q 乘 \(d_k^{-1/2}\)。1.3B 公开材料对 head count（16 config / 9 implementation）和 head dim（128 paper / 192 clarification）存在冲突，因此本章不展示伪精确的代表参数卡。`,
+      warning: R`必须区分三层结论：原始 DeltaNet 只有 \(\beta_t\) 纠错写入；Gated DeltaNet 另加每头标量遗忘 \(\alpha_t\)；KDA 再把遗忘细化到 key channel。本站使用 \(S\in\mathbb R^{d_k\times d_v}\)，而作者博客常用转置状态 \(F=S^\top\)。现代 block 只有 q/k/v 经过 ShortConv，\(\alpha,\beta\) 走 direct projection。1.3B 公开材料对 head count/head dim 有冲突，因此不展示伪精确参数卡。`,
       exercises: [
         {
-          q: R`若 \(\|k\|=1,\beta=1\)，证明 delta 更新后 \(S_t^\top k=v\)。`,
-          hint: R`把 \(S_t=S+\;k(v-S^\top k)^\top\) 左乘到 k 上。`,
-          answer: R`\(S_t^\top k=S^\top k+(v-S^\top k)k^\top k=v\)。因此对该 key 完成一次精确覆盖。`
+          q: R`线性 fast-weight state 已写入 \((k_1,v_1)\)、\((k_2,v_2)\)，且 \(\|k_1\|=\|k_2\|=1,\ k_1^\top k_2=\rho\)。用 \(q=k_1\) 读取时得到什么？何时无串扰？`,
+          hint: R`展开 \(S^\top k_1\)，分别保留 \(i=1,2\) 两项。`,
+          answer: R`\(S=k_1v_1^\top+k_2v_2^\top\)，所以 \(S^\top k_1=v_1+\rho v_2\)。只有 \(\rho=0\)，即两个 key 正交时，第二项不污染第一个 value。`
         },
         {
-          q: R`若连续 100 步没有 delta 写入且 \(\alpha=0.99\)，旧状态幅度剩多少？`,
-          hint: R`计算 \(0.99^{100}\)。`,
-          answer: "在没有新写入且 α 恒定的 decay-only 情形下约 0.366；数据依赖 gate 与后续 delta 写入会改变实际可检索寿命。"
+          q: R`若 \(\|k\|=1\)，推导 Delta update 后 \(S_t^\top k\) 与旧预测、目标 \(v\) 的关系；解释 \(\beta=0,1\) 两个端点。`,
+          hint: R`令 \(\hat v=S_{t-1}^\top k\)，代入 \(S_t=S_{t-1}+\beta k(v-\hat v)^\top\)。`,
+          answer: R`\(S_t^\top k=\hat v+\beta(v-\hat v)=(1-\beta)\hat v+\beta v\)。\(\beta=0\) 完全保留旧关联，\(\beta=1\) 将当前 key 的读出精确改写为 \(v\)；中间值是在线插值。`
         }
       ],
       sources: [
-        { label: "Schlag et al. (2021), Linear Transformers Are Secretly Fast Weight Programmers", url: "https://arxiv.org/abs/2102.11174" },
+        { label: "Yang et al. (2024), Parallelizing Linear Transformers with the Delta Rule over Sequence Length", url: "https://arxiv.org/abs/2406.06484" },
+        { label: "Songlin Yang, DeltaNet Explained (Part I): Model and motivation", url: "https://sustcsonglin.github.io/blog/2024/deltanet-1/" },
+        { label: "Songlin Yang, DeltaNet Explained (Part II): Chunkwise WY/UT algorithm", url: "https://sustcsonglin.github.io/blog/2024/deltanet-2/" },
+        { label: "Songlin Yang, DeltaNet Explained (Part III): Neural architecture and hybrids", url: "https://sustcsonglin.github.io/blog/2024/deltanet-3/" },
         { label: "Yang, Kautz & Hatamizadeh (2025), Gated Delta Networks", url: "https://arxiv.org/abs/2412.06464" },
-        { label: "NVlabs official GatedDeltaNet repository", url: "https://github.com/NVlabs/GatedDeltaNet" },
-        { label: "Qwen3-Next official architecture note: 3:1 Gated DeltaNet + attention", url: "https://qwenlm.github.io/blog/qwen3-next/" }
+        { label: "Flash Linear Attention official DeltaNet kernels", url: "https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/delta_rule" }
       ]
     },
     {
@@ -2025,11 +2060,11 @@
           { label: "Official NVlabs GatedDeltaNet config", url: "https://github.com/NVlabs/GatedDeltaNet/blob/main/lit_gpt/config.py" },
           { label: "Author clarification on released experiment dimensions", url: "https://github.com/NVlabs/GatedDeltaNet/issues/10" }
         ],
-        caveat: "这里不能把 16 heads、9 heads、128 dim 与 192 dim 拼成一个并不存在的统一 checkpoint；卡片主动暴露论文、config 与实际实现的冲突。"
+        caveat: "这里不能把 16 heads、9 heads、128 dim 与 192 dim 拼成一个并不存在的统一 checkpoint，因此本章不展示代表参数卡。"
       },
       positionEncoding: {
-        title: "DeltaNet/Gated DeltaNet 依赖 ShortConv 与有序状态",
-        summary: R`Gated DeltaNet 不给 q/k 套 RoPE。只有 q/k/v 走 ShortConv+SiLU；\(\alpha,\beta\) 都由 hidden state 直接线性投影，\(\beta=\sigma(W^\beta x)\)。q/k L2Norm 后，官方/主流 kernel 还把 q 乘 \(d_k^{-1/2}\)。`,
+        title: "现代 DeltaNet Block：内容寻址、局部位移与稳定读出",
+        summary: R`作者博客 Part III 的现代化路线不是给 q/k 套 RoPE，而是把 token mixer 重构为 Q/K: Linear→ShortConv→SiLU→L2Norm，V: Linear→ShortConv→SiLU，\(\beta\): Linear→Sigmoid；delta 读出后做 head-wise RMSNorm 再投影。ShortConv 提供局部顺序 shortcut，有序 delta transition 提供全局顺序。`,
         equation: R`\[
           q_t=d_k^{-1/2}\operatorname{L2Norm}(\operatorname{SiLU}(\operatorname{ShortConv}(W^qx)_t)),
           \quad
@@ -2040,88 +2075,104 @@
           \beta_t=\sigma(W^\beta x_t),
         \]
         \[
-          S_t=\alpha_t(I-\beta_tk_tk_t^\top)S_{t-1}+\beta_tk_tv_t^\top.
+          S_t=S_{t-1}+\beta_tk_t(v_t-S_{t-1}^\top k_t)^\top,\qquad
+          y_t=W^O\operatorname{RMSNorm}(S_t^\top q_t).
         \]`,
         steps: [
-          { label: "路径边界", title: "ShortConv 只在 q/k/v", body: R`\(\alpha,\beta\) 使用 linear-only gate path；给 \(\beta\) 加 ShortConv 会变成另一种参数化。` },
-          { label: "全局顺序", title: "状态转移不可交换", body: R`一般 \(A_tA_s\ne A_sA_t\)，其中 \(A_t=\alpha_t(I-\beta_tk_tk_t^\top)\)，所以写入顺序影响最终记忆。` },
-          { label: "矩阵约定", title: R`本站 \(S=F^\top\)`, body: R`论文常写 \(F_t\in\mathbb R^{d_v\times d_k},o_t=F_tq_t\)；本站转置为 \(S_t\in\mathbb R^{d_k\times d_v},o_t=S_t^\top q_t\)。` }
+          { label: "几何", title: "L2Norm 把 erase 变成方向投影", body: R`\(\|k_t\|=1\) 时 \(I-\beta_tk_tk_t^\top\) 只改变 key 方向的特征值；\(\beta=1\) 精确擦除该方向旧分量，正交方向保持不变。` },
+          { label: "局部顺序", title: "ShortConv 是单层 induction shortcut", body: "width-4 depthwise causal convolution 让 q/k/v 在进入全局状态前混合最近 token，显著改善局部寻址与检索；它不是 KV cache，也不替代长程状态。" },
+          { label: "稳定读出", title: "去掉正分母，改用输出 RMSNorm", body: "现代 DeltaNet 允许 SiLU 产生有符号特征，不再依赖正核归一化分母；对每头读出做 RMSNorm 后再写回残差流。" }
         ],
-        caveat: "不要为解释位置感而虚构一项 additive PE：论文消融明确把 ShortConv、gate 和状态动力学作为组成部分。"
+        caveat: "本式描述作者博客中的纯 DeltaNet block；Gated DeltaNet 会在纠错前额外加入标量 retention \u03b1。ShortConv、L2Norm、RMSNorm 与 chunk kernel 都是神经架构/执行配方，不应与 delta update 的数学定义混为一谈。"
       },
-      derivationSourceFallback: "Schlag et al. (2021), delta-rule；Yang et al. (2025), Eq. (10)、token-mixer block 与 official implementation",
+      derivationSourceFallback: "Yang et al. (2024), Parallelizing Linear Transformers with the Delta Rule；Songlin Yang, DeltaNet Explained Parts I–III；Yang et al. (2025), Gated Delta Networks",
       existingExerciseMeta: [
         { kind: "derivation", level: "intermediate" },
-        { kind: "complexity", level: "foundation" }
+        { kind: "derivation", level: "intermediate" }
       ],
       derivations: [
         {
-          title: "从逐元素微分补全在线梯度下降",
-          body: R`**原式。** 取 \(S\in\mathbb R^{d_k\times d_v}\) 和
+          title: "L2Norm 为什么让 Delta update 具有清晰投影几何",
+          body: R`把纯 DeltaNet 状态更新展开为
             \[
-            \ell_t(S)=\frac12\|S^\top k_t-v_t\|_2^2.
+            S_t=(I-\beta_tk_tk_t^\top)S_{t-1}+\beta_tk_tv_t^\top.
             \]
-            **约定。** Gated DeltaNet 论文状态为 \(F\in\mathbb R^{d_v\times d_k}\)；这里令 \(S=F^\top\)。**补全代数。** 令误差 \(e=S^\top k_t-v_t\in\mathbb R^{d_v}\)。微分
+            令 \(M_t=I-\beta_tk_tk_t^\top\)。对任意与 \(k_t\) 正交的
+            \(u\)，有 \(M_tu=u\)；沿 key 方向则
             \[
-            d\ell=e^\top d(S^\top k_t)
-            =e^\top(dS)^\top k_t
-            =\operatorname{tr}\!\left((k_te^\top)^\top dS\right),
+            M_tk_t=(1-\beta_t\|k_t\|^2)k_t.
             \]
-            故 \(\nabla_S\ell=k_te^\top\)。一步 SGD 给出
-            \[
-            S_t=S_{t-1}-\beta_tk_t(S_{t-1}^\top k_t-v_t)^\top
-            =(I-\beta_tk_tk_t^\top)S_{t-1}+\beta_tk_tv_t^\top.
-            \]
-            **张量形状。** \(k_t\in\mathbb R^{d_k}\)、\(v_t,e_t\in\mathbb R^{d_v}\)，两个外积均为
-            \(\mathbb R^{d_k\times d_v}\)。**直观。** 先用快权重回答，再只沿当前 key 写入预测误差。**边界。**
-            这是单样本、一步显式 SGD；\(\|k_t\|=1\) 与 \(0\le\beta_t\le1\) 有助于稳定和精确覆盖，但不保证不同 key 正交或长期无干扰。`,
-          source: "Yang, Kautz & Hatamizadeh (2025), §3.1（online regression view）"
+            因此特征值为：key 方向 \(1-\beta_t\|k_t\|^2\)，其余
+            \(d_k-1\) 个正交方向均为 1。若 L2Norm 保证 \(\|k_t\|=1\)
+            且 \(0\le\beta_t\le1\)，所有特征值落在 \([0,1]\)；当
+            \(\beta_t=1\) 时 \(I-k_tk_t^\top\) 正是擦除 key 方向的正交投影。
+
+            这解释了 L2Norm 的双重作用：稳定 transition 的谱，同时把“erase old
+            value”变成可视化的方向操作。作者也指出一个自然延伸：若令有效步长覆盖
+            \([0,2]\)，key 方向特征值可进入 \([-1,1]\)，在保持谱半径不超过 1 的同时
+            允许符号翻转，从而扩展状态跟踪能力；这是一条潜在改进，不是原始默认配置。`,
+          source: "Songlin Yang, DeltaNet Explained Part III（Normalization on Queries and Keys）"
         },
         {
-          title: "gated delta 等于先衰减再纠错",
-          body: R`**原式。**
+          title: "为什么朴素 parallel scan 失败，而 WY / UT chunk 可行",
+          body: R`在作者常用的转置状态 \(F=S^\top\in\mathbb R^{d_v\times d_k}\)
+            下，每步递推写成
             \[
-            S_t=\alpha_t(I-\beta_tk_tk_t^\top)S_{t-1}+\beta_tk_tv_t^\top.
+            F_t=F_{t-1}M_t+X_t,\qquad
+            M_t=I-\beta_tk_tk_t^\top,\quad X_t=\beta_tv_tk_t^\top.
             \]
-            **补全代数。** 令预衰减状态 \(\widetilde S_{t-1}=\alpha_tS_{t-1}\)，则
+            二元组合 \((M_i,X_i)\bullet(M_j,X_j)
+            =(M_iM_j,\,X_iM_j+X_j)\) 确实满足结合律，但直接 scan 会不断合并
+            \(d_k\times d_k\) transition，并把大量 \(d_v\times d_k\) 中间状态写入
+            HBM。低秩项的数量随树层扩张，最终要么结构膨胀，要么退化为昂贵稠密乘法；
+            “数学可 scan”不等于“GPU 上值得 scan”。
+
+            WY 表示把一个 chunk 内的 transition 乘积压成
             \[
-            S_t=\widetilde S_{t-1}
-            +\beta_tk_t\left(v_t-\widetilde S_{t-1}^{\top}k_t\right)^\top.
+            \prod_{r=1}^{C}(I-\beta_rk_rk_r^\top)
+            =I-W^\top K.
             \]
-            因此若 \(\|k_t\|=1,\beta_t=1\)，有 \(S_t^\top k_t=v_t\)。**张量形状。**
-            标量 \(\alpha_t,\beta_t\) 广播到 \([d_k,d_v]\) 状态。**直观。** 先让所有旧记忆褪色，再基于褪色后的答案做定点修正。**边界。**
-            若把误差错误地写成 \(v_t-S_{t-1}^\top k_t\)，展开式会少一个 \(\alpha_t\) 交叉项；矩阵朝向不同的论文还需整体转置后比较。`,
-          source: "Yang, Kautz & Hatamizadeh (2025), Eq. (10) and §3.1"
+            递归的 \(W,U\) 可由严格下三角依赖矩阵
+            \[
+            A=\operatorname{tril}(-\operatorname{diag}(\beta)KK^\top,-1),
+            \quad T=(I-A)^{-1},
+            \]
+            写成 \(W=T\operatorname{diag}(\beta)K,\,
+            U=T\operatorname{diag}(\beta)V\)。实现使用单位下三角求解而不是通用求逆。
+            于是只在 chunk 边界保存 \(F_{[i]}\)，chunk 内输出与边界更新主要变成
+            \(QK^\top\)、\(WF^\top\)、\(U^\top K\) 等矩阵乘，既避免保存全部 states，
+            又能利用 Tensor Cores。`,
+          source: "Songlin Yang, DeltaNet Explained Part II（failed scan, WY representation and UT transform）"
         }
       ],
       exercises: [
         {
-          kind: "counterexample",
+          kind: "derivation",
           level: "advanced",
-          q: R`构造 \(\|k_1\|=\|k_2\|=1\) 但写入第二个 key 会破坏第一个 key 的读取。`,
-          hint: "选两个不正交 key。",
-          answer: R`取 \(k_1=(1,0)^\top\)，\(k_2=(1,1)^\top/\sqrt2\)，先令 \(S^\top k_1=v_1\)。第二次 delta 写入含 \(k_2e_2^\top\)，对 \(k_1\) 的输出变化为 \(e_2(k_2^\top k_1)=e_2/\sqrt2\)，一般非零。精确覆盖当前 key 不代表不干扰相似 key。`
+          q: R`求 \(M=I-\beta kk^\top\) 的特征值。若 \(\|k\|=1\)，分别讨论 \(\beta=0,1,2\) 的几何作用。`,
+          hint: "分解为 k 方向与其正交补。",
+          answer: R`沿 \(k\) 的特征值为 \(1-\beta\|k\|^2\)，正交补上的特征值均为 1。单位 key 下：\(\beta=0\) 为恒等映射；\(\beta=1\) 擦除 k 方向，是正交投影；\(\beta=2\) 在 k 方向取 -1、其余方向取 1，是 Householder reflection。`
         },
         {
           kind: "code-shape",
           level: "intermediate",
-          q: R`批量多头实现中，Q/K 为 \([B,H,L,d_k]\)、V 为 \([B,H,L,d_v]\)。递推 state 与单步误差应是什么形状？`,
-          hint: "state 不含 L 轴。",
-          answer: R`state 为 \([B,H,d_k,d_v]\)。时刻 t 的预测 \(S^\top k_t\) 与误差都是 \([B,H,d_v]\)；\(k_t e_t^\top\) 广播外积回到 \([B,H,d_k,d_v]\)。`
+          q: R`批量实现中 Q/K 为 \([B,L,H,d_k]\)、V 为 \([B,L,H,d_v]\)。写出 state、单步 prediction/error/correction 的形状，并指出哪些量不含 L 轴。`,
+          hint: R`prediction 是 \(S^\top k_t\)，correction 是 \(k_te_t^\top\)。`,
+          answer: R`state 为 \([B,H,d_k,d_v]\)；单步 prediction 与 error 为 \([B,H,d_v]\)；correction 为 \([B,H,d_k,d_v]\)。持久 state 与单步量都不含 L 轴，只有训练时的 Q/K/V 序列和 chunk 中间量保留长度轴。`
+        },
+        {
+          kind: "complexity",
+          level: "advanced",
+          q: "为什么把 DeltaNet 的结合递推直接做 parallel scan 通常不如 chunkwise WY/UT？至少从算量、HBM 中间状态和 Tensor Core 利用三个角度回答。",
+          hint: "可结合只保证结果能重排，不保证重排后的对象仍小且硬件友好。",
+          answer: R`直接 scan 组合的是 \(d_k\times d_k\) transition 与 \(d_v\times d_k\) update；低秩项会随层级扩张，稠密实现又引入高阶矩阵乘，并需物化大量 \([L,d_v,d_k]\) 级中间状态到 HBM。WY/UT 只保留 chunk 边界 state，把 chunk 内依赖压成 C×C 下三角求解，并将主要工作改写为 QKᵀ、UᵀK 等大矩阵乘，因此减少 HBM 流量且更能利用 Tensor Cores。`
         },
         {
           kind: "design",
           level: "advanced",
-          q: "何时应在 Gated DeltaNet 模型中周期性插入 full/SWA 层？",
-          hint: "固定状态擅长压缩记忆，但不擅长任意精确回看。",
-          answer: "当任务需要多针检索、逐字复制、长距离精确引用或状态碰撞明显时插入显式 attention。应消融插入频率，联合测 retrieval、局部质量、状态/cache、训练吞吐与 decode TPOT。"
-        },
-        {
-          kind: "derivation",
-          level: "advanced",
-          q: R`令 \(\widetilde S=\alpha S\)。证明 \(\beta=1,\|k\|=1\) 时 gated delta 更新后对 k 的读取精确等于 v。`,
-          hint: R`使用 \(S^+=\widetilde S+k(v-\widetilde S^\top k)^\top\)。`,
-          answer: R`\((S^+)^\top k=\widetilde S^\top k+(v-\widetilde S^\top k)k^\top k=v\)。若 \(\|k\|\ne1\)，则会多出 \(\|k\|^2\) 因子，除非相应调整步长。`
+          q: "为 24 层 DeltaNet 设计一次混合消融：纯 DeltaNet、插入滑窗层、插入两个 global-attention 层。应固定什么、报告什么，才能判断“延伸性”而非只看困惑度？",
+          hint: "同时控制参数/训练 token，并测精确检索、缓存和端到端速度。",
+          answer: "固定模型宽度、总参数量、训练 token、数据与优化器；滑窗方案固定窗口并说明层位，global 方案可按作者博客放在第 2 层和中部附近。报告语言建模损失、常识任务、多针/逐字/长距离检索、训练吞吐、Decode TPOT、固定 state 大小及新增 KV cache。滑窗若只改善局部任务而 global 显著改善远程精确检索，就能区分局部 shortcut 与真正的全局回看能力。"
         }
       ]
     },
@@ -2228,474 +2279,2409 @@
     mha: {
       modules: [
         {
-          id: "input", label: "Token representation", summary: "512-d residual stream",
-          description: "每个 token 以模型宽度进入三套独立投影；head 轴尚未展开。", tone: "muted",
+          id: "x", kind: "activation", tone: "cyan",
+          x: 262, y: 566, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`X`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "X", shapeFallback: "[B,L,d_model]",
+          description: "每个 token 以模型宽度进入三套独立的 Q/K/V 投影；head 轴尚未展开。",
           symbols: [
-            { symbol: "X", label: "Input", shape: "[B, L, 512]", value: "d_model = 512", note: "Transformer base residual width" }
+            { tex: R`X`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 512", note: "Transformer base 残差宽度（Table 3）" }
           ]
         },
         {
-          id: "qkv", label: "Independent Q / K / V heads", summary: "8 heads × 64-d",
-          description: "Q、K、V 都保留 8 个独立 heads，每个 head 的 channel width 为 64。", tone: "compute",
+          id: "wq", kind: "weight", glyph: "down",
+          x: 94, y: 474,
+          label: "Query 投影权重",
+          tex: R`W^{Q}`, texShape: R`[d_{\mathrm{model}},\,H_q d_h]`,
+          fallback: "W^Q", shapeFallback: "[d,Hq·dh]",
+          relates: ["q"],
+          description: "8 个独立 query head 的合并投影；逐头拆开等价于 8 个 512×64 矩阵。",
           symbols: [
-            { symbol: "Q,K,V", label: "Projected activations", shape: "[B, 8, L, 64]", value: "H_q = H_kv = 8", note: "三套投影形状相同，参数彼此独立" },
-            { symbol: "W^Q,W^K,W^V", label: "Projection weights", shape: "[512, 512]", value: "8 × 64 = 512", note: "按实现可合并为一次线性投影" }
+            { tex: R`W^{Q}`, shape: R`[d_{\mathrm{model}},\,H_q d_h]`, label: "Query projection", value: "512 × (8 × 64) = 512 × 512", note: "逐头等价于 8 个独立的 W_h^Q ∈ R^{512×64}" }
           ]
         },
         {
-          id: "attention", label: "Scaled dot-product attention", summary: "8 independent score maps", col: 2,
-          description: "每个 head 形成自己的 L×L score 与 softmax 分布。", tone: "control",
+          id: "wk", kind: "weight", glyph: "down",
+          x: 274, y: 474,
+          label: "Key 投影权重",
+          tex: R`W^{K}`, texShape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`,
+          fallback: "W^K", shapeFallback: "[d,Hkv·dh]",
+          relates: ["k"],
+          description: "MHA 中 H_kv = H_q，每个 query head 拥有独立的一套 key 投影。",
           symbols: [
-            { symbol: "A", label: "Attention weights", shape: "[B, 8, L, L]", value: "scale = 1/√64", note: "causal 或双向取决于所在子层" }
+            { tex: R`W^{K}`, shape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`, label: "Key projection", value: "512 × 512（H_kv = 8）", note: "与 W^Q 形状相同、参数独立" }
           ]
         },
         {
-          id: "cache", label: "Full KV cache", summary: "1024 elements / token / layer", col: 2,
-          description: "增量解码为 8 个 heads 分别保存 K 与 V，历史宽度含完整 head 轴。", tone: "state",
+          id: "wv", kind: "weight", glyph: "down",
+          x: 454, y: 474,
+          label: "Value 投影权重",
+          tex: R`W^{V}`, texShape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`,
+          fallback: "W^V", shapeFallback: "[d,Hkv·dh]",
+          relates: ["v"],
+          description: "value 投影与 K 同构；三套投影可在实现中合并成一次线性层。",
           symbols: [
-            { symbol: "K_cache,V_cache", label: "Persistent state", shape: "[B, L, 8, 64] each", value: "2 × 8 × 64 = 1024 elements/token", note: "未计 dtype、分页和对齐开销" }
+            { tex: R`W^{V}`, shape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`, label: "Value projection", value: "512 × 512（H_kv = 8）", note: "实现常把 QKV 合并为 [512, 3·512] 一次投影" }
           ]
         },
         {
-          id: "output", label: "Head concat + output projection", summary: "Back to 512-d", col: 2,
-          description: "8 个 head 输出拼接后经 W^O 写回残差宽度。", tone: "gather",
+          id: "q", kind: "activation",
+          x: 86, y: 380,
+          label: "多头 Query 激活",
+          tex: R`Q`, texShape: R`[B,\,H_q,\,L,\,d_h]`,
+          fallback: "Q", shapeFallback: "[B,Hq,L,dh]",
+          description: "8 个独立 query heads，每头 64 维；只存在于本步计算，不进缓存。",
           symbols: [
-            { symbol: "Y", label: "Layer output", shape: "[B, L, 512]", value: "H × d_h = 512", note: "与残差流宽度一致" }
+            { tex: R`Q`, shape: R`[B,\,H_q,\,L,\,d_h]`, label: "Query heads", value: "H_q = 8, d_h = 64", note: "reshape/transpose 自 [B,L,512]" }
+          ]
+        },
+        {
+          id: "k", kind: "activation",
+          x: 266, y: 380,
+          label: "多头 Key 激活",
+          tex: R`K`, texShape: R`[B,\,H_{kv},\,L,\,d_h]`,
+          fallback: "K", shapeFallback: "[B,Hkv,L,dh]",
+          description: "每个 query head 对应一套独立 key；增量解码时逐步追加进 KV cache。",
+          symbols: [
+            { tex: R`K`, shape: R`[B,\,H_{kv},\,L,\,d_h]`, label: "Key heads", value: "H_kv = 8, d_h = 64", note: "MHA 的缓存宽度含完整 head 轴" }
+          ]
+        },
+        {
+          id: "v", kind: "activation",
+          x: 446, y: 380,
+          label: "多头 Value 激活",
+          tex: R`V`, texShape: R`[B,\,H_{kv},\,L,\,d_h]`,
+          fallback: "V", shapeFallback: "[B,Hkv,L,dh]",
+          description: "value 与 key 同形；softmax 权重决定每个位置读取多少 value 内容。",
+          symbols: [
+            { tex: R`V`, shape: R`[B,\,H_{kv},\,L,\,d_h]`, label: "Value heads", value: "H_kv = 8, d_h = 64", note: "与 K 一起构成 KV cache 的另一半" }
+          ]
+        },
+        {
+          id: "cache", kind: "state",
+          x: 626, y: 378,
+          label: "完整 KV cache",
+          tex: R`K_{1:t},V_{1:t}`, texShape: R`2\times[B,\,H_{kv},\,L,\,d_h]`,
+          fallback: "K/V cache", shapeFallback: "2×[B,Hkv,L,dh]",
+          relates: ["k", "v"],
+          description: "现代增量解码的叠加层：为 8 个 heads 分别保存历史 K 与 V。",
+          symbols: [
+            { tex: R`K_{1:t},V_{1:t}`, shape: R`2\times[B,\,H_{kv},\,L,\,d_h]`, label: "Persistent state", value: "2 × 8 × 64 = 1024 elements/token/layer", note: "2017 训练图没有 cache；此为现代解码口径" }
+          ]
+        },
+        {
+          id: "attn", kind: "activation", titleSize: 8.8,
+          x: 130, y: 286, w: 220, h: 50,
+          label: "缩放点积注意力权重",
+          tex: R`A=\operatorname{softmax}\!\big(\tfrac{QK^{\top}}{\sqrt{d_h}}+M\big)`,
+          texShape: R`[B,\,H_q,\,L,\,L]`,
+          fallback: "A = softmax(QK^T/√dh + M)", shapeFallback: "[B,Hq,L,L]",
+          description: "每个 head 独立形成 L×L score 并做 softmax；mask M 只出现在 decoder 子层。",
+          symbols: [
+            { tex: R`A`, shape: R`[B,\,H_q,\,L,\,L]`, label: "Attention weights", value: "scale = 1/√64", note: "encoder 双向、decoder causal，取决于子层" }
+          ]
+        },
+        {
+          id: "mul", kind: "operator",
+          x: 493, y: 294,
+          label: "A·V 加权读取",
+          tex: R`\otimes`, fallback: "⊗",
+          description: "softmax 权重与 value 的批量矩阵乘：每个 head 独立读取历史内容。",
+          symbols: [
+            { tex: R`AV`, shape: R`[B,\,H_q,\,L,\,d_h]`, label: "Weighted read", value: "每头独立 L×L·L×64", note: "精确 attention，无任何近似" }
+          ]
+        },
+        {
+          id: "o", kind: "activation",
+          x: 446, y: 196,
+          label: "逐头输出",
+          tex: R`O_h`, texShape: R`[B,\,H_q,\,L,\,d_h]`,
+          fallback: "O_h", shapeFallback: "[B,Hq,L,dh]",
+          description: "各 head 的读取结果，等待拼接后写回残差宽度。",
+          symbols: [
+            { tex: R`O_h`, shape: R`[B,\,H_q,\,L,\,d_h]`, label: "Per-head output", value: "8 × 64 = 512 拼接宽度", note: "concat 后进入输出投影" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 454, y: 112,
+          label: "输出投影权重",
+          tex: R`W^{O}`, texShape: R`[H_q d_h,\,d_{\mathrm{model}}]`,
+          fallback: "W^O", shapeFallback: "[Hq·dh,d]",
+          relates: ["y"],
+          description: "把拼接后的 head 输出线性映射回残差流宽度。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[H_q d_h,\,d_{\mathrm{model}}]`, label: "Output projection", value: "512 × 512", note: "使不同 head 的信息重新混合" }
+          ]
+        },
+        {
+          id: "y", kind: "activation", tone: "gather",
+          x: 446, y: 28,
+          label: "层输出",
+          tex: R`Y`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "Y", shapeFallback: "[B,L,d_model]",
+          description: "attention 子层输出，随后进入 2017 原始的 post Add & Norm。",
+          symbols: [
+            { tex: R`Y=\operatorname{Concat}(O_h)W^{O}`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 512", note: "与残差流宽度一致" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "qkv", label: "project" },
-        { from: "qkv", to: "attention", label: "score/read" },
-        { from: "qkv", to: "cache", label: "decode store" },
-        { from: "attention", to: "output", label: "concat" }
+        { from: "x", to: "wq", tone: "compute", bend: 540 },
+        { from: "x", to: "wk", tone: "compute" },
+        { from: "x", to: "wv", tone: "compute", bend: 540 },
+        { from: "wq", to: "q", tone: "weight" },
+        { from: "wk", to: "k", tone: "weight" },
+        { from: "wv", to: "v", tone: "weight" },
+        { from: "q", to: "attn", tone: "compute", toAt: 0.25, bend: 356 },
+        { from: "k", to: "attn", tone: "compute", toAt: 0.75, bend: 348 },
+        { from: "k", to: "cache", tone: "state", dashed: true, fromSide: "top", fromAt: 0.8, toSide: "top", bend: 364, label: "decode 追加", lx: 560, ly: 354 },
+        { from: "v", to: "cache", tone: "state", dashed: true },
+        { from: "v", to: "mul", tone: "compute" },
+        { from: "attn", to: "mul", tone: "compute" },
+        { from: "mul", to: "o", tone: "gather" },
+        { from: "o", to: "wo", tone: "gather" },
+        { from: "wo", to: "y", tone: "gather" }
       ]
     },
     mqa: {
       modules: [
         {
-          id: "input", label: "Token representation", summary: "1024-d residual stream",
-          description: "输入同时投影到多头 query 与单份共享 K/V。", tone: "muted",
+          id: "x", kind: "activation", tone: "cyan",
+          x: 262, y: 566, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`X`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "X", shapeFallback: "[B,L,d_model]",
+          description: "输入同时进入多头 query 投影和单份共享 K/V 投影。",
           symbols: [
-            { symbol: "X", label: "Input", shape: "[B, L, 1024]", value: "d_model = 1024", note: "Shazeer 2019 WMT representative model" }
+            { tex: R`X`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 1024", note: "Shazeer 2019 WMT 代表模型；learned PE 在其前相加" }
           ]
         },
         {
-          id: "queries", label: "Multi-head queries", summary: "8 heads × 128-d",
-          description: "MQA 只共享 K/V，query 仍保留多头以产生不同读取分布。", tone: "compute",
+          id: "wq", kind: "weight", glyph: "down",
+          x: 94, y: 474,
+          label: "多头 Query 投影",
+          tex: R`W^{Q}`, texShape: R`[d_{\mathrm{model}},\,H_q d_h]`,
+          fallback: "W^Q", shapeFallback: "[d,Hq·dh]",
+          relates: ["q"],
+          description: "query 仍保留 8 个独立 heads；MQA 的共享只发生在 K/V 一侧。",
           symbols: [
-            { symbol: "Q", label: "Query", shape: "[B, 8, L_q, 128]", value: "H_q = 8", note: "每个 head 独立投影" }
+            { tex: R`W^{Q}`, shape: R`[d_{\mathrm{model}},\,H_q d_h]`, label: "Query projection", value: "1024 × (8 × 128)", note: "多头 query 保持读取分布的多样性" }
           ]
         },
         {
-          id: "shared-kv", label: "Shared K / V", summary: "1 KV head × 128-d",
-          description: "全部 query heads 广播读取同一份 key 与 value，不需要真实 repeat。", tone: "control",
+          id: "wk", kind: "weight", glyph: "down",
+          x: 274, y: 474,
+          label: "单头 Key 投影",
+          tex: R`W^{K}`, texShape: R`[d_{\mathrm{model}},\,d_h]`,
+          fallback: "W^K", shapeFallback: "[d,dh]",
+          relates: ["k"],
+          description: "整层只有一套 key 投影：这是 MQA 定义本身（H_kv = 1）。",
           symbols: [
-            { symbol: "K,V", label: "Shared activations", shape: "[B, 1, L_k, 128]", value: "H_kv = 1", note: "head 轴长度 1，可用 stride-0 广播" }
+            { tex: R`W^{K}`, shape: R`[d_{\mathrm{model}},\,d_h]`, label: "Shared key projection", value: "1024 × 128", note: "参数量为 MHA 对应投影的 1/H_q" }
           ]
         },
         {
-          id: "attention", label: "Broadcast attention", summary: "8 score maps, one memory",
-          description: "score 仍有 8 个 query heads；减少的是被反复搬运的历史 K/V 副本。", tone: "compute",
+          id: "wv", kind: "weight", glyph: "down",
+          x: 454, y: 474,
+          label: "单头 Value 投影",
+          tex: R`W^{V}`, texShape: R`[d_{\mathrm{model}},\,d_h]`,
+          fallback: "W^V", shapeFallback: "[d,dh]",
+          relates: ["v"],
+          description: "value 同样只有一份；全部 query heads 读取同一份内容。",
           symbols: [
-            { symbol: "A", label: "Attention weights", shape: "[B, 8, L_q, L_k]", value: "scale = 1/√128", note: "共享 K/V 不消除 query-head 计算" }
+            { tex: R`W^{V}`, shape: R`[d_{\mathrm{model}},\,d_h]`, label: "Shared value projection", value: "1024 × 128", note: "与 W^K 一起构成唯一的 KV head" }
           ]
         },
         {
-          id: "cache", label: "Shared KV cache", summary: "256 elements / token / layer",
-          description: "每个历史 token 只持久化一份 128-d key 与一份 128-d value。", tone: "state",
+          id: "q", kind: "activation",
+          x: 86, y: 380,
+          label: "多头 Query 激活",
+          tex: R`Q`, texShape: R`[B,\,H_q,\,L_q,\,d_h]`,
+          fallback: "Q", shapeFallback: "[B,Hq,Lq,dh]",
+          description: "8 个 query heads 各自计算读取分布；query 不进入缓存。",
           symbols: [
-            { symbol: "KV_cache", label: "Persistent state", shape: "[B, L, 1, 128] × 2", value: "2 × 128 = 256 elements/token", note: "相对 8-head MHA 理论缩小 8 倍" }
+            { tex: R`Q`, shape: R`[B,\,H_q,\,L_q,\,d_h]`, label: "Query heads", value: "H_q = 8, d_h = 128", note: "每个 head 独立投影" }
+          ]
+        },
+        {
+          id: "k", kind: "activation",
+          x: 266, y: 380,
+          label: "共享 Key 激活",
+          tex: R`K`, texShape: R`[B,\,1,\,L_k,\,d_h]`,
+          fallback: "K", shapeFallback: "[B,1,Lk,dh]",
+          description: "head 轴长度为 1；广播读取无需物理复制。",
+          symbols: [
+            { tex: R`K`, shape: R`[B,\,1,\,L_k,\,d_h]`, label: "Shared key", value: "H_kv = 1", note: "stride-0 广播即可服务全部 query heads" }
+          ]
+        },
+        {
+          id: "v", kind: "activation",
+          x: 446, y: 380,
+          label: "共享 Value 激活",
+          tex: R`V`, texShape: R`[B,\,1,\,L_k,\,d_h]`,
+          fallback: "V", shapeFallback: "[B,1,Lk,dh]",
+          description: "唯一一份 value；解码时被反复读取但只保存一次。",
+          symbols: [
+            { tex: R`V`, shape: R`[B,\,1,\,L_k,\,d_h]`, label: "Shared value", value: "H_kv = 1", note: "与 K 一起构成 256 元素/token 的缓存" }
+          ]
+        },
+        {
+          id: "cache", kind: "state",
+          x: 626, y: 378,
+          label: "共享 KV cache",
+          tex: R`K_{1:t},V_{1:t}`, texShape: R`2\times[B,\,1,\,L,\,d_h]`,
+          fallback: "shared KV cache", shapeFallback: "2×[B,1,L,dh]",
+          relates: ["k", "v"],
+          description: "每个历史 token 只持久化一份 128-d key 与一份 128-d value。",
+          symbols: [
+            { tex: R`K_{1:t},V_{1:t}`, shape: R`2\times[B,\,1,\,L,\,d_h]`, label: "Persistent state", value: "2 × 128 = 256 elements/token/layer", note: "相对 8-head MHA 理论缩小 8 倍" }
+          ]
+        },
+        {
+          id: "bcast", kind: "operator", glyph: "pill", tone: "control",
+          x: 287, y: 297, w: 86, h: 28, titleSize: 8.4,
+          label: "head 轴逻辑广播",
+          tex: R`\operatorname{broadcast}`, fallback: "broadcast",
+          description: "共享 K/V 沿 head 轴 stride-0 广播到 8 个 query heads；高效实现不做物理 repeat。",
+          symbols: [
+            { tex: R`K'`, shape: R`[B,\,1,\,L,\,d_h]\to[B,\,H_q,\,L,\,d_h]`, label: "Logical view", value: "零复制", note: "显式 repeat 数值等价但丢掉带宽收益" }
+          ]
+        },
+        {
+          id: "attn", kind: "activation", titleSize: 8.8,
+          x: 80, y: 286, w: 180, h: 50,
+          label: "逐 query-head 注意力权重",
+          tex: R`A=\operatorname{softmax}\!\big(\tfrac{QK^{\top}}{\sqrt{d_h}}+M\big)`,
+          texShape: R`[B,\,H_q,\,L_q,\,L_k]`,
+          fallback: "A = softmax(QK^T/√dh + M)", shapeFallback: "[B,Hq,Lq,Lk]",
+          description: "score 仍保留全部 8 个 query heads；共享只减少历史搬运，不近似 softmax。",
+          symbols: [
+            { tex: R`A`, shape: R`[B,\,H_q,\,L_q,\,L_k]`, label: "Attention weights", value: "scale = 1/√128", note: "共享 K/V 不消除 query-head 计算量" }
+          ]
+        },
+        {
+          id: "mul", kind: "operator",
+          x: 493, y: 294,
+          label: "A·V 加权读取",
+          tex: R`\otimes`, fallback: "⊗",
+          description: "8 个 head 的 softmax 权重共同读取同一份共享 value。",
+          symbols: [
+            { tex: R`AV`, shape: R`[B,\,H_q,\,L_q,\,d_h]`, label: "Weighted read", value: "共享 V 广播参与", note: "读取分布逐头不同，内容只有一份" }
+          ]
+        },
+        {
+          id: "o", kind: "activation",
+          x: 446, y: 196,
+          label: "逐头输出",
+          tex: R`O_h`, texShape: R`[B,\,H_q,\,L_q,\,d_h]`,
+          fallback: "O_h", shapeFallback: "[B,Hq,Lq,dh]",
+          description: "各 query head 的读取结果，拼接后写回残差宽度。",
+          symbols: [
+            { tex: R`O_h`, shape: R`[B,\,H_q,\,L_q,\,d_h]`, label: "Per-head output", value: "8 × 128 = 1024 拼接宽度", note: "concat 后进入 W^O" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 454, y: 112,
+          label: "输出投影权重",
+          tex: R`W^{O}`, texShape: R`[H_q d_h,\,d_{\mathrm{model}}]`,
+          fallback: "W^O", shapeFallback: "[Hq·dh,d]",
+          relates: ["y"],
+          description: "输出投影不受 K/V 共享影响，与 MHA 完全同构。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[H_q d_h,\,d_{\mathrm{model}}]`, label: "Output projection", value: "1024 × 1024", note: "head 信息在此重新混合" }
+          ]
+        },
+        {
+          id: "y", kind: "activation", tone: "gather",
+          x: 446, y: 28,
+          label: "层输出",
+          tex: R`Y`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "Y", shapeFallback: "[B,L,d_model]",
+          description: "MQA 层输出；结构收益体现在解码时的 KV 搬运量。",
+          symbols: [
+            { tex: R`Y`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 1024", note: "共享改变缓存宽度，不改变输出形状" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "queries", label: "Q projection" },
-        { from: "input", to: "shared-kv", label: "shared KV" },
-        { from: "queries", to: "attention", label: "8 queries" },
-        { from: "shared-kv", to: "attention", label: "broadcast" },
-        { from: "shared-kv", to: "cache", label: "store once" }
+        { from: "x", to: "wq", tone: "compute", bend: 540 },
+        { from: "x", to: "wk", tone: "compute" },
+        { from: "x", to: "wv", tone: "compute", bend: 540 },
+        { from: "wq", to: "q", tone: "weight" },
+        { from: "wk", to: "k", tone: "weight" },
+        { from: "wv", to: "v", tone: "weight" },
+        { from: "q", to: "attn", tone: "compute", toAt: 7 / 18 },
+        { from: "k", to: "bcast", tone: "control" },
+        { from: "bcast", to: "attn", tone: "control" },
+        { from: "k", to: "cache", tone: "state", dashed: true, fromSide: "top", fromAt: 0.8, toSide: "top", bend: 364, label: "仅存一份", lx: 560, ly: 354 },
+        { from: "v", to: "cache", tone: "state", dashed: true },
+        { from: "v", to: "mul", tone: "compute" },
+        { from: "attn", to: "mul", tone: "compute", fromSide: "top", toSide: "top", bend: 266 },
+        { from: "mul", to: "o", tone: "gather", fromSide: "right", toAt: 0.75 },
+        { from: "o", to: "wo", tone: "gather" },
+        { from: "wo", to: "y", tone: "gather" }
       ]
     },
     gqa: {
       modules: [
         {
-          id: "input", label: "Decoder representation", summary: "4096-d T5.1.1-XXL",
-          description: "decoder self/cross-attention 将 64 个 query heads 分配给 8 个 KV groups。", tone: "muted",
+          id: "x", kind: "activation", tone: "cyan",
+          x: 262, y: 640, w: 136, h: 46,
+          label: "Decoder 输入残差流",
+          tex: R`X`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "X", shapeFallback: "[B,L,d_model]",
+          description: "T5.1.1-XXL 的 decoder self/cross-attention 输入；64 个 query heads 分配给 8 个 KV groups。",
           symbols: [
-            { symbol: "X", label: "Input", shape: "[B, L, 4096]", value: "d_model = 4096", note: "GQA-8-XXL representative configuration" }
+            { tex: R`X`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 4096", note: "GQA-8-XXL 代表配置" }
           ]
         },
         {
-          id: "queries", label: "Query heads", summary: "64 heads × 64-d",
-          description: "query 多样性保持为 64 heads；每 8 个相邻 query heads 共用一个 KV head。", tone: "compute",
+          id: "wq", kind: "weight", glyph: "down",
+          x: 94, y: 548,
+          label: "Query 投影权重",
+          tex: R`W^{Q}`, texShape: R`[d_{\mathrm{model}},\,H_q d_h]`,
+          fallback: "W^Q", shapeFallback: "[d,Hq·dh]",
+          relates: ["q"],
+          description: "query 多样性完整保留：64 个 heads 全部独立投影。",
           symbols: [
-            { symbol: "Q", label: "Query", shape: "[B, 64, L_q, 64]", value: "H_q = 64", note: "decoder query heads" }
+            { tex: R`W^{Q}`, shape: R`[d_{\mathrm{model}},\,H_q d_h]`, label: "Query projection", value: "4096 × (64 × 64)", note: "H_q = 64 保持不变" }
           ]
         },
         {
-          id: "grouped-kv", label: "Grouped K / V", summary: "8 groups × 64-d",
-          description: "K/V 只保留 8 组，组映射 g(h)=⌊h/8⌋。", tone: "control",
+          id: "wk", kind: "weight", glyph: "down",
+          x: 274, y: 548,
+          label: "分组 Key 投影",
+          tex: R`W^{K}`, texShape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`,
+          fallback: "W^K", shapeFallback: "[d,Hkv·dh]",
+          relates: ["k"],
+          description: "只保留 8 组 key 投影；uptraining 时由组内 MHA 权重均值池化初始化。",
           symbols: [
-            { symbol: "K,V", label: "Grouped activations", shape: "[B, 8, L_k, 64]", value: "H_kv = 8", note: "每组服务 8 个 query heads" },
-            { symbol: "g(h)", label: "Head mapping", shape: "[64] → [8]", value: "group ratio = 8", note: "要求 H_q 可被 H_kv 整除" }
+            { tex: R`W^{K}`, shape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`, label: "Grouped key projection", value: "4096 × (8 × 64)", note: "初始化 W̄_g = r⁻¹ Σ W_h（组内均值）" }
           ]
         },
         {
-          id: "attention", label: "Grouped attention", summary: "64 score maps",
-          description: "每个 query head 仍有独立 softmax，只是读取所属组的 K/V。", tone: "compute",
+          id: "wv", kind: "weight", glyph: "down",
+          x: 454, y: 548,
+          label: "分组 Value 投影",
+          tex: R`W^{V}`, texShape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`,
+          fallback: "W^V", shapeFallback: "[d,Hkv·dh]",
+          relates: ["v"],
+          description: "与 W^K 同构的 8 组 value 投影；缓存宽度由这 8 组决定。",
           symbols: [
-            { symbol: "A", label: "Attention weights", shape: "[B, 64, L_q, L_k]", value: "scale = 1/√64", note: "T5 self-attention另加桶化相对偏置" }
+            { tex: R`W^{V}`, shape: R`[d_{\mathrm{model}},\,H_{kv} d_h]`, label: "Grouped value projection", value: "4096 × (8 × 64)", note: "H_kv = 8（GQA-8）" }
           ]
         },
         {
-          id: "cache", label: "Grouped KV cache", summary: "1024 elements / token / layer",
-          description: "缓存宽度只乘 8 个 KV heads，而不是 64 个 query heads。", tone: "state",
+          id: "q", kind: "activation",
+          x: 86, y: 454,
+          label: "Query 激活",
+          tex: R`Q`, texShape: R`[B,\,H_q,\,L_q,\,d_h]`,
+          fallback: "Q", shapeFallback: "[B,Hq,Lq,dh]",
+          description: "64 个 query heads，每头 64 维；每个 head 仍有独立 softmax。",
           symbols: [
-            { symbol: "KV_cache", label: "Persistent state", shape: "[B, L, 8, 64] × 2", value: "2 × 8 × 64 = 1024 elements/token", note: "相对对应 MHA 理论缩小 8 倍" }
+            { tex: R`Q`, shape: R`[B,\,H_q,\,L_q,\,d_h]`, label: "Query heads", value: "H_q = 64, d_h = 64", note: "decoder query heads" }
+          ]
+        },
+        {
+          id: "k", kind: "activation",
+          x: 266, y: 454,
+          label: "分组 Key 激活",
+          tex: R`K_g`, texShape: R`[B,\,H_{kv},\,L_k,\,d_h]`,
+          fallback: "K_g", shapeFallback: "[B,Hkv,Lk,dh]",
+          description: "8 组 key；每组被 8 个相邻 query heads 逻辑读取。",
+          symbols: [
+            { tex: R`K_g`, shape: R`[B,\,H_{kv},\,L_k,\,d_h]`, label: "Grouped keys", value: "H_kv = 8", note: "组容量介于 MHA 与 MQA 之间" }
+          ]
+        },
+        {
+          id: "v", kind: "activation",
+          x: 446, y: 454,
+          label: "分组 Value 激活",
+          tex: R`V_g`, texShape: R`[B,\,H_{kv},\,L_k,\,d_h]`,
+          fallback: "V_g", shapeFallback: "[B,Hkv,Lk,dh]",
+          description: "8 组 value 与 key 配对；组内 query heads 共享读取内容。",
+          symbols: [
+            { tex: R`V_g`, shape: R`[B,\,H_{kv},\,L_k,\,d_h]`, label: "Grouped values", value: "H_kv = 8", note: "与 K_g 一起进入分组缓存" }
+          ]
+        },
+        {
+          id: "cache", kind: "state",
+          x: 626, y: 452,
+          label: "分组 KV cache",
+          tex: R`K_{1:t},V_{1:t}`, texShape: R`2\times[B,\,H_{kv},\,L,\,d_h]`,
+          fallback: "grouped KV cache", shapeFallback: "2×[B,Hkv,L,dh]",
+          relates: ["k", "v"],
+          description: "缓存宽度只乘 8 个 KV heads，而不是 64 个 query heads。",
+          symbols: [
+            { tex: R`K_{1:t},V_{1:t}`, shape: R`2\times[B,\,H_{kv},\,L,\,d_h]`, label: "Persistent state", value: "2 × 8 × 64 = 1024 elements/token/layer", note: "相对 64-head MHA 理论缩小 8 倍" }
+          ]
+        },
+        {
+          id: "gmap", kind: "operator", glyph: "pill", tone: "control",
+          x: 274, y: 376, w: 112, h: 28, titleSize: 8.6,
+          label: "head-to-group 映射",
+          tex: R`g(h)=\lfloor h/r\rfloor`, fallback: "g(h)=⌊h/r⌋",
+          description: "连续等大小分组：每个 query head 按 g(h) 找到自己的 KV 组，不做物理 repeat。",
+          symbols: [
+            { tex: R`g(h)`, shape: R`[H_q]\to[H_{kv}]`, label: "Group map", value: "r = H_q/H_kv = 8", note: "要求 H_q 可被 H_kv 整除" }
+          ]
+        },
+        {
+          id: "bias", kind: "weight", glyph: "down", titleSize: 8.8,
+          x: 34, y: 368,
+          label: "T5 相对位置偏置",
+          tex: R`b_{h,\mathrm{bucket}(t-s)}`, texShape: R`[H_q,\,32]`,
+          fallback: "b_{h,bucket}", shapeFallback: "[Hq,32]",
+          relates: ["attn"],
+          description: "T5 self-attention 的桶化相对位置偏置按 query head 索引；cross-attention 不套用此项。",
+          symbols: [
+            { tex: R`b_{h,\mathrm{bucket}(t-s)}`, shape: R`[H_q,\,32]`, label: "Relative bias table", value: "32 buckets · max distance 128", note: "位置参数保留 h 轴，未被池化成组" }
+          ]
+        },
+        {
+          id: "attn", kind: "activation", titleSize: 8.2,
+          x: 130, y: 282, w: 220, h: 50,
+          label: "分组注意力权重",
+          tex: R`A=\operatorname{softmax}\!\big(\tfrac{QK_{g(h)}^{\top}}{\sqrt{d_h}}+b_h+M\big)`,
+          texShape: R`[B,\,H_q,\,L_q,\,L_k]`,
+          fallback: "A = softmax(QK_g^T/√dh + b + M)", shapeFallback: "[B,Hq,Lq,Lk]",
+          description: "每个 query head 保留独立 softmax，只是读取所属组的 K/V；self-attention 另加 T5 桶化偏置。",
+          symbols: [
+            { tex: R`A`, shape: R`[B,\,H_q,\,L_q,\,L_k]`, label: "Attention weights", value: "scale = 1/√64", note: "64 个独立 score map" }
+          ]
+        },
+        {
+          id: "mul", kind: "operator",
+          x: 493, y: 290,
+          label: "A·V 分组读取",
+          tex: R`\otimes`, fallback: "⊗",
+          description: "每个 query head 用自己的权重读取所属组的 value。",
+          symbols: [
+            { tex: R`AV_{g(h)}`, shape: R`[B,\,H_q,\,L_q,\,d_h]`, label: "Groupwise read", value: "精确 attention", note: "组共享不引入任何近似" }
+          ]
+        },
+        {
+          id: "o", kind: "activation",
+          x: 446, y: 196,
+          label: "逐头输出",
+          tex: R`O_h`, texShape: R`[B,\,H_q,\,L_q,\,d_h]`,
+          fallback: "O_h", shapeFallback: "[B,Hq,Lq,dh]",
+          description: "64 个 head 输出拼接后写回残差宽度。",
+          symbols: [
+            { tex: R`O_h`, shape: R`[B,\,H_q,\,L_q,\,d_h]`, label: "Per-head output", value: "64 × 64 = 4096 拼接宽度", note: "concat 后进入 W^O" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 454, y: 112,
+          label: "输出投影权重",
+          tex: R`W^{O}`, texShape: R`[H_q d_h,\,d_{\mathrm{model}}]`,
+          fallback: "W^O", shapeFallback: "[Hq·dh,d]",
+          relates: ["y"],
+          description: "输出投影不参与分组，与 MHA 完全同构。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[H_q d_h,\,d_{\mathrm{model}}]`, label: "Output projection", value: "4096 × 4096", note: "不受 H_kv 影响" }
+          ]
+        },
+        {
+          id: "y", kind: "activation", tone: "gather",
+          x: 446, y: 28,
+          label: "层输出",
+          tex: R`Y`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "Y", shapeFallback: "[B,L,d_model]",
+          description: "GQA 层输出；分组只改变缓存与搬运量，不改变输出形状。",
+          symbols: [
+            { tex: R`Y`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 4096", note: "与残差流宽度一致" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "queries", label: "Q" },
-        { from: "input", to: "grouped-kv", label: "8 KV groups" },
-        { from: "queries", to: "attention", label: "64 heads" },
-        { from: "grouped-kv", to: "attention", label: "group map" },
-        { from: "grouped-kv", to: "cache", label: "persist" }
+        { from: "x", to: "wq", tone: "compute", bend: 614 },
+        { from: "x", to: "wk", tone: "compute" },
+        { from: "x", to: "wv", tone: "compute", bend: 614 },
+        { from: "wq", to: "q", tone: "weight" },
+        { from: "wk", to: "k", tone: "weight" },
+        { from: "wv", to: "v", tone: "weight" },
+        { from: "q", to: "attn", tone: "compute", toAt: 0.25, bend: 350 },
+        { from: "k", to: "gmap", tone: "control" },
+        { from: "gmap", to: "attn", tone: "control", toAt: 0.6, bend: 352 },
+        { from: "bias", to: "attn", tone: "weight", toAt: 0.1, bend: 340 },
+        { from: "k", to: "cache", tone: "state", dashed: true, fromSide: "top", fromAt: 0.8, toSide: "top", bend: 436, label: "8 组持久化", lx: 560, ly: 426 },
+        { from: "v", to: "cache", tone: "state", dashed: true },
+        { from: "v", to: "mul", tone: "compute" },
+        { from: "attn", to: "mul", tone: "compute" },
+        { from: "mul", to: "o", tone: "gather" },
+        { from: "o", to: "wo", tone: "gather" },
+        { from: "wo", to: "y", tone: "gather" }
       ]
     },
     mla: {
+      groups: [
+        { id: "prefill", label: "PREFILL 展开 · MHA-LIKE 中间激活", tone: "compute", titlePos: "bottom", members: ["wuk", "wuv", "kc", "vc"] },
+        { id: "decode", label: "DECODE 直读 · MQA-LIKE", tone: "state", titlePos: "bottom", members: ["cache"] }
+      ],
       modules: [
         {
-          id: "input", label: "Residual stream", summary: "DeepSeek-V2 · 5120-d",
-          description: "MLA 从同一 hidden state 生成 query latent、KV latent 与位置支路。", tone: "muted",
+          id: "h", kind: "activation", tone: "cyan",
+          x: 382, y: 700, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`h_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "h_t", shapeFallback: "[B,L,d_model]",
+          description: "同一 hidden state 生成 query latent、joint KV latent 与解耦 RoPE key 三条支路。",
           symbols: [
-            { symbol: "h_t", label: "Input", shape: "[B, L, 5120]", value: "d_model = 5120", note: "DeepSeek-V2 representative model" }
+            { tex: R`h_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 5120", note: "DeepSeek-V2 代表模型" }
           ]
         },
         {
-          id: "query", label: "Query path", summary: "1536 latent → 128 heads",
-          description: "query 先压到 1536 维 latent，再展开为 128 个内容/位置 query heads；query 不进入历史缓存。", tone: "compute",
+          id: "wdq", kind: "weight", glyph: "down",
+          x: 114, y: 608,
+          label: "Query 下投影",
+          tex: R`W^{DQ}`, texShape: R`[d,\,d_c']`,
+          fallback: "W^DQ", shapeFallback: "[d,dc']",
+          relates: ["cq"],
+          description: "query 先压缩到 1536 维 latent；低秩化只为省参数，不进缓存。",
           symbols: [
-            { symbol: "c_t^Q", label: "Query latent", shape: "[B, L, 1536]", value: "d_c' = 1536", note: "current-token temporary activation" },
-            { symbol: "q_t", label: "Query heads", shape: "[B, 128, L, 192]", value: "128 content + 64 RoPE", note: "score scaling follows 192-d explicit head" }
+            { tex: R`W^{DQ}`, shape: R`[d_{\mathrm{model}},\,d_c']`, label: "Query down-projection", value: "5120 × 1536", note: "query latent rank d_c' = 1536" }
           ]
         },
         {
-          id: "latent", label: "Joint KV latent", summary: "One shared 512-d source",
-          description: "同一个 512-d latent 通过逐头上投影生成内容 K/V；Decode 时吸收投影后直接读取 latent。", tone: "control",
+          id: "wdkv", kind: "weight", glyph: "down",
+          x: 394, y: 608,
+          label: "Joint KV 下投影",
+          tex: R`W^{DKV}`, texShape: R`[d,\,d_c]`,
+          fallback: "W^DKV", shapeFallback: "[d,dc]",
+          relates: ["ckv"],
+          description: "把 5120 维 hidden state 压成 512 维 joint latent——K 与 V 的共同来源。",
           symbols: [
-            { symbol: "c_t^{KV}", label: "Joint latent", shape: "[B, L, 512]", value: "C = 512", note: "同一份表示同时派生 K 与 V" },
-            { symbol: "k_i^C,v_i", label: "Prefill expansion", shape: "[B, 128, L, 128]", value: "128 heads × 128-d", note: "只作为 Prefill 中间激活" }
+            { tex: R`W^{DKV}`, shape: R`[d_{\mathrm{model}},\,d_c]`, label: "KV down-projection", value: "5120 × 512", note: "KV latent rank d_c = 512" }
           ]
         },
         {
-          id: "decode", label: "Absorbed Decode", summary: "MQA-like 512-d working space",
-          description: "K 上投影吸收到 query，V 上投影吸收到输出；历史不重建多头 K/V。", tone: "compute",
+          id: "wkr", kind: "weight", glyph: "down",
+          x: 654, y: 608,
+          label: "RoPE key 投影",
+          tex: R`W^{KR}`, texShape: R`[d,\,d_h^{R}]`,
+          fallback: "W^KR", shapeFallback: "[d,dhR]",
+          relates: ["kr"],
+          description: "位置支路的共享 key 投影：全部 128 个 heads 共用一份 64 维 RoPE key。",
           symbols: [
-            { symbol: "q̃_i", label: "Absorbed query", shape: "[B, 128, 1, 512]", value: "128 heads read shared latent", note: "结构执行口径，不是无约束标准 MQA-512" }
+            { tex: R`W^{KR}`, shape: R`[d_{\mathrm{model}},\,d_h^{R}]`, label: "Decoupled RoPE key projection", value: "5120 × 64", note: "逐头保存会使缓存宽度膨胀到 8704" }
           ]
         },
         {
-          id: "cache", label: "Latent + RoPE cache", summary: "576 elements / token / layer",
-          description: "持久缓存只含 512-d joint latent 与一份共享 64-d RoPE key。", tone: "state",
+          id: "cq", kind: "activation",
+          x: 106, y: 470,
+          label: "Query latent",
+          tex: R`c_t^{Q}`, texShape: R`[B,\,L,\,d_c']`,
+          fallback: "c_t^Q", shapeFallback: "[B,L,dc']",
+          description: "当前 token 的临时激活；不进入任何跨 token 缓存。",
           symbols: [
-            { symbol: "c^{KV},k^R", label: "Persistent state", shape: "[B, L, 512] + [B, L, 64]", value: "512 + 64 = 576 elements/token", note: "没有 128 个 KV-head 副本" }
+            { tex: R`c_t^{Q}`, shape: R`[B,\,L,\,d_c']`, label: "Query latent", value: "d_c' = 1536", note: "现算即弃" }
+          ]
+        },
+        {
+          id: "ckv", kind: "activation", tone: "control",
+          x: 386, y: 470,
+          label: "Joint KV latent",
+          tex: R`c_t^{KV}`, texShape: R`[B,\,L,\,d_c]`,
+          fallback: "c_t^KV", shapeFallback: "[B,L,dc]",
+          description: "同一份 512 维表示同时派生 K 与 V；Prefill 展开、Decode 直读都从这里出发。",
+          symbols: [
+            { tex: R`c_t^{KV}`, shape: R`[B,\,L,\,d_c]`, label: "Joint latent", value: "d_c = 512", note: "NoPE 内容通道，吸收恒等式的前提" }
+          ]
+        },
+        {
+          id: "rope1", kind: "operator", tone: "cyan",
+          x: 693, y: 552,
+          label: "RoPE 旋转（key 侧）",
+          tex: R`R_t`, fallback: "R_t",
+          description: "共享 key 在写入缓存前按位置 t 完成旋转；每 token 只旋转一次。",
+          symbols: [
+            { tex: R`R_t`, shape: R`[d_h^{R},\,d_h^{R}]`, label: "Rotary operator", value: "64 维位置子空间", note: "位置项不可吸收，因此单独走支路" }
+          ]
+        },
+        {
+          id: "kr", kind: "activation",
+          x: 646, y: 470,
+          label: "共享 RoPE key",
+          tex: R`k_t^{R}`, texShape: R`[B,\,1,\,L,\,d_h^{R}]`,
+          fallback: "k_t^R", shapeFallback: "[B,1,L,dhR]",
+          description: "全部 heads 共享的 64 维位置 key；MQA 式共享保住了缓存收益。",
+          symbols: [
+            { tex: R`k_t^{R}`, shape: R`[B,\,1,\,L,\,d_h^{R}]`, label: "Shared positional key", value: "d_h^R = 64", note: "stride-0 广播给 128 个 heads" }
+          ]
+        },
+        {
+          id: "wuq", kind: "weight", glyph: "up",
+          x: 44, y: 382,
+          label: "内容 query 上投影",
+          tex: R`W^{UQ}`, texShape: R`[d_c',\,H d_h^{C}]`,
+          fallback: "W^UQ", shapeFallback: "[dc',H·dhC]",
+          relates: ["qc"],
+          description: "从 query latent 展开 128 个 128 维内容 query heads。",
+          symbols: [
+            { tex: R`W^{UQ}`, shape: R`[d_c',\,H d_h^{C}]`, label: "Content query up-projection", value: "1536 × (128 × 128)", note: "H = 128, d_h^C = 128" }
+          ]
+        },
+        {
+          id: "wqr", kind: "weight", glyph: "up",
+          x: 184, y: 382,
+          label: "位置 query 上投影",
+          tex: R`W^{QR}`, texShape: R`[d_c',\,H d_h^{R}]`,
+          fallback: "W^QR", shapeFallback: "[dc',H·dhR]",
+          relates: ["qr"],
+          description: "逐头 64 维位置 query：现算即弃，保留头间位置敏感度多样性。",
+          symbols: [
+            { tex: R`W^{QR}`, shape: R`[d_c',\,H d_h^{R}]`, label: "Positional query up-projection", value: "1536 × (128 × 64)", note: "query 侧不进缓存" }
+          ]
+        },
+        {
+          id: "wuk", kind: "weight", glyph: "up",
+          x: 324, y: 382,
+          label: "Key 上投影（可吸收）",
+          tex: R`W^{UK}`, texShape: R`[d_c,\,H d_h^{C}]`,
+          fallback: "W^UK", shapeFallback: "[dc,H·dhC]",
+          relates: ["kc", "cache"],
+          description: "Prefill 显式展开每头 key；Decode 把它吸收进 query 侧（q̃ = (W^UK)^⊤ q^C）。",
+          symbols: [
+            { tex: R`W^{UK}`, shape: R`[d_c,\,H d_h^{C}]`, label: "Key up-projection", value: "512 × (128 × 128)", note: "两种执行图共用同一份权重" }
+          ]
+        },
+        {
+          id: "wuv", kind: "weight", glyph: "up",
+          x: 464, y: 382,
+          label: "Value 上投影（可吸收）",
+          tex: R`W^{UV}`, texShape: R`[d_c,\,H d_h^{C}]`,
+          fallback: "W^UV", shapeFallback: "[dc,H·dhC]",
+          relates: ["vc", "cache"],
+          description: "Prefill 显式重建每头 value；Decode 与 W^O 合并成固定输出矩阵。",
+          symbols: [
+            { tex: R`W^{UV}`, shape: R`[d_c,\,H d_h^{C}]`, label: "Value up-projection", value: "512 × (128 × 128)", note: "V 侧吸收：W^O W^UV 先行合并" }
+          ]
+        },
+        {
+          id: "qc", kind: "activation",
+          x: 36, y: 286,
+          label: "内容 query heads",
+          tex: R`q_t^{C}`, texShape: R`[B,\,H,\,L,\,d_h^{C}]`,
+          fallback: "q_t^C", shapeFallback: "[B,H,L,dhC]",
+          description: "128 个 128 维内容 query；Decode 时先与 W^UK 折叠成 512 维 q̃。",
+          symbols: [
+            { tex: R`q_t^{C}`, shape: R`[B,\,H,\,L,\,d_h^{C}]`, label: "Content queries", value: "H = 128, d_h^C = 128", note: "吸收后 q̃ ∈ R^512 直接对 latent 打分" }
+          ]
+        },
+        {
+          id: "rope2", kind: "operator", tone: "cyan",
+          x: 223, y: 341,
+          label: "RoPE 旋转（query 侧）",
+          tex: R`R_t`, fallback: "R_t",
+          description: "逐头位置 query 的旋转；每步现算，不产生随序列增长的状态。",
+          symbols: [
+            { tex: R`R_t`, shape: R`[d_h^{R},\,d_h^{R}]`, label: "Rotary operator", value: "64 维子空间", note: "与 key 侧配对给出相对位移" }
+          ]
+        },
+        {
+          id: "qr", kind: "activation",
+          x: 176, y: 286,
+          label: "位置 query heads",
+          tex: R`q_t^{R}`, texShape: R`[B,\,H,\,L,\,d_h^{R}]`,
+          fallback: "q_t^R", shapeFallback: "[B,H,L,dhR]",
+          description: "逐头 64 维位置 query，与共享 k^R 配对形成位置分数。",
+          symbols: [
+            { tex: R`q_t^{R}`, shape: R`[B,\,H,\,L,\,d_h^{R}]`, label: "Positional queries", value: "H = 128, d_h^R = 64", note: "只花一次投影算量" }
+          ]
+        },
+        {
+          id: "kc", kind: "activation", dashed: true,
+          x: 316, y: 286,
+          label: "Prefill 展开 key",
+          tex: R`k_{s,i}^{C}`, texShape: R`[B,\,H,\,L,\,d_h^{C}]`,
+          fallback: "k_si^C", shapeFallback: "[B,H,L,dhC]",
+          description: "仅 Prefill 车道的中间激活：k^C = W^UK c^KV；不作为持久缓存。",
+          symbols: [
+            { tex: R`k_{s,i}^{C}=W_i^{UK}c_s^{KV}`, shape: R`[B,\,H,\,L,\,d_h^{C}]`, label: "Expanded keys", value: "128 heads × 128-d", note: "compute-only，算完即弃" }
+          ]
+        },
+        {
+          id: "vc", kind: "activation", dashed: true,
+          x: 456, y: 286,
+          label: "Prefill 展开 value",
+          tex: R`v_{s,i}`, texShape: R`[B,\,H,\,L,\,d_h^{C}]`,
+          fallback: "v_si", shapeFallback: "[B,H,L,dhC]",
+          description: "仅 Prefill 车道的中间激活：v = W^UV c^KV。",
+          symbols: [
+            { tex: R`v_{s,i}=W_i^{UV}c_s^{KV}`, shape: R`[B,\,H,\,L,\,d_h^{C}]`, label: "Expanded values", value: "128 heads × 128-d", note: "Decode 从不重建历史多头 V" }
+          ]
+        },
+        {
+          id: "cache", kind: "state",
+          x: 800, y: 470, w: 148, h: 46,
+          label: "Latent + RoPE 持久缓存",
+          tex: R`c_{1:t}^{KV},k_{1:t}^{R}`, texShape: R`[B,\,L,\,d_c{+}d_h^{R}]`,
+          fallback: "c^KV + k^R cache", shapeFallback: "[B,L,dc+dhR]",
+          relates: ["ckv", "kr"],
+          description: "持久缓存只含 512 维 joint latent 与一份共享 64 维 RoPE key；没有 128 个 KV-head 副本。",
+          symbols: [
+            { tex: R`c_{1:t}^{KV},k_{1:t}^{R}`, shape: R`[B,\,L,\,d_c]+[B,\,L,\,d_h^{R}]`, label: "Persistent state", value: "512 + 64 = 576 elements/token/layer", note: "两种执行形态共享同一份缓存" }
+          ]
+        },
+        {
+          id: "score", kind: "activation", titleSize: 8.2,
+          x: 120, y: 196, w: 240, h: 52,
+          label: "内容 + 位置分数",
+          tex: R`a=\operatorname{softmax}\!\big(\tfrac{q^{C\top}k^{C}+q^{R\top}k^{R}}{\sqrt{192}}+M\big)`,
+          texShape: R`[B,\,H,\,L,\,L]`,
+          fallback: "a = softmax((qC·kC + qR·kR)/√192)", shapeFallback: "[B,H,L,L]",
+          description: "两条车道给出逐元素相同的 softmax：Prefill 用展开 key，Decode 用 q̃ 直接对 latent 打分。",
+          symbols: [
+            { tex: R`a`, shape: R`[B,\,H,\,L,\,L]`, label: "Attention weights", value: "scale = 1/√(128+64)", note: "同权重、精确线性重结合" }
+          ]
+        },
+        {
+          id: "mul", kind: "operator",
+          x: 503, y: 205,
+          label: "加权读取（value / latent）",
+          tex: R`\otimes`, fallback: "⊗",
+          description: "Prefill 读展开 value；Decode 先聚合 512 维 latent（m = Σ a·c^KV），再一次线性写回。",
+          symbols: [
+            { tex: R`o_{t,i}`, shape: R`[B,\,H,\,L,\,d_h^{C}]`, label: "Prefill read", value: "128 heads × 128-d", note: "o = Σ a·v（展开车道）" },
+            { tex: R`m_{t,i}`, shape: R`[B,\,H,\,L,\,d_c]`, label: "Decode latent read", value: "512-d 共享工作空间", note: "m = Σ a·c^KV（吸收车道）" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 464, y: 124,
+          label: "输出投影（可并吸收）",
+          tex: R`W^{O}`, texShape: R`[H d_h^{C},\,d]`,
+          fallback: "W^O", shapeFallback: "[H·dhC,d]",
+          relates: ["u"],
+          description: "Decode 形态把 W_i^O W_i^UV 合并成固定矩阵，直接作用于聚合后的 latent。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[H d_h^{C},\,d_{\mathrm{model}}]`, label: "Output projection", value: "(128 × 128) × 5120", note: "吸收：u = Σ (W_i^O W_i^UV) m_i" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 456, y: 40,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,L,d_model]",
+          description: "两种执行图逐位相同的输出；权重只有一份。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 5120", note: "括号顺序不同、函数完全相同" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "query", label: "Q LoRA" },
-        { from: "input", to: "latent", label: "KV down" },
-        { from: "query", to: "decode", label: "absorb K" },
-        { from: "latent", to: "decode", label: "shared read" },
-        { from: "latent", to: "cache", label: "persist" }
+        { from: "h", to: "wdq", tone: "compute", bend: 674 },
+        { from: "h", to: "wdkv", tone: "compute" },
+        { from: "h", to: "wkr", tone: "compute", bend: 674 },
+        { from: "wdq", to: "cq", tone: "weight" },
+        { from: "wdkv", to: "ckv", tone: "weight" },
+        { from: "wkr", to: "rope1", tone: "weight" },
+        { from: "rope1", to: "kr", tone: "cyan" },
+        { from: "cq", to: "wuq", tone: "compute", fromAt: 0.25, bend: 446 },
+        { from: "cq", to: "wqr", tone: "compute", fromAt: 0.75, bend: 446 },
+        { from: "ckv", to: "wuk", tone: "compute", dashed: true, fromAt: 0.2, bend: 452, label: "Prefill 展开", lx: 300, ly: 462 },
+        { from: "ckv", to: "wuv", tone: "compute", dashed: true, fromAt: 0.8, bend: 452 },
+        { from: "ckv", to: "cache", tone: "state", dashed: true, fromSide: "bottom", fromAt: 0.8, toSide: "bottom", bend: 544, label: "persist 512", lx: 640, ly: 534 },
+        { from: "kr", to: "cache", tone: "state", dashed: true },
+        { from: "wuq", to: "qc", tone: "weight" },
+        { from: "wqr", to: "rope2", tone: "weight" },
+        { from: "rope2", to: "qr", tone: "cyan" },
+        { from: "wuk", to: "kc", tone: "weight" },
+        { from: "wuv", to: "vc", tone: "weight" },
+        { from: "qc", to: "score", tone: "compute", toAt: 0.25, bend: 266 },
+        { from: "qr", to: "score", tone: "compute" },
+        { from: "kc", to: "score", tone: "compute", dashed: true, toAt: 0.75, bend: 266, label: "Prefill", lx: 344, ly: 276 },
+        { from: "vc", to: "mul", tone: "compute", dashed: true },
+        { from: "score", to: "mul", tone: "compute" },
+        { from: "cache", to: "score", tone: "state", dashed: true, fromSide: "top", toSide: "bottom", toAt: 0.9, bend: 258, label: "Decode 直读 latent", lx: 700, ly: 248 },
+        { from: "kr", to: "score", tone: "cyan", fromSide: "top", toSide: "right", toAt: 0.1, label: "共享位置分数", lx: 560, ly: 190 },
+        { from: "mul", to: "wo", tone: "gather" },
+        { from: "wo", to: "u", tone: "gather" }
       ]
     },
     mfa: {
       modules: [
         {
-          id: "input", label: "Residual stream", summary: "2048-d model width",
-          description: "输入先进入共享 C 维 query/key/value feature space。", tone: "muted",
+          id: "x", kind: "activation", tone: "cyan",
+          x: 322, y: 804, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`x_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "x_t", shapeFallback: "[B,L,d_model]",
+          description: "输入被三个共享投影映射到同一个 C 维特征空间。",
           symbols: [
-            { symbol: "X", label: "Input", shape: "[B, L, 2048]", value: "d_model = 2048", note: "MFA scale-study representative model" }
+            { tex: R`x_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 2048", note: "MFA 规模化研究代表模型（24 层）" }
           ]
         },
         {
-          id: "shared", label: "Shared C-dimensional features", summary: "C = 256",
-          description: "token 只产生一份共享 key/value feature；head 数不会复制历史缓存。", tone: "control",
+          id: "sq", kind: "weight", glyph: "down",
+          x: 94, y: 734,
+          label: "共享 query 投影",
+          tex: R`S_q`, texShape: R`[d,\,C]`,
+          fallback: "S_q", shapeFallback: "[d,C]",
+          relates: ["qbar"],
+          description: "把 token 投到共享 C 维空间；head 差异稍后由逐头 Q_c 提供。",
           symbols: [
-            { symbol: "q,k,v", label: "Shared features", shape: "[B, L, 256]", value: "C = 256", note: "K/V each have one shared head" }
+            { tex: R`S_q`, shape: R`[d_{\mathrm{model}},\,C]`, label: "Shared query projection", value: "2048 × 256", note: "C = 256 同时是共享宽度与每头 rank" }
           ]
         },
         {
-          id: "head-matrices", label: "Head-specific QK / VO matrices", summary: "18 heads × 256×256", col: 2,
-          description: "每个 head 用独立 C×C 矩阵改变匹配与写回，容量保存在权重而非缓存。", tone: "compute",
+          id: "sk", kind: "weight", glyph: "down",
+          x: 334, y: 734,
+          label: "共享 key 投影",
+          tex: R`S_k`, texShape: R`[d,\,C]`,
+          fallback: "S_k", shapeFallback: "[d,C]",
+          relates: ["kf"],
+          description: "每个 token 只产生一份共享 key；head 数不复制历史缓存。",
           symbols: [
-            { symbol: "Q_c,O_c", label: "Per-head weights", shape: "[18, 256, 256]", value: "m = 18 heads", note: "factorization rank per head up to C" }
+            { tex: R`S_k`, shape: R`[d_{\mathrm{model}},\,C]`, label: "Shared key projection", value: "2048 × 256", note: "K 只有一个共享 head" }
           ]
         },
         {
-          id: "attention", label: "Multi-head C-space attention", summary: "18 independent softmax maps", col: 2,
-          description: "共享底片被 18 套 QK/VO circuit 读取，score 仍保留 head 轴。", tone: "compute",
+          id: "sv", kind: "weight", glyph: "down",
+          x: 574, y: 734,
+          label: "共享 value 投影",
+          tex: R`S_v`, texShape: R`[d,\,C]`,
+          fallback: "S_v", shapeFallback: "[d,C]",
+          relates: ["vf"],
+          description: "标准 MFA 的 value 投影；MFA-KR 变体改由 key 派生 value。",
           symbols: [
-            { symbol: "A", label: "Attention weights", shape: "[B, 18, L, L]", value: "TER proxy = 18 × 256", note: "TER 是容量代理，不是精度定理" }
+            { tex: R`S_v`, shape: R`[d_{\mathrm{model}},\,C]`, label: "Shared value projection", value: "2048 × 256", note: "MFA-KR 下此路径被 v = kM 取代" }
           ]
         },
         {
-          id: "cache", label: "Shared K / V cache", summary: "512 elements / token / layer", col: 2,
-          description: "标准 MFA 缓存一份 256-d K 和一份 256-d V；MFA-KR 可只存 key。", tone: "state",
+          id: "qbar", kind: "activation",
+          x: 86, y: 658,
+          label: "共享 query 特征",
+          tex: R`\bar q_t`, texShape: R`[B,\,L,\,C]`,
+          fallback: "q̄_t", shapeFallback: "[B,L,C]",
+          description: "C 维共享 query 特征；从不进入缓存。",
           symbols: [
-            { symbol: "K,V", label: "MFA cache", shape: "[B, L, 256] each", value: "2C = 512 elements/token", note: "BF16 时每层每 token 为 1 KiB" },
-            { symbol: "K", label: "MFA-KR cache", shape: "[B, L, 256]", value: "C = 256 elements/token", note: "key reuse 以小幅质量折损换半数缓存" }
+            { tex: R`\bar q_t=x_tS_q`, shape: R`[B,\,L,\,C]`, label: "Shared query features", value: "C = 256", note: "现算即弃" }
+          ]
+        },
+        {
+          id: "kf", kind: "activation",
+          x: 326, y: 658,
+          label: "共享 key",
+          tex: R`k_t`, texShape: R`[B,\,L,\,C]`,
+          fallback: "k_t", shapeFallback: "[B,L,C]",
+          description: "每 token 一份共享 key，被全部 m 个 heads 读取。",
+          symbols: [
+            { tex: R`k_t=x_tS_k`, shape: R`[B,\,L,\,C]`, label: "Shared key", value: "C = 256", note: "没有 head 轴" }
+          ]
+        },
+        {
+          id: "vf", kind: "activation",
+          x: 566, y: 658,
+          label: "共享 value",
+          tex: R`v_t`, texShape: R`[B,\,L,\,C]`,
+          fallback: "v_t", shapeFallback: "[B,L,C]",
+          description: "标准 MFA 的共享 value；与 key 一起构成 2C 宽度的缓存。",
+          symbols: [
+            { tex: R`v_t=x_tS_v`, shape: R`[B,\,L,\,C]`, label: "Shared value", value: "C = 256", note: "MFA-KR 只缓存 key，v 由 kM 派生" }
+          ]
+        },
+        {
+          id: "cache", kind: "state",
+          x: 756, y: 658, w: 148, h: 46,
+          label: "共享 KV cache",
+          tex: R`k_{1:t},v_{1:t}`, texShape: R`2\times[B,\,L,\,C]`,
+          fallback: "shared KV cache", shapeFallback: "2×[B,L,C]",
+          relates: ["kf", "vf"],
+          description: "缓存宽度 2C 与 head 数 m 无关；MFA-KR 变体减半到 C。",
+          symbols: [
+            { tex: R`k_{1:t},v_{1:t}`, shape: R`2\times[B,\,L,\,C]`, label: "MFA cache", value: "2C = 512 elements/token（BF16 为 1 KiB/层）", note: "24 层合计约 24 KiB/token" },
+            { tex: R`k_{1:t}`, shape: R`[B,\,L,\,C]`, label: "MFA-KR cache", value: "C = 256 elements/token", note: "key reuse 以小幅质量折损换半数缓存" }
+          ]
+        },
+        {
+          id: "qc", kind: "weight", glyph: "down",
+          x: 94, y: 588,
+          label: "逐头 QK 矩阵",
+          tex: R`Q_c`, texShape: R`[m,\,C,\,C]`,
+          fallback: "Q_c", shapeFallback: "[m,C,C]",
+          relates: ["qheads"],
+          description: "每个 head 一个完整 C×C 矩阵：容量放在权重里，而不是缓存里。",
+          symbols: [
+            { tex: R`Q_c`, shape: R`[m,\,C,\,C]`, label: "Per-head QK circuits", value: "m = 18 heads × 256×256", note: "每头 factorization rank 可达 C" }
+          ]
+        },
+        {
+          id: "kr", kind: "weight", glyph: "pair", dashed: true, tone: "orange",
+          x: 774, y: 588,
+          label: "MFA-KR value 派生",
+          tex: R`M=I{+}\mathrm{diag}(\alpha)N`, texShape: R`[C,\,C]`,
+          fallback: "M = I + diag(α)N", shapeFallback: "[C,C]", titleSize: 8.2,
+          relates: ["kf", "vf"],
+          description: "可选 key-reuse 变体：v = kM，α 零初始化使训练从 v = k 出发；缓存从 2C 降到 C。",
+          symbols: [
+            { tex: R`M=I+\operatorname{diag}(\alpha)N`, shape: R`[C,\,C]`, label: "Key-reuse matrix", value: "α 零初始化 ⇒ 初始 v = k", note: "value 被约束到 key 派生族" }
+          ]
+        },
+        {
+          id: "qheads", kind: "activation",
+          x: 86, y: 512,
+          label: "逐头 query",
+          tex: R`q_{t,c}`, texShape: R`[B,\,m,\,L,\,C]`,
+          fallback: "q_tc", shapeFallback: "[B,m,L,C]",
+          description: "18 个 C 维 query views；只存在于计算中，不进缓存。",
+          symbols: [
+            { tex: R`q_{t,c}=\bar q_tQ_c`, shape: R`[B,\,m,\,L,\,C]`, label: "Per-head queries", value: "m = 18, C = 256", note: "head 差异全部来自 Q_c" }
+          ]
+        },
+        {
+          id: "ropeq", kind: "operator", tone: "cyan",
+          x: 133, y: 453,
+          label: "RoPE（query 侧）",
+          tex: R`R_t`, fallback: "R_t",
+          description: "全部 heads 在同一 C 维空间用同一组 RoPE 频率旋转。",
+          symbols: [
+            { tex: R`R_t`, shape: R`[C,\,C]`, label: "Rotary operator", value: "base 500,000（论文 common settings）", note: "value 不旋转" }
+          ]
+        },
+        {
+          id: "ropek", kind: "operator", tone: "cyan",
+          x: 373, y: 453,
+          label: "RoPE（key 侧）",
+          tex: R`R_s`, fallback: "R_s",
+          description: "共享 key 每 token 只旋转一次即可服务全部 heads。",
+          symbols: [
+            { tex: R`R_s`, shape: R`[C,\,C]`, label: "Rotary operator", value: "每 token 一次", note: "相对位移由两侧配对消去" }
+          ]
+        },
+        {
+          id: "score", kind: "activation", titleSize: 8.4,
+          x: 160, y: 380, w: 220, h: 52,
+          label: "逐头注意力权重",
+          tex: R`a^{(c)}=\operatorname{softmax}\!\big(\tfrac{q_{t,c}k_s^{\top}}{\sqrt C}+M\big)`,
+          texShape: R`[B,\,m,\,L,\,L]`,
+          fallback: "a = softmax(q_tc k_s^T/√C + M)", shapeFallback: "[B,m,L,L]",
+          description: "共享底片被 18 套 QK circuit 读取；score 保留完整 head 轴。",
+          symbols: [
+            { tex: R`a^{(c)}`, shape: R`[B,\,m,\,L,\,L]`, label: "Attention weights", value: "TER 代理 = m·C = 18 × 256", note: "TER 是容量代理，不是精度定理" }
+          ]
+        },
+        {
+          id: "mul", kind: "operator",
+          x: 613, y: 389,
+          label: "共享 value 读取",
+          tex: R`\otimes`, fallback: "⊗",
+          description: "18 个 head 的权重共同读取同一份共享 value。",
+          symbols: [
+            { tex: R`m_{t,c}=\textstyle\sum_s a^{(c)}_{t,s}v_s`, shape: R`[B,\,m,\,L,\,C]`, label: "Weighted read", value: "共享 V 广播", note: "MFA-KR 下 v 由 kM 现场派生" }
+          ]
+        },
+        {
+          id: "m", kind: "activation",
+          x: 566, y: 316,
+          label: "逐头读取结果",
+          tex: R`m_{t,c}`, texShape: R`[B,\,m,\,L,\,C]`,
+          fallback: "m_tc", shapeFallback: "[B,m,L,C]",
+          description: "每个 head 聚合出的 C 维内容，等待逐头 O_c 写回。",
+          symbols: [
+            { tex: R`m_{t,c}`, shape: R`[B,\,m,\,L,\,C]`, label: "Per-head reads", value: "m = 18, C = 256", note: "compute-only 中间激活" }
+          ]
+        },
+        {
+          id: "oc", kind: "weight", glyph: "up",
+          x: 574, y: 246,
+          label: "逐头 VO 矩阵",
+          tex: R`O_c`, texShape: R`[m,\,C,\,C]`,
+          fallback: "O_c", shapeFallback: "[m,C,C]",
+          relates: ["o"],
+          description: "每个 head 独立的 C×C 写回矩阵，与 Q_c 一起构成逐头 circuit。",
+          symbols: [
+            { tex: R`O_c`, shape: R`[m,\,C,\,C]`, label: "Per-head VO circuits", value: "18 × 256×256", note: "o_t = Σ_c m_tc O_c^⊤" }
+          ]
+        },
+        {
+          id: "o", kind: "activation",
+          x: 566, y: 170,
+          label: "聚合输出",
+          tex: R`o_t`, texShape: R`[B,\,L,\,C]`,
+          fallback: "o_t", shapeFallback: "[B,L,C]",
+          description: "18 个 head 的写回求和；宽度回到共享 C。",
+          symbols: [
+            { tex: R`o_t=\textstyle\sum_c m_{t,c}O_c^{\top}`, shape: R`[B,\,L,\,C]`, label: "Aggregated output", value: "C = 256", note: "随后经 W^O 回到 d_model" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 574, y: 100,
+          label: "输出投影",
+          tex: R`W^{O}`, texShape: R`[C,\,d]`,
+          fallback: "W^O", shapeFallback: "[C,d]",
+          relates: ["u"],
+          description: "把 C 维聚合结果映射回残差流宽度。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[C,\,d_{\mathrm{model}}]`, label: "Output projection", value: "256 × 2048", note: "u_t = W^O o_t" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 566, y: 24,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,L,d_model]",
+          description: "MFA 层输出；缓存宽度与 head 数在结构上解耦。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 2048", note: "增加 m 只增加权重与算力" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "shared", label: "shared project" },
-        { from: "shared", to: "head-matrices", label: "18 views" },
-        { from: "head-matrices", to: "attention", label: "QK / VO" },
-        { from: "shared", to: "cache", label: "store once" }
+        { from: "x", to: "sq", tone: "compute", bend: 788 },
+        { from: "x", to: "sk", tone: "compute" },
+        { from: "x", to: "sv", tone: "compute", bend: 788 },
+        { from: "sq", to: "qbar", tone: "weight" },
+        { from: "sk", to: "kf", tone: "weight" },
+        { from: "sv", to: "vf", tone: "weight" },
+        { from: "qbar", to: "qc", tone: "compute" },
+        { from: "qc", to: "qheads", tone: "weight" },
+        { from: "qheads", to: "ropeq", tone: "compute" },
+        { from: "ropeq", to: "score", tone: "cyan", toAt: 0.3, bend: 444 },
+        { from: "kf", to: "ropek", tone: "compute" },
+        { from: "ropek", to: "score", tone: "cyan", toAt: 0.8, bend: 440 },
+        { from: "kf", to: "kr", tone: "orange", dashed: true, fromSide: "top", fromAt: 0.85, bend: 642, label: "OPTIONAL · KR", lx: 650, ly: 632 },
+        { from: "kr", to: "mul", tone: "orange", dashed: true, fromSide: "top", toSide: "right", label: R`v_s=k_sM`, lx: 760, ly: 500 },
+        { from: "kf", to: "cache", tone: "state", dashed: true, fromSide: "bottom", fromAt: 0.8, toSide: "bottom", bend: 718 },
+        { from: "vf", to: "cache", tone: "state", dashed: true },
+        { from: "vf", to: "mul", tone: "compute" },
+        { from: "score", to: "mul", tone: "compute" },
+        { from: "mul", to: "m", tone: "gather" },
+        { from: "m", to: "oc", tone: "compute" },
+        { from: "oc", to: "o", tone: "weight" },
+        { from: "o", to: "wo", tone: "gather" },
+        { from: "wo", to: "u", tone: "gather" }
       ]
     },
     tpa: {
       modules: [
         {
-          id: "input", label: "Residual stream", summary: "T6-XL · 1600-d",
-          description: "每个 token 动态生成 head-axis A 因子与 channel-axis B 因子。", tone: "muted",
+          id: "x", kind: "activation", tone: "cyan",
+          x: 402, y: 712, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`x_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "x_t", shapeFallback: "[B,L,d_model]",
+          description: "每个 token 现场生成六路 contextual 因子：三个 head 轴 A 因子与三个 channel 轴 B 因子。",
           symbols: [
-            { symbol: "X", label: "Input", shape: "[B, L, 1600]", value: "d_model = 1600", note: "T6-XL official research configuration" }
+            { tex: R`x_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 1600", note: "T6-XL 官方研究配置（48 层）" }
           ]
         },
         {
-          id: "a-factors", label: "Head-axis A factors", summary: "Ranks × 78 heads",
-          description: "A 因子决定每个 token 如何在 78 个 heads 上混合低秩 channel patterns。", tone: "control",
+          id: "waq", kind: "weight", glyph: "down", w: 104,
+          x: 43, y: 620,
+          label: "A_Q 因子生成器",
+          tex: R`W^{A_Q}`, texShape: R`[d,\,R_Q h]`,
+          fallback: "W^AQ", shapeFallback: "[d,RQ·h]",
+          relates: ["aq"],
+          description: "生成 query 的 token-dependent head-mixing 因子。",
           symbols: [
-            { symbol: "A_Q", label: "Query head factors", shape: "[B, L, 6, 78]", value: "R_Q = 6", note: "token-dependent head mixing" },
-            { symbol: "A_K,A_V", label: "KV head factors", shape: "[B, L, 2, 78]", value: "R_K = R_V = 2", note: "进入因子缓存" }
+            { tex: R`W^{A_Q}`, shape: R`[d_{\mathrm{model}},\,R_Q h]`, label: "Query head-factor generator", value: "1600 × (6 × 78)", note: "R_Q = 6, h = 78" }
           ]
         },
         {
-          id: "b-factors", label: "Channel-axis B factors", summary: "Ranks × 64 channels",
-          description: "B 因子承载 64-d channel patterns；RoPE 逐行作用于 B_Q/B_K。", tone: "compute",
+          id: "wbq", kind: "weight", glyph: "down", w: 104,
+          x: 193, y: 620,
+          label: "B_Q 因子生成器",
+          tex: R`W^{B_Q}`, texShape: R`[d,\,R_Q d_h]`,
+          fallback: "W^BQ", shapeFallback: "[d,RQ·dh]",
+          relates: ["bq"],
+          description: "生成 query 的 channel 模式因子；RoPE 稍后逐行旋转它。",
           symbols: [
-            { symbol: "B_Q", label: "Query channel factors", shape: "[B, L, 6, 64]", value: "d_h = 64", note: "每一 rank row 独立旋转" },
-            { symbol: "B_K,B_V", label: "KV channel factors", shape: "[B, L, 2, 64]", value: "R_K = R_V = 2", note: "B_K 写缓存前预旋转，B_V 不旋转" }
+            { tex: R`W^{B_Q}`, shape: R`[d_{\mathrm{model}},\,R_Q d_h]`, label: "Query channel-factor generator", value: "1600 × (6 × 64)", note: "d_h = 64" }
           ]
         },
         {
-          id: "reconstruct", label: "Tensor-product Q / K / V", summary: "78 heads × 64-d",
-          description: "A^T B 沿 rank 轴收缩，逻辑上得到宽于 residual stream 的 attention inner width。", tone: "compute",
+          id: "wak", kind: "weight", glyph: "down", w: 104,
+          x: 343, y: 620,
+          label: "A_K 因子生成器",
+          tex: R`W^{A_K}`, texShape: R`[d,\,R_K h]`,
+          fallback: "W^AK", shapeFallback: "[d,RK·h]",
+          relates: ["ak"],
+          description: "key 的 head 轴因子生成器；其输出进入因子缓存。",
           symbols: [
-            { symbol: "Q,K,V", label: "Logical activations", shape: "[B, 78, L, 64]", value: "inner width = 4992", note: "Decode kernel 可直接在因子域收缩而不重建历史 K/V" }
+            { tex: R`W^{A_K}`, shape: R`[d_{\mathrm{model}},\,R_K h]`, label: "Key head-factor generator", value: "1600 × (2 × 78)", note: "R_K = 2 决定缓存的秩预算" }
           ]
         },
         {
-          id: "cache", label: "Factorized KV cache", summary: "568 elements / token / layer",
-          description: "每个 rank 保存一组 78-d head factor 与 64-d channel factor。", tone: "state",
+          id: "wbk", kind: "weight", glyph: "down", w: 104,
+          x: 493, y: 620,
+          label: "B_K 因子生成器",
+          tex: R`W^{B_K}`, texShape: R`[d,\,R_K d_h]`,
+          fallback: "W^BK", shapeFallback: "[d,RK·dh]",
+          relates: ["bk"],
+          description: "key 的 channel 因子生成器；输出预旋转后写入缓存。",
           symbols: [
-            { symbol: "A_K,B_K,A_V,B_V", label: "Persistent factors", shape: "(2+2) × (78+64)", value: "568 elements/token", note: "完整 MHA-shaped cache 对照为 9984" }
+            { tex: R`W^{B_K}`, shape: R`[d_{\mathrm{model}},\,R_K d_h]`, label: "Key channel-factor generator", value: "1600 × (2 × 64)", note: "缓存里保存的是 R_t(B_K)" }
+          ]
+        },
+        {
+          id: "wav", kind: "weight", glyph: "down", w: 104,
+          x: 643, y: 620,
+          label: "A_V 因子生成器",
+          tex: R`W^{A_V}`, texShape: R`[d,\,R_V h]`,
+          fallback: "W^AV", shapeFallback: "[d,RV·h]",
+          relates: ["av"],
+          description: "value 的 head 轴因子生成器。",
+          symbols: [
+            { tex: R`W^{A_V}`, shape: R`[d_{\mathrm{model}},\,R_V h]`, label: "Value head-factor generator", value: "1600 × (2 × 78)", note: "R_V = 2" }
+          ]
+        },
+        {
+          id: "wbv", kind: "weight", glyph: "down", w: 104,
+          x: 793, y: 620,
+          label: "B_V 因子生成器",
+          tex: R`W^{B_V}`, texShape: R`[d,\,R_V d_h]`,
+          fallback: "W^BV", shapeFallback: "[d,RV·dh]",
+          relates: ["bv"],
+          description: "value 的 channel 因子生成器；B_V 不参与旋转。",
+          symbols: [
+            { tex: R`W^{B_V}`, shape: R`[d_{\mathrm{model}},\,R_V d_h]`, label: "Value channel-factor generator", value: "1600 × (2 × 64)", note: "对 value 施 RoPE 会注入绝对相位" }
+          ]
+        },
+        {
+          id: "aq", kind: "activation", w: 118,
+          x: 36, y: 528,
+          label: "A_Q 头轴因子",
+          tex: R`A_Q(x_t)`, texShape: R`[B,\,L,\,R_Q,\,h]`,
+          fallback: "A_Q", shapeFallback: "[B,L,RQ,h]",
+          description: "token-dependent 的 head mixing：不同 token 把 channel 模式按不同强度写入不同 heads。",
+          symbols: [
+            { tex: R`A_Q(x_t)`, shape: R`[B,\,L,\,R_Q,\,h]`, label: "Query head factors", value: "R_Q = 6, h = 78", note: "区别于 MQA 的固定 head-sharing" }
+          ]
+        },
+        {
+          id: "bq", kind: "activation", w: 118,
+          x: 186, y: 528,
+          label: "B_Q 通道因子",
+          tex: R`B_Q(x_t)`, texShape: R`[B,\,L,\,R_Q,\,d_h]`,
+          fallback: "B_Q", shapeFallback: "[B,L,RQ,dh]",
+          description: "64 维 channel 模式；每一 rank row 独立接受 RoPE 旋转。",
+          symbols: [
+            { tex: R`B_Q(x_t)`, shape: R`[B,\,L,\,R_Q,\,d_h]`, label: "Query channel factors", value: "R_Q = 6, d_h = 64", note: "旋转只作用于 channel 轴" }
+          ]
+        },
+        {
+          id: "ak", kind: "activation", w: 118,
+          x: 336, y: 528,
+          label: "A_K 头轴因子",
+          tex: R`A_K(x_t)`, texShape: R`[B,\,L,\,R_K,\,h]`,
+          fallback: "A_K", shapeFallback: "[B,L,RK,h]",
+          description: "key 的 head 轴因子；与位置无关，直接进入因子缓存。",
+          symbols: [
+            { tex: R`A_K(x_t)`, shape: R`[B,\,L,\,R_K,\,h]`, label: "Key head factors", value: "R_K = 2", note: "不旋转，原样缓存" }
+          ]
+        },
+        {
+          id: "bk", kind: "activation", w: 118,
+          x: 486, y: 528,
+          label: "B_K 通道因子",
+          tex: R`B_K(x_t)`, texShape: R`[B,\,L,\,R_K,\,d_h]`,
+          fallback: "B_K", shapeFallback: "[B,L,RK,dh]",
+          description: "key 的 channel 因子；写缓存前按位置 t 预旋转成 B̃_K。",
+          symbols: [
+            { tex: R`B_K(x_t)`, shape: R`[B,\,L,\,R_K,\,d_h]`, label: "Key channel factors", value: "R_K = 2, d_h = 64", note: "R_t(A^⊤B) = A^⊤R_t(B) 保证合法" }
+          ]
+        },
+        {
+          id: "av", kind: "activation", w: 118,
+          x: 636, y: 528,
+          label: "A_V 头轴因子",
+          tex: R`A_V(x_t)`, texShape: R`[B,\,L,\,R_V,\,h]`,
+          fallback: "A_V", shapeFallback: "[B,L,RV,h]",
+          description: "value 的 head 轴因子，直接进入因子缓存。",
+          symbols: [
+            { tex: R`A_V(x_t)`, shape: R`[B,\,L,\,R_V,\,h]`, label: "Value head factors", value: "R_V = 2", note: "与 B_V 配对收缩出 value 聚合" }
+          ]
+        },
+        {
+          id: "bv", kind: "activation", w: 118,
+          x: 786, y: 528,
+          label: "B_V 通道因子",
+          tex: R`B_V(x_t)`, texShape: R`[B,\,L,\,R_V,\,d_h]`,
+          fallback: "B_V", shapeFallback: "[B,L,RV,dh]",
+          description: "value 的 channel 因子；保持不旋转，原样缓存。",
+          symbols: [
+            { tex: R`B_V(x_t)`, shape: R`[B,\,L,\,R_V,\,d_h]`, label: "Value channel factors", value: "R_V = 2, d_h = 64", note: "value 无旋转配对可消去相位" }
+          ]
+        },
+        {
+          id: "ropebq", kind: "operator", tone: "cyan",
+          x: 228, y: 461,
+          label: "逐行 RoPE（B_Q）",
+          tex: R`R_t`, fallback: "R_t",
+          description: "对 B_Q 的每一 rank row 施位置旋转，等价于旋转重建后的每头 Q。",
+          symbols: [
+            { tex: R`R_t(B_Q)`, shape: R`[R_Q,\,d_h]`, label: "Row-wise rotation", value: "每行独立旋转", note: "A 因子与位置无关" }
+          ]
+        },
+        {
+          id: "ropebk", kind: "operator", tone: "cyan",
+          x: 528, y: 461,
+          label: "逐行 RoPE（B_K，预旋转）",
+          tex: R`R_t`, fallback: "R_t",
+          description: "写入缓存前完成旋转；解码时无需回头重旋历史因子。",
+          symbols: [
+            { tex: R`\widetilde B_K=R_t(B_K)`, shape: R`[R_K,\,d_h]`, label: "Pre-rotated key factors", value: "缓存已含位置", note: "相对位置由两侧配对保持" }
+          ]
+        },
+        {
+          id: "cache", kind: "state", w: 200, titleSize: 9.2,
+          x: 670, y: 390,
+          label: "因子化 KV cache",
+          tex: R`A_K,\widetilde B_K,A_V,B_V`,
+          texShape: R`[B,\,L,\,(R_K{+}R_V)(h{+}d_h)]`,
+          fallback: "factor cache", shapeFallback: "[B,L,(RK+RV)(h+dh)]",
+          relates: ["ak", "bk", "av", "bv"],
+          description: "历史 token 只以低秩因子存在；完整 MHA-shaped 缓存从不物化。",
+          symbols: [
+            { tex: R`A_K,\widetilde B_K,A_V,B_V`, shape: R`[B,\,L,\,(R_K{+}R_V)(h{+}d_h)]`, label: "Persistent factors", value: "(2+2) × (78+64) = 568 elements/token", note: "完整 MHA-shaped 对照为 2 × 78 × 64 = 9984" }
+          ]
+        },
+        {
+          id: "score", kind: "activation", titleSize: 7.8, w: 230, h: 52,
+          x: 130, y: 382,
+          label: "因子域 score 收缩",
+          tex: R`s=\tfrac{1}{R_QR_K}\sum_{p,r}A_QA_K\,(B_Q[p]{\cdot}B_K[r])`,
+          texShape: R`[B,\,h,\,L,\,L]`,
+          fallback: "s = (1/RQRK)Σ AQ·AK·(BQ·BK)", shapeFallback: "[B,h,L,L]",
+          description: "先算 R_Q×R_K 个 channel 内积，再用 A 因子逐头加权；从不重建完整历史 K。",
+          symbols: [
+            { tex: R`s_{t,s,i}`, shape: R`[B,\,h,\,L,\,L]`, label: "Factor-domain scores", value: "h = 78 heads", note: "channel 内积形状 [B,L,S,R_Q,R_K] 与 head 数无关" }
+          ]
+        },
+        {
+          id: "smax", kind: "operator", glyph: "pill", w: 86, h: 28, titleSize: 8.2,
+          x: 202, y: 326,
+          label: "缩放 softmax",
+          tex: R`\operatorname{softmax}`, fallback: "softmax",
+          description: "对因子域收缩出的 score 做缩放与因果 mask 后的精确 softmax。",
+          symbols: [
+            { tex: R`a=\operatorname{softmax}(s/\sqrt{d_h}+M)`, shape: R`[B,\,h,\,L,\,L]`, label: "Attention weights", value: "scale = 1/√64", note: "精确 attention，无近似" }
+          ]
+        },
+        {
+          id: "o", kind: "activation", titleSize: 8.2, w: 230,
+          x: 130, y: 232,
+          label: "因子域 value 聚合",
+          tex: R`o_{t,i}=\tfrac1{R_V}\sum_{s,r}a\,A_V[r,i]\,B_V[r]`,
+          texShape: R`[B,\,h,\,L,\,d_h]`,
+          fallback: "o = (1/RV)Σ a·AV·BV", shapeFallback: "[B,h,L,dh]",
+          description: "value 聚合同样在因子域直接收缩，这是 FlashTPA decoding 的代数基础。",
+          symbols: [
+            { tex: R`o_{t,i}`, shape: R`[B,\,h,\,L,\,d_h]`, label: "Per-head outputs", value: "78 × 64 = 4992 inner width", note: "attention inner width 大于 d_model = 1600" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 189, y: 150,
+          label: "输出投影",
+          tex: R`W^{O}`, texShape: R`[h\,d_h,\,d]`,
+          fallback: "W^O", shapeFallback: "[h·dh,d]",
+          relates: ["u"],
+          description: "把 4992 维 inner width 压回 1600 维残差流。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[h\,d_h,\,d_{\mathrm{model}}]`, label: "Output projection", value: "4992 × 1600", note: "参数量配平选择，不是维度错误" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 181, y: 60,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,L,d_model]",
+          description: "TPA 层输出；缓存收益来自低秩因子化，不改变输出形状。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 1600", note: "T6-XL block size 1024 训练" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "a-factors", label: "A projections" },
-        { from: "input", to: "b-factors", label: "B projections" },
-        { from: "a-factors", to: "reconstruct", label: "head axis" },
-        { from: "b-factors", to: "reconstruct", label: "channel axis" },
-        { from: "a-factors", to: "cache", label: "KV ranks" },
-        { from: "b-factors", to: "cache", label: "KV ranks" }
+        { from: "x", to: "waq", tone: "compute", bend: 690 },
+        { from: "x", to: "wbq", tone: "compute", bend: 684 },
+        { from: "x", to: "wak", tone: "compute", bend: 678 },
+        { from: "x", to: "wbk", tone: "compute", bend: 678 },
+        { from: "x", to: "wav", tone: "compute", bend: 684 },
+        { from: "x", to: "wbv", tone: "compute", bend: 690 },
+        { from: "waq", to: "aq", tone: "weight" },
+        { from: "wbq", to: "bq", tone: "weight" },
+        { from: "wak", to: "ak", tone: "weight" },
+        { from: "wbk", to: "bk", tone: "weight" },
+        { from: "wav", to: "av", tone: "weight" },
+        { from: "wbv", to: "bv", tone: "weight" },
+        { from: "bq", to: "ropebq", tone: "compute" },
+        { from: "ropebq", to: "score", tone: "cyan" },
+        { from: "aq", to: "score", tone: "compute", toAt: 0.25, bend: 446 },
+        { from: "bk", to: "ropebk", tone: "compute" },
+        { from: "ropebk", to: "cache", tone: "state", fromSide: "top", toSide: "bottom", toAt: 0.25, bend: 446, label: "预旋转写入", lx: 636, ly: 470 },
+        { from: "ak", to: "cache", tone: "state", fromSide: "top", toSide: "bottom", toAt: 0.4, bend: 452 },
+        { from: "av", to: "cache", tone: "state", fromSide: "top", toSide: "bottom", toAt: 0.6, bend: 458 },
+        { from: "bv", to: "cache", tone: "state", toAt: 0.875 },
+        { from: "cache", to: "score", tone: "state", dashed: true, fromSide: "left", toSide: "right", toAt: 33 / 52, label: "读取历史因子", lx: 515, ly: 404 },
+        { from: "score", to: "smax", tone: "compute" },
+        { from: "smax", to: "o", tone: "compute" },
+        { from: "cache", to: "o", tone: "state", dashed: true, fromSide: "top", toSide: "right", label: R`A_V,B_V`, lx: 700, ly: 246 },
+        { from: "o", to: "wo", tone: "gather" },
+        { from: "wo", to: "u", tone: "gather" }
       ]
     },
     dsa: {
+      groups: [
+        { id: "indexer", label: "LIGHTNING INDEXER · 低成本选址", tone: "control", members: ["wqi", "wki", "qi", "ki", "kicache", "logits", "topk", "selected"] },
+        { id: "core", label: "SPARSE MLA CORE · LATENT 复用", tone: "gather", titlePos: "bottom", members: ["wmla", "qmla", "mlacache", "gather", "gathered"] }
+      ],
       modules: [
         {
-          id: "input", label: "Residual stream", summary: "DeepSeek-V3.2-Exp · 7168-d",
-          description: "同一 hidden state 同时驱动低成本 Lightning Indexer 与 MLA core。", tone: "muted",
+          id: "h", kind: "activation", tone: "cyan",
+          x: 402, y: 880, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`h_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "h_t", shapeFallback: "[B,L,d_model]",
+          description: "同一 hidden state 同时驱动低成本 Lightning Indexer 与昂贵的 MLA core。",
           symbols: [
-            { symbol: "H", label: "Input", shape: "[B, L, 7168]", value: "d_model = 7168", note: "671B representative configuration" }
+            { tex: R`h_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 7168", note: "DeepSeek-V3.2-Exp 671B 代表配置" }
           ]
         },
         {
-          id: "indexer", label: "Lightning Indexer", summary: "64 query heads × 128-d",
-          description: "低维 indexer 扫描共享 128-d key cache，估计哪些历史 token 值得进入昂贵 core。", tone: "control",
+          id: "wqi", kind: "weight", glyph: "down",
+          x: 94, y: 800,
+          label: "Indexer query/权重投影",
+          tex: R`W^{Iq},W^{Iw}`, texShape: R`[\,\cdot\,,H^{I}d_I{+}H^{I}]`,
+          fallback: "W^Iq, W^Iw", shapeFallback: "[·,HI·dI+HI]", titleSize: 8.8,
+          relates: ["qi"],
+          description: "生成 64 个 128 维 indexer query 与逐头聚合权重 w^I；官方实现中 q^I 由共享 MLA query latent 投影。",
           symbols: [
-            { symbol: "Q^I", label: "Indexer queries", shape: "[B, L_q, 64, 128]", value: "H^I = 64", note: "per-head query plus learned aggregation weight" },
-            { symbol: "K^I", label: "Shared index cache", shape: "[B, L_k, 128]", value: "d_I = 128", note: "官方路径可用 FP8 + scale" }
+            { tex: R`W^{Iq}`, shape: R`[d_c',\,H^{I}d_I]`, label: "Indexer query projection", value: "H^I = 64, d_I = 128", note: "自 MLA query latent（官方实现）" },
+            { tex: R`W^{Iw}`, shape: R`[\,\cdot\,,H^{I}]`, label: "Head-weight generator", value: "每头一个标量 w^I", note: "ReLU 后跨头加权求和" }
           ]
         },
         {
-          id: "topk", label: "Token-level top-k routing", summary: "k = 2048", col: 2,
-          description: "每个 query 只把 2048 个 token positions 交给 MLA core；没有额外固定滑窗。", tone: "orange",
+          id: "wki", kind: "weight", glyph: "down",
+          x: 274, y: 800,
+          label: "Indexer key 投影",
+          tex: R`W^{Ik}`, texShape: R`[d,\,d_I]`,
+          fallback: "W^Ik", shapeFallback: "[d,dI]",
+          relates: ["ki"],
+          description: "共享 index key：每 token 只有一份 128 维，LayerNorm 后写入低精度缓存。",
           symbols: [
-            { symbol: "I_t", label: "Selected positions", shape: "[B, L_q, 2048]", value: "top-k = 2048", note: "离散路由存在漏召回风险" }
+            { tex: R`W^{Ik}`, shape: R`[d_{\mathrm{model}},\,d_I]`, label: "Shared index-key projection", value: "7168 × 128", note: "所有 indexer heads 共享 key" }
           ]
         },
         {
-          id: "core", label: "Sparse MLA core", summary: "128 heads read selected latent entries", col: 2,
-          description: "core 只读取选中位置的 512-d latent 与 64-d RoPE key，并按 MLA 计算。", tone: "compute",
+          id: "wmla", kind: "weight", glyph: "down", titleSize: 8.4,
+          x: 554, y: 800,
+          label: "MLA core 投影组",
+          tex: R`W^{DQ},W^{UQ},W^{QR}`, texShape: R`d\to H\,(d_h^{C}{+}d_h^{R})`,
+          fallback: "MLA projections", shapeFallback: "d → H·(dhC+dhR)",
+          relates: ["qmla", "mlacache"],
+          description: "core 完整继承 MLA 的 query/latent 投影族；缓存条目也由 W^DKV/W^KR 产生。",
           symbols: [
-            { symbol: "c^{KV},k^R", label: "Gathered core entries", shape: "[B, L_q, 2048, 576]", value: "512 latent + 64 RoPE", note: "逻辑 gather 形状；实现可分页/分块" }
+            { tex: R`W^{DQ},W^{UQ},W^{QR}`, shape: R`d\to[B,\,H,\,L,\,d_h^{C}{+}d_h^{R}]`, label: "Core query projections", value: "H = 128, 192 = 128 + 64", note: "与 MLA 章完全同构" },
+            { tex: R`W^{DKV},W^{KR}`, shape: R`d\to[B,\,L,\,d_c{+}d_h^{R}]`, label: "Latent/RoPE-key projections", value: "d_c = 512, d_h^R = 64", note: "写入 MLA latent cache" }
           ]
         },
         {
-          id: "cache", label: "Dual persistent cache", summary: "MLA 576 + Indexer 128",
-          description: "每个历史 token 同时保存 MLA core entry 与一份共享 index key。", tone: "state",
+          id: "qi", kind: "activation",
+          x: 86, y: 712,
+          label: "Indexer queries",
+          tex: R`q_{t,j}^{I},w_{t,j}^{I}`, texShape: R`[B,\,L,\,H^{I},\,d_I]`,
+          fallback: "q^I, w^I", shapeFallback: "[B,L,HI,dI]",
+          description: "64 个低维 query 加逐头聚合权重；两侧都经 pRoPE 与 Hadamard 配对变换。",
           symbols: [
-            { symbol: "Cache", label: "Persistent state", shape: "[B, L, 576] + [B, L, 128]", value: "704 logical elements/token", note: "实际字节取决于 core/indexer dtype" }
+            { tex: R`q_{t,j}^{I}`, shape: R`[B,\,L,\,H^{I},\,d_I]`, label: "Indexer queries", value: "H^I = 64, d_I = 128", note: "pRoPE → Hadamard → FP8（官方路径）" },
+            { tex: R`w_{t,j}^{I}`, shape: R`[B,\,L,\,H^{I}]`, label: "Aggregation weights", value: "每头标量", note: "跨头加权求和 ReLU 项" }
+          ]
+        },
+        {
+          id: "ki", kind: "activation",
+          x: 266, y: 712,
+          label: "共享 index key",
+          tex: R`k_s^{I}`, texShape: R`[B,\,L,\,d_I]`,
+          fallback: "k^I", shapeFallback: "[B,L,dI]",
+          description: "每 token 一份 128 维共享 key；写入缓存前完成 pRoPE 与 Hadamard。",
+          symbols: [
+            { tex: R`k_s^{I}`, shape: R`[B,\,L,\,d_I]`, label: "Shared index key", value: "d_I = 128", note: "Hadamard 服务 FP8 数值分布，不注入位置" }
+          ]
+        },
+        {
+          id: "qmla", kind: "activation",
+          x: 546, y: 712,
+          label: "MLA core query",
+          tex: R`q_t^{C},q_t^{R}`, texShape: R`[B,\,H,\,L,\,d_h^{C}{+}d_h^{R}]`,
+          fallback: "q^C, q^R", shapeFallback: "[B,H,L,192]",
+          description: "高维 core query：128 个 heads、每头 128 内容 + 64 RoPE 维。",
+          symbols: [
+            { tex: R`q_t^{C},q_t^{R}`, shape: R`[B,\,H,\,L,\,d_h^{C}{+}d_h^{R}]`, label: "Core queries", value: "H = 128, 192-d/head", note: "只对选中的候选集合打分" }
+          ]
+        },
+        {
+          id: "kicache", kind: "state",
+          x: 256, y: 616,
+          label: "Indexer key cache",
+          tex: R`k_{1:L}^{I}`, texShape: R`[B,\,L,\,d_I]`,
+          fallback: "k^I cache", shapeFallback: "[B,L,dI]",
+          relates: ["ki"],
+          description: "低维低精度的第二缓存：Indexer 用它扫描全部历史位置。",
+          symbols: [
+            { tex: R`k_{1:L}^{I}`, shape: R`[B,\,L,\,d_I]`, label: "Index-key cache", value: "128 elements/token（FP8 可选）", note: "与 MLA cache 并存，合计 704 逻辑元素/token" }
+          ]
+        },
+        {
+          id: "mlacache", kind: "state",
+          x: 736, y: 616,
+          label: "MLA latent cache",
+          tex: R`c_{1:L}^{KV},k_{1:L}^{R}`, texShape: R`[B,\,L,\,d_c{+}d_h^{R}]`,
+          fallback: "MLA cache", shapeFallback: "[B,L,576]",
+          relates: ["wmla", "gather"],
+          description: "core 的持久缓存与 MLA 完全一致：512 维 latent + 64 维共享 RoPE key。",
+          symbols: [
+            { tex: R`c_{1:L}^{KV},k_{1:L}^{R}`, shape: R`[B,\,L,\,d_c{+}d_h^{R}]`, label: "Core persistent state", value: "512 + 64 = 576 elements/token", note: "稀疏选择不改变缓存口径" }
+          ]
+        },
+        {
+          id: "logits", kind: "activation", titleSize: 7.8, w: 200, h: 52,
+          x: 140, y: 532,
+          label: "全历史 Indexer logits",
+          tex: R`I_{t,s}=\sum_j w_{t,j}^{I}\operatorname{ReLU}(q_{t,j}^{I\top}k_s^{I})`,
+          texShape: R`[B,\,L_q,\,L_k]`,
+          fallback: "I_ts = Σ w·ReLU(qI·kI)", shapeFallback: "[B,Lq,Lk]",
+          description: "低成本扫描每个历史位置；这是 DSA 里唯一 O(L²) 但极低维的路径。",
+          symbols: [
+            { tex: R`I_{t,s}`, shape: R`[B,\,L_q,\,L_k]`, label: "Indexer logits", value: "64 heads × 128-d 点积", note: "训练时以 KL 对齐主 attention 分布" }
+          ]
+        },
+        {
+          id: "topk", kind: "operator", glyph: "diamond", tone: "orange", w: 64, h: 40, titleSize: 8.6,
+          x: 208, y: 450,
+          label: "token-level top-k 路由",
+          tex: R`\mathrm{top}\text{-}k`, fallback: "top-k",
+          description: "每个 query 只保留 2048 个候选位置；离散路由存在漏召回风险。",
+          symbols: [
+            { tex: R`\operatorname{TopK}_s(I_{t,s},k)`, shape: R`[B,\,L_q,\,L_k]\to[B,\,L_q,\,k]`, label: "Routing operator", value: "k = 2048", note: "Indexer 输入 detach，LM 损失不经此路由训练" }
+          ]
+        },
+        {
+          id: "selected", kind: "activation", tone: "orange",
+          x: 176, y: 356,
+          label: "选中位置集合",
+          tex: R`\mathcal I_t`, texShape: R`[B,\,L_q,\,k]`,
+          fallback: "I_t indices", shapeFallback: "[B,Lq,k]",
+          description: "纯地址信息：core 按这些位置去 MLA cache 取回原始条目。",
+          symbols: [
+            { tex: R`\mathcal I_t`, shape: R`[B,\,L_q,\,k]`, label: "Selected positions", value: "top-k = 2048", note: "原型 DSA 没有额外 raw-token 滑窗" }
+          ]
+        },
+        {
+          id: "gather", kind: "operator", glyph: "pill", tone: "gather", w: 86, h: 28, titleSize: 8.2,
+          x: 567, y: 365,
+          label: "按地址取回条目",
+          tex: R`\operatorname{Gather}`, fallback: "Gather",
+          description: "把选中位置的原始 latent/RoPE-key 条目交给高维 core。",
+          symbols: [
+            { tex: R`\operatorname{Gather}(\{c^{KV},k^{R}\},\mathcal I_t)`, shape: R`[B,\,L_q,\,k,\,576]`, label: "Gather operator", value: "逻辑形状；实现可分页/分块", note: "地址来自 Indexer，内容来自 MLA cache" }
+          ]
+        },
+        {
+          id: "gathered", kind: "activation", w: 150, titleSize: 9,
+          x: 535, y: 252,
+          label: "候选核心条目",
+          tex: R`\{c_s^{KV},k_s^{R}\}_{s\in\mathcal I_t}`,
+          texShape: R`[B,\,L_q,\,k,\,576]`,
+          fallback: "gathered entries", shapeFallback: "[B,Lq,k,576]",
+          description: "选中的 2048 条 512+64 维原始条目；不做任何压缩或近似。",
+          symbols: [
+            { tex: R`\{c_s^{KV},k_s^{R}\}_{s\in\mathcal I_t}`, shape: R`[B,\,L_q,\,k,\,d_c{+}d_h^{R}]`, label: "Gathered core entries", value: "512 latent + 64 RoPE", note: "candidate-only 精确 MLA 的输入" }
+          ]
+        },
+        {
+          id: "core", kind: "activation", titleSize: 8.4, w: 200, h: 52,
+          x: 510, y: 170,
+          label: "候选内精确 MLA core",
+          tex: R`o_t=\operatorname{softmax}_{s\in\mathcal I_t}\!(S_{t,s})\,V`,
+          texShape: R`[B,\,H,\,L,\,d_h]`,
+          fallback: "o = softmax_I(S)V", shapeFallback: "[B,H,L,dh]",
+          description: "softmax 只在选中集合内重新归一化；MLA 的吸收执行形态原样保留。",
+          symbols: [
+            { tex: R`o_t`, shape: R`[B,\,H,\,L,\,d_h]`, label: "Sparse core output", value: "H = 128, d_h = 128（V 侧）", note: "选中后的 score 仍按 MLA 定义计算" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 554, y: 100,
+          label: "输出投影",
+          tex: R`W^{O}`, texShape: R`[H d_h,\,d]`,
+          fallback: "W^O", shapeFallback: "[H·dh,d]",
+          relates: ["u"],
+          description: "core 输出写回残差流；与 MLA 的吸收式输出等价。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[H d_h,\,d_{\mathrm{model}}]`, label: "Output projection", value: "(128 × 128) × 7168", note: "可与 W^UV 预先合并" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 546, y: 24,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,L,d_model]",
+          description: "DSA 层输出；稀疏化只减少 core 读取的位置数量。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 7168", note: "精确 attention 限于选中集合" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "indexer", label: "cheap score" },
-        { from: "indexer", to: "topk", label: "rank" },
-        { from: "topk", to: "core", label: "gather positions" },
-        { from: "cache", to: "indexer", label: "index keys" },
-        { from: "cache", to: "core", label: "MLA entries" }
+        { from: "h", to: "wqi", tone: "compute", bend: 860 },
+        { from: "h", to: "wki", tone: "compute", bend: 854 },
+        { from: "h", to: "wmla", tone: "compute", bend: 868 },
+        { from: "wqi", to: "qi", tone: "weight" },
+        { from: "wki", to: "ki", tone: "weight" },
+        { from: "wmla", to: "qmla", tone: "weight" },
+        { from: "wmla", to: "mlacache", tone: "state", dashed: true, fromSide: "top", fromAt: 0.8, toSide: "bottom", bend: 774, label: "latent 写入", lx: 760, ly: 786 },
+        { from: "ki", to: "kicache", tone: "state" },
+        { from: "qi", to: "logits", tone: "compute", toAt: 0.25, bend: 596 },
+        { from: "kicache", to: "logits", tone: "state", toAt: 0.75, bend: 596 },
+        { from: "logits", to: "topk", tone: "orange" },
+        { from: "topk", to: "selected", tone: "orange" },
+        { from: "selected", to: "gather", tone: "orange", label: "地址", lx: 436, ly: 368 },
+        { from: "mlacache", to: "gather", tone: "state", fromSide: "top", toSide: "right", label: "内容", lx: 760, ly: 500 },
+        { from: "gather", to: "gathered", tone: "gather" },
+        { from: "gathered", to: "core", tone: "compute" },
+        { from: "qmla", to: "core", tone: "compute", fromSide: "left", toSide: "left", bend: 480, label: R`q^{C},q^{R}`, lx: 480, ly: 460 },
+        { from: "core", to: "wo", tone: "gather" },
+        { from: "wo", to: "u", tone: "gather" }
       ]
     },
     csa: {
+      groups: [
+        { id: "compression", label: "OVERLAP 压缩 · m=4", tone: "compute", titlePos: "bottom", members: ["wc", "ccomp", "ccompcache"], pad: 12 },
+        { id: "indexing", label: "COMPRESSED INDEXER · 选址", tone: "control", members: ["wic", "kic", "kiccache", "wiq", "qi", "logits", "topk", "selected"], pad: 12 }
+      ],
       modules: [
         {
-          id: "input", label: "Raw token stream", summary: "DeepSeek-V4-Pro · 7168-d",
-          description: "CSA 同时构建重叠 compressed KV、独立 Indexer key 与原始局部窗口。", tone: "muted",
+          id: "h", kind: "activation", tone: "cyan",
+          x: 422, y: 920, w: 136, h: 46,
+          label: "原始 token 流",
+          tex: R`H`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "H", shapeFallback: "[B,L,d_model]",
+          description: "CSA 同时构建重叠 compressed KV、独立 index keys、core query 与原始局部窗口。",
           symbols: [
-            { symbol: "H", label: "Input", shape: "[B, L, 7168]", value: "d_model = 7168", note: "V4-Pro representative configuration" }
+            { tex: R`H`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 7168", note: "DeepSeek-V4-Pro 代表配置" }
           ]
         },
         {
-          id: "compressor", label: "Overlapping compressor", summary: "span 8, stride 4",
-          description: "每个 512-d compressed entry 汇总 2m=8 个 raw tokens，序列长度约缩短 4 倍。", tone: "control",
+          id: "wc", kind: "weight", glyph: "down", titleSize: 8.8,
+          x: 74, y: 840,
+          label: "KV compressor（重叠）",
+          tex: R`\mathcal C_{\theta_C}`, texShape: R`2m\ \text{tokens}\to c`,
+          fallback: "compressor θ_C", shapeFallback: "2m tokens → c",
+          relates: ["ccomp"],
+          description: "两路 a/b 投影对 2m=8 的重叠窗口做逐通道 softmax 加权求和，得到一个 512 维条目。",
           symbols: [
-            { symbol: "C^{Comp}", label: "Compressed KV", shape: "[B, ⌊L/4⌋, 512]", value: "m = 4", note: "同一 entry 兼作 key 与 value" }
+            { tex: R`\theta_C`, shape: R`[d_{\mathrm{model}},\,c]\ (\times\,a/b)`, label: "Core compressor params", value: "c = 512 · span 8 · stride 4", note: "重叠 2m receptive field" }
           ]
         },
         {
-          id: "indexer", label: "Compressed Indexer", summary: "64 heads × 128-d", col: 2,
-          description: "独立 compressor 产生 128-d compressed index keys，并从约 L/4 个候选中选址。", tone: "orange",
+          id: "wic", kind: "weight", glyph: "down", titleSize: 8.8,
+          x: 274, y: 840,
+          label: "Index compressor（独立）",
+          tex: R`\mathcal C_{\theta_I}`, texShape: R`\theta_I\ne\theta_C`,
+          fallback: "compressor θ_I", shapeFallback: "θ_I ≠ θ_C",
+          relates: ["kic"],
+          description: "独立参数的第二个压缩器，只产生 128 维 index keys；与内容缓存职责分离。",
           symbols: [
-            { symbol: "K^{IComp}", label: "Index keys", shape: "[B, ⌊L/4⌋, 128]", value: "64 query heads × 128-d", note: "与 C^{Comp} 是不同缓存" },
-            { symbol: "𝓢_t", label: "Selected entries", shape: "[B, L, 1024]", value: "top-k = 1024", note: "候选单位是 compressed entry" }
+            { tex: R`\theta_I`, shape: R`[d_{\mathrm{model}},\,d_I]`, label: "Index compressor params", value: "d_I = 128", note: "参数与 θ_C 不共享" }
           ]
         },
         {
-          id: "core", label: "Shared-KV compressed core", summary: "128 query heads × 512-d", col: 2,
-          description: "128 个 query heads 读取同一组被选 compressed entries；末 64 维使用 partial/inverse RoPE。", tone: "compute",
+          id: "wiq", kind: "weight", glyph: "down", titleSize: 8.8,
+          x: 474, y: 840,
+          label: "Indexer query 投影",
+          tex: R`W^{Iq},W^{Iw}`, texShape: R`d\to H^{I}d_I`,
+          fallback: "W^Iq, W^Iw", shapeFallback: "d → HI·dI",
+          relates: ["qi"],
+          description: "生成 64 个 128 维 indexer query 与逐头聚合权重。",
           symbols: [
-            { symbol: "Q", label: "Core queries", shape: "[B, 128, L, 512]", value: "H_q = 128", note: "core 前 per-head RMSNorm" },
-            { symbol: "C_{𝓢_t}^{Comp}", label: "Gathered entries", shape: "[B, L, 1024, 512]", value: "one shared KV head", note: "逻辑形状；含 attention sink" }
+            { tex: R`W^{Iq},W^{Iw}`, shape: R`[d,\,H^{I}d_I{+}H^{I}]`, label: "Indexer query projections", value: "H^I = 64, d_I = 128", note: "扫描的是压缩候选，成本再降 m 倍" }
           ]
         },
         {
-          id: "local", label: "Raw local branch", summary: "128-token window", col: 1,
-          description: "局部分支保留当前附近未压缩 token，弥补 compressed core 的细节损失。", tone: "gather",
+          id: "wq", kind: "weight", glyph: "down",
+          x: 674, y: 840,
+          label: "Core query 投影",
+          tex: R`W^{Q}`, texShape: R`[d,\,H_q c]`,
+          fallback: "W^Q", shapeFallback: "[d,Hq·c]",
+          relates: ["qcore"],
+          description: "128 个 512 维 core query heads；同一 512 维条目兼作 K 与 V。",
           symbols: [
-            { symbol: "H_local", label: "Local context", shape: "[B, L, 128, 7168]", value: "window = 128", note: "与 compressed global branch 并行" }
+            { tex: R`W^{Q}`, shape: R`[d_{\mathrm{model}},\,H_q c]`, label: "Core query projection", value: "7168 → 128 × 512", note: "core head dim = c = 512" }
+          ]
+        },
+        {
+          id: "ccomp", kind: "activation", tone: "control",
+          x: 66, y: 752,
+          label: "重叠压缩条目",
+          tex: R`C^{\mathrm{Comp}}`, texShape: R`[B,\,\lfloor L/m\rfloor,\,c]`,
+          fallback: "C^Comp", shapeFallback: "[B,L/m,c]",
+          description: "每个条目汇总 2m=8 个 raw tokens，序列长度缩短约 4 倍；同一条目兼作 key 与 value。",
+          symbols: [
+            { tex: R`C^{\mathrm{Comp}}`, shape: R`[B,\,\lfloor L/m\rfloor,\,c]`, label: "Compressed KV entries", value: "m = 4, c = 512", note: "末 64 维带 partial RoPE" }
+          ]
+        },
+        {
+          id: "kic", kind: "activation", tone: "control",
+          x: 266, y: 752,
+          label: "压缩 index keys",
+          tex: R`K^{I\mathrm{Comp}}`, texShape: R`[B,\,\lfloor L/m\rfloor,\,d_I]`,
+          fallback: "K^IComp", shapeFallback: "[B,L/m,dI]",
+          description: "只负责打分与选址的低维 keys；与 C^Comp 是不同的缓存。",
+          symbols: [
+            { tex: R`K^{I\mathrm{Comp}}`, shape: R`[B,\,\lfloor L/m\rfloor,\,d_I]`, label: "Compressed index keys", value: "d_I = 128", note: "地址与内容分离" }
+          ]
+        },
+        {
+          id: "qi", kind: "activation",
+          x: 466, y: 752,
+          label: "Indexer queries",
+          tex: R`q_t^{I},w_t^{I}`, texShape: R`[B,\,L,\,H^{I},\,d_I]`,
+          fallback: "q^I, w^I", shapeFallback: "[B,L,HI,dI]",
+          description: "64 个 indexer query 扫描约 L/m 个压缩候选。",
+          symbols: [
+            { tex: R`q_t^{I},w_t^{I}`, shape: R`[B,\,L,\,H^{I},\,d_I]`, label: "Indexer queries", value: "H^I = 64", note: "每 query 位置逐条目打分" }
+          ]
+        },
+        {
+          id: "qcore", kind: "activation",
+          x: 666, y: 752,
+          label: "Core queries",
+          tex: R`q_t`, texShape: R`[B,\,H_q,\,L,\,c]`,
+          fallback: "q_t", shapeFallback: "[B,Hq,L,c]",
+          description: "core 前经 per-head RMSNorm；末 64 维施 partial RoPE。",
+          symbols: [
+            { tex: R`q_t`, shape: R`[B,\,H_q,\,L,\,c]`, label: "Core queries", value: "H_q = 128, c = 512", note: "RoPE slice = 末 64 维" }
+          ]
+        },
+        {
+          id: "ccompcache", kind: "state",
+          x: 56, y: 656,
+          label: "C^Comp 内容缓存",
+          tex: R`C_{1:\lfloor t/m\rfloor}^{\mathrm{Comp}}`, texShape: R`[B,\,\lfloor L/m\rfloor,\,c]`,
+          fallback: "C^Comp cache", shapeFallback: "[B,L/m,c]",
+          relates: ["ccomp", "gather"],
+          description: "core 内容条目的缓存；被 top-k 地址按需取回。",
+          symbols: [
+            { tex: R`C_{1:\lfloor t/m\rfloor}^{\mathrm{Comp}}`, shape: R`[B,\,\lfloor L/m\rfloor,\,c]`, label: "Content cache", value: "512 elements/entry", note: "长度轴缩短 m 倍" }
+          ]
+        },
+        {
+          id: "kiccache", kind: "state",
+          x: 256, y: 656,
+          label: "K^IComp 地址缓存",
+          tex: R`K_{1:\lfloor t/m\rfloor}^{I\mathrm{Comp}}`, texShape: R`[B,\,\lfloor L/m\rfloor,\,d_I]`,
+          fallback: "K^IComp cache", shapeFallback: "[B,L/m,dI]",
+          relates: ["kic"],
+          description: "低维选址缓存；Indexer 从约 L/4 个压缩候选中打分。",
+          symbols: [
+            { tex: R`K_{1:\lfloor t/m\rfloor}^{I\mathrm{Comp}}`, shape: R`[B,\,\lfloor L/m\rfloor,\,d_I]`, label: "Index-key cache", value: "128 elements/entry", note: "与内容缓存职责分离" }
+          ]
+        },
+        {
+          id: "swa", kind: "state",
+          x: 826, y: 656,
+          label: "原始局部窗口",
+          tex: R`H_{t-w:t}`, texShape: R`[B,\,w,\,d]`,
+          fallback: "raw window", shapeFallback: "[B,w,d]",
+          description: "未压缩的最近 token 窗口，弥补 compressed core 的细节损失。",
+          symbols: [
+            { tex: R`H_{t-w:t}`, shape: R`[B,\,w,\,d_{\mathrm{model}}]`, label: "Raw local window", value: "w = 128 tokens", note: "与 compressed global branch 并行进入同一 softmax" }
+          ]
+        },
+        {
+          id: "logits", kind: "activation", titleSize: 7.6, w: 200, h: 52,
+          x: 230, y: 560,
+          label: "压缩候选 logits",
+          tex: R`I_{t,s}=\sum_j w_{t,j}^{I}\operatorname{ReLU}(q_{t,j}^{I\top}K_s^{I\mathrm{Comp}})`,
+          texShape: R`[B,\,L,\,\lfloor L/m\rfloor]`,
+          fallback: "I = Σ w·ReLU(qI·K^IComp)", shapeFallback: "[B,L,L/m]",
+          description: "候选单位是 compressed entry；扫描成本相对 raw 序列再降 m 倍。",
+          symbols: [
+            { tex: R`I_{t,s}`, shape: R`[B,\,L,\,\lfloor L/m\rfloor]`, label: "Indexer logits", value: "约 L/4 个候选", note: "低维低精度路径" }
+          ]
+        },
+        {
+          id: "topk", kind: "operator", glyph: "diamond", tone: "orange", w: 64, h: 40, titleSize: 8.6,
+          x: 298, y: 490,
+          label: "entry-level top-k",
+          tex: R`\mathrm{top}\text{-}k`, fallback: "top-k",
+          description: "从压缩候选中选出 1024 条；每条覆盖 2m=8 个 raw tokens。",
+          symbols: [
+            { tex: R`\operatorname{TopK}_s(I_{t,s},k)`, shape: R`[B,\,L,\,\lfloor L/m\rfloor]\to[B,\,L,\,k]`, label: "Routing operator", value: "k = 1024", note: "top-k 单位是 compressed entry" }
+          ]
+        },
+        {
+          id: "selected", kind: "activation", tone: "orange",
+          x: 266, y: 396,
+          label: "选中条目地址",
+          tex: R`\mathcal J_t`, texShape: R`[B,\,L,\,k]`,
+          fallback: "J_t indices", shapeFallback: "[B,L,k]",
+          description: "top-k 地址下传给 Gather，从内容缓存取回对应条目。",
+          symbols: [
+            { tex: R`\mathcal J_t`, shape: R`[B,\,L,\,k]`, label: "Selected entries", value: "top-k = 1024", note: "约覆盖 8192 个 raw tokens" }
+          ]
+        },
+        {
+          id: "gather", kind: "operator", glyph: "pill", tone: "gather", w: 86, h: 28, titleSize: 8.2,
+          x: 517, y: 326,
+          label: "取回选中内容",
+          tex: R`\operatorname{Gather}`, fallback: "Gather",
+          description: "按地址从 C^Comp 缓存取回 512 维条目，交给 shared-KV core。",
+          symbols: [
+            { tex: R`\operatorname{Gather}(C^{\mathrm{Comp}},\mathcal J_t)`, shape: R`[B,\,L,\,k,\,c]`, label: "Gathered entries", value: "one shared KV head", note: "逻辑形状；实现可分页" }
+          ]
+        },
+        {
+          id: "rms", kind: "operator", glyph: "pill", tone: "cyan", w: 96, h: 28, titleSize: 8.2,
+          x: 682, y: 316,
+          label: "per-head RMSNorm",
+          tex: R`\operatorname{RMSNorm}`, fallback: "RMSNorm",
+          description: "core 前对 query heads 与唯一 compressed-KV head 归一化。",
+          symbols: [
+            { tex: R`\operatorname{RMSNorm}(q_t)`, shape: R`[B,\,H_q,\,L,\,c]`, label: "Pre-core normalization", value: "query 与 KV 两侧", note: "报告 §2.3.3 的必要步骤" }
+          ]
+        },
+        {
+          id: "core", kind: "activation", titleSize: 7.8, w: 220, h: 52,
+          x: 620, y: 210,
+          label: "shared-KV core（单一 softmax）",
+          tex: R`o_t=\operatorname{MQA}_{K=V}(q_t;\mathrm{sink},C_{\mathcal J_t},\mathrm{SWA})`,
+          texShape: R`[B,\,H_q,\,L,\,c]`,
+          fallback: "o = MQA(q; sink, C_J, SWA)", shapeFallback: "[B,Hq,L,c]",
+          description: "sink、选中全局摘要与 SWA 在同一个 softmax 中归一化；每头 sink logit 使真实权重和可小于 1。",
+          symbols: [
+            { tex: R`o_t`, shape: R`[B,\,H_q,\,L,\,c]`, label: "Core output", value: "128 heads 读同一份条目", note: "sink 为逐头可学习 logit" }
+          ]
+        },
+        {
+          id: "irope", kind: "operator", tone: "cyan",
+          x: 713, y: 149,
+          label: "输出 inverse RoPE",
+          tex: R`R_{-t}`, fallback: "R_-t",
+          description: "输出 RoPE slice 按原 query 位置 t 反旋转，使条目贡献只依赖 π_s − t。",
+          symbols: [
+            { tex: R`R_{-t}`, shape: R`[64,\,64]`, label: "Inverse rotary", value: "末 64 维 slice", note: "漏掉它会破坏相对位置恒等式" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up", titleSize: 8.8,
+          x: 674, y: 88,
+          label: "分组输出投影",
+          tex: R`W^{OA},W^{OB}`, texShape: R`H_q c\to d`,
+          fallback: "W^OA, W^OB", shapeFallback: "Hq·c → d",
+          relates: ["u"],
+          description: "按组 W^OA → Concat → W^OB 两级写回残差流。",
+          symbols: [
+            { tex: R`W^{OA},W^{OB}`, shape: R`[H_q c,\,d_{\mathrm{model}}]`, label: "Grouped output projection", value: "分组两级投影", note: "官方实现的写回顺序" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 666, y: 16,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,L,d_model]",
+          description: "CSA 层输出；全局压缩、稀疏选择与局部窗口在此汇合。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 7168", note: "V4-Pro CSA layers（compress ratio 4）" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "compressor", label: "2m overlap" },
-        { from: "compressor", to: "indexer", label: "compressed pool" },
-        { from: "indexer", to: "core", label: "top-k 1024" },
-        { from: "input", to: "local", label: "raw window" },
-        { from: "local", to: "core", label: "merge" }
+        { from: "h", to: "wc", tone: "compute", fromSide: "left", toSide: "right", bend: 240 },
+        { from: "h", to: "wic", tone: "compute", bend: 894 },
+        { from: "h", to: "wiq", tone: "compute", bend: 894 },
+        { from: "h", to: "wq", tone: "compute", bend: 900 },
+        { from: "h", to: "swa", tone: "state", dashed: true, fromSide: "right", toSide: "bottom", label: "raw 窗口 w=128", lx: 760, ly: 932 },
+        { from: "wc", to: "ccomp", tone: "weight" },
+        { from: "wic", to: "kic", tone: "weight" },
+        { from: "wiq", to: "qi", tone: "weight" },
+        { from: "wq", to: "qcore", tone: "weight" },
+        { from: "ccomp", to: "ccompcache", tone: "state" },
+        { from: "kic", to: "kiccache", tone: "state" },
+        { from: "qi", to: "logits", tone: "compute", fromSide: "top", toSide: "bottom", toAt: 0.75, bend: 624 },
+        { from: "kiccache", to: "logits", tone: "state" },
+        { from: "logits", to: "topk", tone: "orange" },
+        { from: "topk", to: "selected", tone: "orange" },
+        { from: "selected", to: "gather", tone: "orange", fromSide: "right", toSide: "bottom", label: "地址", lx: 470, ly: 408 },
+        { from: "ccompcache", to: "gather", tone: "state", fromSide: "top", toSide: "left", label: "内容条目", lx: 150, ly: 330 },
+        { from: "gather", to: "core", tone: "gather", fromSide: "top", toSide: "left" },
+        { from: "qcore", to: "rms", tone: "compute" },
+        { from: "rms", to: "core", tone: "cyan" },
+        { from: "swa", to: "core", tone: "state", dashed: true, fromSide: "top", toSide: "right", toAt: 0.33, label: "局部分支", lx: 906, ly: 440 },
+        { from: "core", to: "irope", tone: "compute" },
+        { from: "irope", to: "wo", tone: "compute" },
+        { from: "wo", to: "u", tone: "gather" }
       ]
     },
     hca: {
+      groups: [
+        { id: "compression", label: "HEAVY 压缩 · m′=128", tone: "compute", titlePos: "bottom", members: ["wc", "ccomp", "gate", "ccompcache"], pad: 12 }
+      ],
       modules: [
         {
-          id: "input", label: "Raw token stream", summary: "DeepSeek-V4-Pro · 7168-d",
-          description: "HCA 把已闭合的 128-token blocks 压成全局摘要，同时保留当前局部窗口。", tone: "muted",
+          id: "h", kind: "activation", tone: "cyan",
+          x: 402, y: 732, w: 136, h: 46,
+          label: "原始 token 流",
+          tex: R`H`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "H", shapeFallback: "[B,L,d_model]",
+          description: "HCA 把已闭合的 128-token blocks 压成全局摘要，同时保留当前局部窗口。",
           symbols: [
-            { symbol: "H", label: "Input", shape: "[B, L, 7168]", value: "d_model = 7168", note: "V4-Pro representative configuration" }
+            { tex: R`H`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 7168", note: "DeepSeek-V4-Pro 代表配置" }
           ]
         },
         {
-          id: "compressor", label: "Non-overlapping block compressor", summary: "128 tokens → 1 entry",
-          description: "每个完整 block 产生一条 512-d compressed KV entry；未闭合 block 不提前进入全局缓存。", tone: "control",
+          id: "wc", kind: "weight", glyph: "down", titleSize: 8.8,
+          x: 114, y: 652,
+          label: "非重叠块压缩器",
+          tex: R`\mathcal C_{\theta_C}`, texShape: R`m'\ \text{tokens}\to c`,
+          fallback: "compressor θ_C", shapeFallback: "m' tokens → c",
+          relates: ["ccomp"],
+          description: "块内逐通道 softmax(Z+B)⊙C 加权求和，把 128 个位置压成一条 512 维摘要。",
           symbols: [
-            { symbol: "C^{Comp}", label: "Completed summaries", shape: "[B, ⌊L/128⌋, 512]", value: "m′ = 128", note: "同一 entry 兼作 key 与 value" }
+            { tex: R`\theta_C`, shape: R`[d_{\mathrm{model}},\,c]\ (\times\,C/Z)`, label: "Block compressor params", value: "m′ = 128, c = 512", note: "每个输出通道是块内值的凸组合" }
           ]
         },
         {
-          id: "global", label: "Compressed-dense global read", summary: "Read all completed blocks", col: 2,
-          description: "没有 Indexer 或 top-k；每个 query dense 读取全部可见 compressed summaries。", tone: "compute",
+          id: "wq", kind: "weight", glyph: "down",
+          x: 414, y: 652,
+          label: "Core query 投影",
+          tex: R`W^{Q}`, texShape: R`[d,\,H_q c]`,
+          fallback: "W^Q", shapeFallback: "[d,Hq·c]",
+          relates: ["qcore"],
+          description: "128 个 512 维 query heads；对全部已闭合摘要做 dense 读取。",
           symbols: [
-            { symbol: "A^{global}", label: "Global weights", shape: "[B, 128, L, ⌊L/128⌋]", value: "H_q = 128", note: "因果 mask 排除当前未闭合块" },
-            { symbol: "Q", label: "Core queries", shape: "[B, 128, L, 512]", value: "core head dim = 512", note: "末 64 维 partial/inverse RoPE" }
+            { tex: R`W^{Q}`, shape: R`[d_{\mathrm{model}},\,H_q c]`, label: "Core query projection", value: "7168 → 128 × 512", note: "core head dim = c = 512" }
           ]
         },
         {
-          id: "local", label: "Raw local branch", summary: "128-token window", col: 1,
-          description: "局部分支读取最近 raw tokens，覆盖当前 block 与精细顺序。", tone: "gather",
+          id: "ccomp", kind: "activation", tone: "control",
+          x: 106, y: 564,
+          label: "块摘要条目",
+          tex: R`C_i^{\mathrm{Comp}}`, texShape: R`[B,\,\lfloor L/m'\rfloor,\,c]`,
+          fallback: "C_i^Comp", shapeFallback: "[B,L/m',c]",
+          description: "每个完整 block 产生一条 512 维条目；同一条目兼作 key 与 value。",
           symbols: [
-            { symbol: "H_local", label: "Local context", shape: "[B, L, 128, 7168]", value: "window = 128", note: "与 compressed-dense global branch 并行" }
+            { tex: R`C_i^{\mathrm{Comp}}`, shape: R`[B,\,\lfloor L/m'\rfloor,\,c]`, label: "Block summaries", value: "m′ = 128, c = 512", note: "末 64 维按压缩位置 π_j 施 partial RoPE" }
           ]
         },
         {
-          id: "cache", label: "Block summaries + local carry", summary: "Length reduced by 128× globally", col: 2,
-          description: "全局缓存随完成 block 数增长，而不是为每个 raw token 保存完整 KV。", tone: "state",
+          id: "qcore", kind: "activation",
+          x: 406, y: 564,
+          label: "Core queries",
+          tex: R`q_t`, texShape: R`[B,\,H_q,\,L,\,c]`,
+          fallback: "q_t", shapeFallback: "[B,Hq,L,c]",
+          description: "core 前经 per-head RMSNorm；末 64 维施 partial RoPE。",
           symbols: [
-            { symbol: "Cache_global", label: "Persistent summaries", shape: "[B, ⌊L/128⌋, 512]", value: "one shared KV entry/block", note: "另需局部窗口/carry 的运行时状态" }
+            { tex: R`q_t`, shape: R`[B,\,H_q,\,L,\,c]`, label: "Core queries", value: "H_q = 128, c = 512", note: "RoPE slice = 末 64 维" }
+          ]
+        },
+        {
+          id: "gate", kind: "operator", glyph: "pill", tone: "control", w: 110, h: 28, titleSize: 8.4,
+          x: 115, y: 494,
+          label: "因果发布门",
+          tex: R`m'(i{+}1)\le t`, fallback: "causal publish",
+          description: "只有已关闭的 block 才发布到全局缓存；未闭合块由局部窗口覆盖。",
+          symbols: [
+            { tex: R`m'(i{+}1)\le t`, shape: R`\lfloor t/m'\rfloor\ \text{visible blocks}`, label: "Publish condition", value: "无 Indexer、无 top-k", note: "避免泄露未来信息" }
+          ]
+        },
+        {
+          id: "ccompcache", kind: "state",
+          x: 96, y: 402,
+          label: "已闭合块缓存",
+          tex: R`\{C_i^{\mathrm{Comp}}\}_{m'(i+1)\le t}`, texShape: R`[B,\,\lfloor t/m'\rfloor,\,c]`,
+          fallback: "completed cache", shapeFallback: "[B,t/m',c]", titleSize: 8.8,
+          relates: ["ccomp"],
+          description: "全局缓存随完成 block 数增长，长度轴缩短 128 倍。",
+          symbols: [
+            { tex: R`\{C_i^{\mathrm{Comp}}\}`, shape: R`[B,\,\lfloor t/m'\rfloor,\,c]`, label: "Persistent summaries", value: "one shared KV entry/block", note: "不为每个 raw token 保存完整 KV" }
+          ]
+        },
+        {
+          id: "swa", kind: "state",
+          x: 686, y: 402,
+          label: "原始局部窗口",
+          tex: R`H_{t-w:t}`, texShape: R`[B,\,w,\,d]`,
+          fallback: "raw window", shapeFallback: "[B,w,d]",
+          description: "覆盖当前未闭合 block 与精细顺序的未压缩局部分支。",
+          symbols: [
+            { tex: R`H_{t-w:t}`, shape: R`[B,\,w,\,d_{\mathrm{model}}]`, label: "Raw local window", value: "w = 128 tokens", note: "与 compressed-dense global branch 并行" }
+          ]
+        },
+        {
+          id: "rms", kind: "operator", glyph: "pill", tone: "cyan", w: 96, h: 28, titleSize: 8.2,
+          x: 422, y: 328,
+          label: "per-head RMSNorm",
+          tex: R`\operatorname{RMSNorm}`, fallback: "RMSNorm",
+          description: "core 前对 query heads 与唯一 compressed-KV head 归一化。",
+          symbols: [
+            { tex: R`\operatorname{RMSNorm}(q_t)`, shape: R`[B,\,H_q,\,L,\,c]`, label: "Pre-core normalization", value: "query 与 KV 两侧", note: "报告 §2.3.3 的必要步骤" }
+          ]
+        },
+        {
+          id: "core", kind: "activation", titleSize: 7.8, w: 220, h: 52,
+          x: 360, y: 222,
+          label: "compressed-dense core（单一 softmax）",
+          tex: R`o_t=\operatorname{MQA}_{K=V}(q_t;\mathrm{sink},C_{\mathrm{all}},\mathrm{SWA})`,
+          texShape: R`[B,\,H_q,\,L,\,c]`,
+          fallback: "o = MQA(q; sink, C_all, SWA)", shapeFallback: "[B,Hq,L,c]",
+          description: "没有 Indexer 或 top-k：每个 query dense 读取全部 ⌊t/m′⌋ 条已闭合摘要与 SWA。",
+          symbols: [
+            { tex: R`A^{\mathrm{global}}`, shape: R`[B,\,H_q,\,L,\,\lfloor L/m'\rfloor]`, label: "Global weights", value: "dense · 因果排除未闭合块", note: "sink + 全部摘要 + SWA 一次归一化" }
+          ]
+        },
+        {
+          id: "irope", kind: "operator", tone: "cyan",
+          x: 453, y: 161,
+          label: "输出 inverse RoPE",
+          tex: R`R_{-t}`, fallback: "R_-t",
+          description: "输出 slice 按 raw query 位置 t 反旋转，把 R_{π_j} 变成相对旋转 R_{π_j−t}。",
+          symbols: [
+            { tex: R`R_{-t}`, shape: R`[64,\,64]`, label: "Inverse rotary", value: "末 64 维 slice", note: "π_j 由实现定义，不能擅自取块索引" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up", titleSize: 8.8,
+          x: 414, y: 100,
+          label: "分组输出投影",
+          tex: R`W^{OA},W^{OB}`, texShape: R`H_q c\to d`,
+          fallback: "W^OA, W^OB", shapeFallback: "Hq·c → d",
+          relates: ["u"],
+          description: "按组 W^OA → Concat → W^OB 两级写回残差流。",
+          symbols: [
+            { tex: R`W^{OA},W^{OB}`, shape: R`[H_q c,\,d_{\mathrm{model}}]`, label: "Grouped output projection", value: "分组两级投影", note: "与 CSA 共享写回配方" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 406, y: 24,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,L,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,L,d_model]",
+          description: "HCA 层输出；全局重压缩 dense 读取与局部窗口在此汇合。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,L,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 7168", note: "V4-Pro HCA layers（compress ratio 128）" }
           ]
         }
       ],
       edges: [
-        { from: "input", to: "compressor", label: "128→1" },
-        { from: "compressor", to: "global", label: "all completed" },
-        { from: "input", to: "local", label: "raw window" },
-        { from: "global", to: "cache", label: "summaries" },
-        { from: "local", to: "global", label: "merge" }
+        { from: "h", to: "wc", tone: "compute", fromSide: "left", toSide: "right", bend: 280 },
+        { from: "h", to: "wq", tone: "compute" },
+        { from: "h", to: "swa", tone: "state", dashed: true, fromSide: "right", toSide: "bottom", label: "raw 窗口 w=128", lx: 650, ly: 744 },
+        { from: "wc", to: "ccomp", tone: "weight" },
+        { from: "wq", to: "qcore", tone: "weight" },
+        { from: "ccomp", to: "gate", tone: "control" },
+        { from: "gate", to: "ccompcache", tone: "state" },
+        { from: "qcore", to: "rms", tone: "compute" },
+        { from: "rms", to: "core", tone: "cyan" },
+        { from: "ccompcache", to: "core", tone: "state", fromSide: "top", toSide: "left", label: "全部已闭合块", lx: 220, ly: 236 },
+        { from: "swa", to: "core", tone: "state", dashed: true, fromSide: "top", toSide: "right", label: "局部分支", lx: 790, ly: 300 },
+        { from: "core", to: "irope", tone: "compute" },
+        { from: "irope", to: "wo", tone: "compute" },
+        { from: "wo", to: "u", tone: "gather" }
       ]
     },
     kda: {
       modules: [
         {
-          id: "backbone", label: "Kimi K3 hybrid backbone", summary: "93 layers · 69 KDA + 24 Gated MLA",
-          description: "前 92 层重复 23 次“3 KDA + 1 Gated MLA”，第 93 层再追加一个 Gated MLA。", tone: "muted",
+          id: "x", kind: "activation", tone: "cyan",
+          x: 417, y: 902, w: 136, h: 46,
+          label: "输入残差流",
+          tex: R`x_t`, texShape: R`[B,\,T,\,d_{\mathrm{model}}]`,
+          fallback: "x_t", shapeFallback: "[B,T,d_model]",
+          description: "KDA block 的输入：三条 conv 参数路径（q/k/v）与三条直接门控路径（α/β/g）并行出发。",
           symbols: [
-            { symbol: "H", label: "Residual stream", shape: "[B, T, 7168]", value: "d_model = 7168", note: "2.8T total / 104B activated parameters" },
-            { symbol: "Layers", label: "Attention schedule", shape: "23 × [KDA,KDA,KDA,GMLA] + [GMLA]", value: "69 KDA + 24 Gated MLA", note: "layerwise hybrid, not headwise mixing" }
+            { tex: R`x_t`, shape: R`[B,\,T,\,d_{\mathrm{model}}]`, label: "Input activations", value: "d_model = 7168", note: "Kimi K3 · 2.8T total / 104B activated" }
           ]
         },
         {
-          id: "qkv", label: "KDA Q / K / V paths", summary: "96 heads × 128-d", col: 1,
-          description: "Q/K/V 经过 width-4 ShortConv；Q/K 再做激活与 L2 normalization。", tone: "compute",
+          id: "wq", kind: "weight", glyph: "down", w: 104,
+          x: 58, y: 822,
+          label: "q 投影",
+          tex: R`W^{Q}`, texShape: R`[d,\,H d_k]`,
+          fallback: "W^Q", shapeFallback: "[d,H·dk]",
+          relates: ["q"],
+          description: "q 路径的线性投影；随后经 ShortConv、激活与 L2 归一化。",
           symbols: [
-            { symbol: "q,k,v", label: "KDA activations", shape: "[B, T, 96, 128]", value: "H = 96, d_k = d_v = 128", note: "ShortConv width = 4" }
+            { tex: R`W^{Q}`, shape: R`[d_{\mathrm{model}},\,H d_k]`, label: "Query projection", value: "7168 → 96 × 128", note: "H = 96, d_k = 128" }
           ]
         },
         {
-          id: "gates", label: "Channel decay + delta rate", summary: "128-channel α and scalar β", col: 2,
-          description: "每个 head 的 128 个 key channels 独立衰减；β 控制 rank-1 delta 写入，输出另有 full-rank gate。", tone: "control",
+          id: "wk", kind: "weight", glyph: "down", w: 104,
+          x: 208, y: 822,
+          label: "k 投影",
+          tex: R`W^{K}`, texShape: R`[d,\,H d_k]`,
+          fallback: "W^K", shapeFallback: "[d,H·dk]",
+          relates: ["k"],
+          description: "k 路径投影；L2 归一化让 delta 擦除具有清晰的方向投影几何。",
           symbols: [
-            { symbol: "α_t", label: "Channel decay", shape: "[B, T, 96, 128]", value: "lower-bounded log decay", note: "每个 key channel 独立" },
-            { symbol: "β_t", label: "Update rate", shape: "[B, T, 96]", value: "scalar / head / token", note: "sigmoid delta-write strength" }
+            { tex: R`W^{K}`, shape: R`[d_{\mathrm{model}},\,H d_k]`, label: "Key projection", value: "7168 → 96 × 128", note: "‖k‖=1 时 I−βkk^⊤ 只收缩 key 方向" }
           ]
         },
         {
-          id: "state", label: "Fixed recurrent state", summary: "96 × 128×128 matrices", col: 2,
-          description: "KDA 把历史折叠进每头固定矩阵，状态大小不随 1M context 增长。", tone: "state",
+          id: "wv", kind: "weight", glyph: "down", w: 104,
+          x: 358, y: 822,
+          label: "v 投影",
+          tex: R`W^{V}`, texShape: R`[d,\,H d_v]`,
+          fallback: "W^V", shapeFallback: "[d,H·dv]",
+          relates: ["v"],
+          description: "v 路径投影；经 ShortConv 与激活，但不做 L2 归一化。",
           symbols: [
-            { symbol: "S_t", label: "KDA state", shape: "[B, 96, 128, 128]", value: "1,572,864 elements / sequence / layer", note: "不含 dtype 与 ShortConv state" }
+            { tex: R`W^{V}`, shape: R`[d_{\mathrm{model}},\,H d_v]`, label: "Value projection", value: "7168 → 96 × 128", note: "d_v = 128" }
           ]
         },
         {
-          id: "gated-mla", label: "Periodic Gated MLA", summary: "24 global-attention layers", col: 1,
-          description: "Gated MLA 为全局精确回看保留 token-indexed latent cache，并用数据依赖输出 gate 调节读取。", tone: "gather",
+          id: "walpha", kind: "weight", glyph: "pair", w: 104, titleSize: 8.6,
+          x: 508, y: 822,
+          label: "α 低秩门生成器",
+          tex: R`W_\alpha^{\downarrow},W_\alpha^{\uparrow}`, texShape: R`d\to r\to H d_k`,
+          fallback: "Wα↓, Wα↑", shapeFallback: "d → r → H·dk",
+          relates: ["alpha"],
+          description: "逐通道 decay 的低秩生成器：降维再升维，经 softplus/exp 得到每通道保留率。",
           symbols: [
-            { symbol: "GMLA", label: "Global layers", shape: "[24 layers, B, T, 7168]", value: "NoPE + output gate", note: "官方报告未明确给出细分 q/kv latent rank，因此不补写" },
-            { symbol: "Context", label: "Maximum context", shape: "[B, 1,048,576]", value: "1M tokens", note: "Gated MLA cache 仍随 token 数增长" }
+            { tex: R`W_\alpha^{\downarrow}W_\alpha^{\uparrow}`, shape: R`[d,\,r]\times[r,\,H d_k]`, label: "Low-rank decay generator", value: "128 channels / head", note: "log α = −exp(A_h)·softplus(·)" }
+          ]
+        },
+        {
+          id: "wbeta", kind: "weight", glyph: "down", w: 104,
+          x: 658, y: 822,
+          label: "β 写入率投影",
+          tex: R`W^{\beta}`, texShape: R`[d,\,H]`,
+          fallback: "W^β", shapeFallback: "[d,H]",
+          relates: ["beta"],
+          description: "每 head 每 token 一个标量写入率；不经过 ShortConv。",
+          symbols: [
+            { tex: R`W^{\beta}`, shape: R`[d_{\mathrm{model}},\,H]`, label: "Delta-rate projection", value: "标量 / head / token", note: "β = σ(W^β x)" }
+          ]
+        },
+        {
+          id: "wg", kind: "weight", glyph: "down", w: 104,
+          x: 808, y: 822,
+          label: "输出门投影",
+          tex: R`W^{G}`, texShape: R`[d,\,H d_v]`,
+          fallback: "W^G", shapeFallback: "[d,H·dv]",
+          relates: ["g"],
+          description: "数据依赖的输出 gate；K3 配置为 full-rank（Kimi Linear 首发为低秩）。",
+          symbols: [
+            { tex: R`W^{G}`, shape: R`[d_{\mathrm{model}},\,H d_v]`, label: "Output-gate projection", value: "full-rank（K3 口径）", note: "读出处 RMSNorm(o) ⊙ σ(g)" }
+          ]
+        },
+        {
+          id: "convq", kind: "weight", glyph: "down", w: 76, h: 30, titleSize: 8.6,
+          x: 72, y: 752,
+          label: "q ShortConv",
+          tex: R`\mathrm{Conv}_4`, texShape: R`[H d_k,\,4]`,
+          fallback: "Conv4", shapeFallback: "[H·dk,4]", shapeSize: 7,
+          relates: ["q"],
+          description: "width-4 causal depthwise 卷积：为 q 提供局部顺序 shortcut。",
+          symbols: [
+            { tex: R`\operatorname{ShortConv}_4`, shape: R`[H d_k,\,4]`, label: "Depthwise causal conv", value: "width = 4", note: "只作用于 q/k/v 路径" }
+          ]
+        },
+        {
+          id: "convk", kind: "weight", glyph: "down", w: 76, h: 30, titleSize: 8.6,
+          x: 222, y: 752,
+          label: "k ShortConv",
+          tex: R`\mathrm{Conv}_4`, texShape: R`[H d_k,\,4]`,
+          fallback: "Conv4", shapeFallback: "[H·dk,4]", shapeSize: 7,
+          relates: ["k"],
+          description: "k 路径的 width-4 causal depthwise 卷积。",
+          symbols: [
+            { tex: R`\operatorname{ShortConv}_4`, shape: R`[H d_k,\,4]`, label: "Depthwise causal conv", value: "width = 4", note: "改善局部寻址与检索" }
+          ]
+        },
+        {
+          id: "convv", kind: "weight", glyph: "down", w: 76, h: 30, titleSize: 8.6,
+          x: 372, y: 752,
+          label: "v ShortConv",
+          tex: R`\mathrm{Conv}_4`, texShape: R`[H d_v,\,4]`,
+          fallback: "Conv4", shapeFallback: "[H·dv,4]", shapeSize: 7,
+          relates: ["v"],
+          description: "v 路径的 width-4 causal depthwise 卷积。",
+          symbols: [
+            { tex: R`\operatorname{ShortConv}_4`, shape: R`[H d_v,\,4]`, label: "Depthwise causal conv", value: "width = 4", note: "不是 KV cache，也不替代长程状态" }
+          ]
+        },
+        {
+          id: "actq", kind: "operator",
+          x: 93, y: 689,
+          label: "q 激活（Swish）",
+          tex: R`\sigma`, fallback: "σ",
+          description: "q 路径的 Swish/SiLU 激活。",
+          symbols: [
+            { tex: R`\operatorname{SiLU}`, shape: R`[B,\,T,\,H,\,d_k]`, label: "Activation", value: "逐元素", note: "允许有符号特征" }
+          ]
+        },
+        {
+          id: "actk", kind: "operator",
+          x: 243, y: 689,
+          label: "k 激活（Swish）",
+          tex: R`\sigma`, fallback: "σ",
+          description: "k 路径的 Swish/SiLU 激活。",
+          symbols: [
+            { tex: R`\operatorname{SiLU}`, shape: R`[B,\,T,\,H,\,d_k]`, label: "Activation", value: "逐元素", note: "随后 L2 归一化" }
+          ]
+        },
+        {
+          id: "actv", kind: "operator",
+          x: 393, y: 689,
+          label: "v 激活（Swish）",
+          tex: R`\sigma`, fallback: "σ",
+          description: "v 路径的 Swish/SiLU 激活；v 不做 L2 归一化。",
+          symbols: [
+            { tex: R`\operatorname{SiLU}`, shape: R`[B,\,T,\,H,\,d_v]`, label: "Activation", value: "逐元素", note: "v 保持无归一化" }
+          ]
+        },
+        {
+          id: "opalpha", kind: "operator", glyph: "pill", tone: "control", w: 96, h: 26, titleSize: 7.8,
+          x: 512, y: 693,
+          label: "softplus → exp",
+          tex: R`\mathrm{softplus}\!\to\!\exp`, fallback: "softplus→exp",
+          description: "把低秩输出变成 (0,1) 的逐通道保留率，带可学习下界。",
+          symbols: [
+            { tex: R`\alpha=\exp(-\exp(A_h^{\log})\operatorname{softplus}(\cdot))`, shape: R`(0,1)^{d_k}`, label: "Decay transform", value: "lower-bounded log decay", note: "每个 key channel 独立" }
+          ]
+        },
+        {
+          id: "opbeta", kind: "operator", tone: "control",
+          x: 693, y: 689,
+          label: "β sigmoid",
+          tex: R`\sigma`, fallback: "σ",
+          description: "sigmoid 把写入率压到 (0,1)。",
+          symbols: [
+            { tex: R`\beta_t=\sigma(W^{\beta}x_t)`, shape: R`(0,1)`, label: "Write-rate transform", value: "标量 / head", note: "控制 rank-1 delta 写入强度" }
+          ]
+        },
+        {
+          id: "opg", kind: "operator", tone: "control",
+          x: 843, y: 689,
+          label: "g sigmoid",
+          tex: R`\sigma`, fallback: "σ",
+          description: "输出 gate 的 sigmoid；在读出处与 RMSNorm(o) 逐元素相乘。",
+          symbols: [
+            { tex: R`\sigma(g_t)`, shape: R`(0,1)^{H d_v}`, label: "Output-gate transform", value: "数据依赖", note: "调节每通道读出强度" }
+          ]
+        },
+        {
+          id: "l2q", kind: "operator", glyph: "pill", tone: "cyan", w: 56, h: 24, titleSize: 8.2,
+          x: 82, y: 638,
+          label: "q L2 归一化",
+          tex: R`\mathrm{L2}`, fallback: "L2",
+          description: "q 的 L2 归一化（含 1/√d_k 缩放）。",
+          symbols: [
+            { tex: R`\operatorname{L2Norm}(q)`, shape: R`\|q\|_2=1`, label: "Normalization", value: "每 head", note: "稳定 delta 递推的谱" }
+          ]
+        },
+        {
+          id: "l2k", kind: "operator", glyph: "pill", tone: "cyan", w: 56, h: 24, titleSize: 8.2,
+          x: 232, y: 638,
+          label: "k L2 归一化",
+          tex: R`\mathrm{L2}`, fallback: "L2",
+          description: "单位 key 使 I−βkk^⊤ 的特征值全部落在 [0,1]。",
+          symbols: [
+            { tex: R`\operatorname{L2Norm}(k)`, shape: R`\|k\|_2=1`, label: "Normalization", value: "每 head", note: "β=1 时精确擦除 key 方向" }
+          ]
+        },
+        {
+          id: "q", kind: "activation", w: 118,
+          x: 51, y: 560,
+          label: "query 激活",
+          tex: R`q_t`, texShape: R`[B,\,T,\,H,\,d_k]`,
+          fallback: "q_t", shapeFallback: "[B,T,H,dk]",
+          description: "读取固定状态的地址向量：o = S^⊤(q/√d_k)。",
+          symbols: [
+            { tex: R`q_t`, shape: R`[B,\,T,\,H,\,d_k]`, label: "Query", value: "H = 96, d_k = 128", note: "Linear→Conv→SiLU→L2" }
+          ]
+        },
+        {
+          id: "k", kind: "activation", w: 118,
+          x: 201, y: 560,
+          label: "key 激活",
+          tex: R`k_t`, texShape: R`[B,\,T,\,H,\,d_k]`,
+          fallback: "k_t", shapeFallback: "[B,T,H,dk]",
+          description: "写入/擦除方向：decay 后沿 k 方向做 rank-1 delta 纠写。",
+          symbols: [
+            { tex: R`k_t`, shape: R`[B,\,T,\,H,\,d_k]`, label: "Key", value: "H = 96, d_k = 128", note: "单位化后进入 (I−βkk^⊤)" }
+          ]
+        },
+        {
+          id: "v", kind: "activation", w: 118,
+          x: 351, y: 560,
+          label: "value 激活",
+          tex: R`v_t`, texShape: R`[B,\,T,\,H,\,d_v]`,
+          fallback: "v_t", shapeFallback: "[B,T,H,dv]",
+          description: "delta 写入的新内容：S ← A_t S + βkv^⊤。",
+          symbols: [
+            { tex: R`v_t`, shape: R`[B,\,T,\,H,\,d_v]`, label: "Value", value: "H = 96, d_v = 128", note: "Linear→Conv→SiLU（无 L2）" }
+          ]
+        },
+        {
+          id: "alpha", kind: "activation", tone: "control", w: 118,
+          x: 501, y: 560,
+          label: "逐通道 decay 门",
+          tex: R`\alpha_t`, texShape: R`[B,\,T,\,H,\,d_k]`,
+          fallback: "α_t", shapeFallback: "[B,T,H,dk]",
+          description: "每个 head 的 128 个 key channels 独立衰减；乘积形成可学习距离衰减。",
+          symbols: [
+            { tex: R`\alpha_t`, shape: R`[B,\,T,\,H,\,d_k]`, label: "Channel decay", value: "128 channels / head / token", note: "位置感来自有序 decay，全程 NoPE" }
+          ]
+        },
+        {
+          id: "beta", kind: "activation", tone: "control", w: 118,
+          x: 651, y: 560,
+          label: "delta 写入率",
+          tex: R`\beta_t`, texShape: R`[B,\,T,\,H]`,
+          fallback: "β_t", shapeFallback: "[B,T,H]",
+          description: "标量写入率：在旧关联与新值之间插值。",
+          symbols: [
+            { tex: R`\beta_t`, shape: R`[B,\,T,\,H]`, label: "Update rate", value: "scalar / head / token", note: "sigmoid delta-write strength" }
+          ]
+        },
+        {
+          id: "g", kind: "activation", tone: "control", w: 118,
+          x: 801, y: 560,
+          label: "输出门激活",
+          tex: R`g_t`, texShape: R`[B,\,T,\,H,\,d_v]`,
+          fallback: "g_t", shapeFallback: "[B,T,H,dv]",
+          description: "输出 gate：绕过递推单元，在读出处调节内容。",
+          symbols: [
+            { tex: R`g_t`, shape: R`[B,\,T,\,H,\,d_v]`, label: "Output gate", value: "full-rank（K3）", note: "u = W^O[RMSNorm(o) ⊙ σ(g)]" }
+          ]
+        },
+        {
+          id: "core", kind: "activation", titleSize: 8, w: 260, h: 56,
+          x: 205, y: 430,
+          label: "Kimi Delta Attention 递推",
+          tex: R`S_t=(I-\beta_tk_tk_t^{\top})\operatorname{Diag}(\alpha_t)S_{t-1}+\beta_tk_tv_t^{\top}`,
+          texShape: R`o_t=S_t^{\top}(q_t/\sqrt{d_k})`,
+          fallback: "S = (I−βkk^T)Diag(α)S + βkv^T", shapeFallback: "o = S^T q/√dk", shapeSize: 7.8,
+          description: "受约束 DPLR：对角逐通道 decay 在前，绑定同一 key 的 rank-1 纠写在后；q 读出固定状态。",
+          symbols: [
+            { tex: R`A_t=(I-\beta_tk_tk_t^{\top})\operatorname{Diag}(\alpha_t)`, shape: R`[d_k,\,d_k]`, label: "Transition", value: "受约束 DPLR", note: "a ∥ k 且 b = k⊙α，换取稳定 chunk kernel" },
+            { tex: R`o_t`, shape: R`[B,\,T,\,H,\,d_v]`, label: "Readout", value: "o = S^⊤(q/√d_k)", note: "每步 O(d_k d_v)" }
+          ]
+        },
+        {
+          id: "state", kind: "state",
+          x: 576, y: 430,
+          label: "固定递推状态",
+          tex: R`S_t`, texShape: R`[B,\,H,\,d_k,\,d_v]`,
+          fallback: "S_t", shapeFallback: "[B,H,dk,dv]",
+          relates: ["core"],
+          description: "每头固定 128×128 矩阵：历史被折叠进常数大小状态，不随 1M context 增长。",
+          symbols: [
+            { tex: R`S_t`, shape: R`[B,\,H,\,d_k,\,d_v]`, label: "Recurrent state", value: "96 × 128 × 128 = 1,572,864 elements/层/序列", note: "不含 dtype 与 ShortConv state" }
+          ]
+        },
+        {
+          id: "rms", kind: "operator", glyph: "pill", tone: "cyan", w: 96, h: 28, titleSize: 8.2,
+          x: 287, y: 362,
+          label: "读出 RMSNorm",
+          tex: R`\operatorname{RMSNorm}`, fallback: "RMSNorm",
+          description: "对每头读出做 RMSNorm；取代线性注意力的正分母归一化。",
+          symbols: [
+            { tex: R`\operatorname{RMSNorm}(o_t)`, shape: R`[B,\,T,\,H,\,d_v]`, label: "Readout normalization", value: "head-wise", note: "允许有符号特征的稳定读出" }
+          ]
+        },
+        {
+          id: "outgate", kind: "operator", tone: "control",
+          x: 318, y: 293,
+          label: "输出门逐元素乘",
+          tex: R`\odot`, fallback: "⊙",
+          description: "RMSNorm(o) 与 σ(g) 逐元素相乘后进入输出投影。",
+          symbols: [
+            { tex: R`\operatorname{RMSNorm}(o_t)\odot\sigma(g_t)`, shape: R`[B,\,T,\,H,\,d_v]`, label: "Gated readout", value: "逐元素", note: "数据依赖地调节写回内容" }
+          ]
+        },
+        {
+          id: "wo", kind: "weight", glyph: "up",
+          x: 279, y: 210,
+          label: "输出投影",
+          tex: R`W^{O}`, texShape: R`[H d_v,\,d]`,
+          fallback: "W^O", shapeFallback: "[H·dv,d]",
+          relates: ["u"],
+          description: "把 96 × 128 的门控读出写回残差流。",
+          symbols: [
+            { tex: R`W^{O}`, shape: R`[H d_v,\,d_{\mathrm{model}}]`, label: "Output projection", value: "(96 × 128) × 7168", note: "u = W^O[RMSNorm(o) ⊙ σ(g)]" }
+          ]
+        },
+        {
+          id: "u", kind: "activation", tone: "gather",
+          x: 271, y: 130,
+          label: "层输出",
+          tex: R`u_t`, texShape: R`[B,\,T,\,d_{\mathrm{model}}]`,
+          fallback: "u_t", shapeFallback: "[B,T,d_model]",
+          description: "KDA 层输出；按 3:1 主节奏与 Gated MLA 层级交错。",
+          symbols: [
+            { tex: R`u_t`, shape: R`[B,\,T,\,d_{\mathrm{model}}]`, label: "Layer output", value: "d_model = 7168", note: "93 层骨干中的 69 个 KDA 层" }
+          ]
+        },
+        {
+          id: "gmla", kind: "block", titleSize: 9.4,
+          x: 656, y: 130,
+          label: "Gated MLA 层级调度",
+          tex: R`\text{Gated MLA}\times24`, texShape: R`23\times(3\,\text{KDA}{+}1\,\text{GMLA})+\text{GMLA}`,
+          fallback: "Gated MLA ×24", shapeFallback: "23×(3 KDA+1 GMLA)+GMLA", shapeSize: 7.4,
+          relates: ["u"],
+          description: "周期性全局回看层：NoPE + 数据依赖输出 gate，保留随 token 增长的 latent cache；层级交错而非混头。",
+          symbols: [
+            { tex: R`\text{GMLA}`, shape: R`[24\ \text{layers},\,B,\,T,\,d]`, label: "Global layers", value: "69 KDA + 24 Gated MLA = 93 层", note: "官方未公开细分 q/kv latent rank，不补写" },
+            { tex: R`T_{\max}`, shape: R`[B,\,1{,}048{,}576]`, label: "Context length", value: "1M tokens", note: "GMLA cache 仍随 token 数增长；KDA 状态不变" }
           ]
         }
       ],
       edges: [
-        { from: "backbone", to: "qkv", label: "69 KDA layers" },
-        { from: "qkv", to: "gates", label: "decay/write" },
-        { from: "gates", to: "state", label: "update" },
-        { from: "backbone", to: "gated-mla", label: "24 global layers" },
-        { from: "state", to: "gated-mla", label: "hybrid context", back: true }
+        { from: "x", to: "wq", tone: "compute", bend: 882 },
+        { from: "x", to: "wk", tone: "compute", bend: 874 },
+        { from: "x", to: "wv", tone: "compute", bend: 866 },
+        { from: "x", to: "walpha", tone: "control", bend: 866 },
+        { from: "x", to: "wbeta", tone: "control", bend: 874 },
+        { from: "x", to: "wg", tone: "control", bend: 882 },
+        { from: "wq", to: "convq", tone: "weight" },
+        { from: "wk", to: "convk", tone: "weight" },
+        { from: "wv", to: "convv", tone: "weight" },
+        { from: "convq", to: "actq", tone: "compute" },
+        { from: "convk", to: "actk", tone: "compute" },
+        { from: "convv", to: "actv", tone: "compute" },
+        { from: "actq", to: "l2q", tone: "compute" },
+        { from: "actk", to: "l2k", tone: "compute" },
+        { from: "actv", to: "v", tone: "compute" },
+        { from: "l2q", to: "q", tone: "cyan" },
+        { from: "l2k", to: "k", tone: "cyan" },
+        { from: "walpha", to: "opalpha", tone: "control" },
+        { from: "opalpha", to: "alpha", tone: "control" },
+        { from: "wbeta", to: "opbeta", tone: "control" },
+        { from: "opbeta", to: "beta", tone: "control" },
+        { from: "wg", to: "opg", tone: "control" },
+        { from: "opg", to: "g", tone: "control" },
+        { from: "q", to: "core", tone: "compute", toAt: 0.1, bend: 518 },
+        { from: "k", to: "core", tone: "compute", toAt: 0.3, bend: 526 },
+        { from: "v", to: "core", tone: "compute", toAt: 0.5, bend: 518 },
+        { from: "alpha", to: "core", tone: "control", toAt: 0.7, bend: 526 },
+        { from: "beta", to: "core", tone: "control", toAt: 0.9, bend: 534 },
+        { from: "core", to: "state", tone: "state", label: "写入", lx: 520, ly: 446 },
+        { from: "state", to: "state", tone: "state", label: R`S_{t-1}\ \text{递推}`, lw: 96 },
+        { from: "core", to: "rms", tone: "gather" },
+        { from: "rms", to: "outgate", tone: "gather" },
+        { from: "g", to: "outgate", tone: "control", fromSide: "top", toSide: "right", label: R`\odot\,\sigma(g_t)`, lx: 620, ly: 298 },
+        { from: "outgate", to: "wo", tone: "gather" },
+        { from: "wo", to: "u", tone: "gather" },
+        { from: "u", to: "gmla", tone: "orange", dashed: true, toAt: 23 / 52, label: "3 KDA : 1 GMLA 层级交错", lx: 528, ly: 140 }
       ]
     }
   };
@@ -2715,6 +4701,9 @@
         "选择任一模块，查看对应数学符号、张量 shape 与代表模型参数。";
       chapter.attentionConfig.modules = attentionConfigMaps[chapter.id].modules;
       chapter.attentionConfig.edges = attentionConfigMaps[chapter.id].edges;
+      if (attentionConfigMaps[chapter.id].groups) {
+        chapter.attentionConfig.groups = attentionConfigMaps[chapter.id].groups;
+      }
     }
 
     enhancement.derivations.forEach(function (derivation) {

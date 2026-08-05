@@ -255,6 +255,35 @@ class StaticRecurrentArchitectureTests(unittest.TestCase):
         self.assertIn("k = F.normalize(k", recurrence)
         self.assertIn("S = F^T", self.sources["gated-delta"])
 
+    def test_gdn_exposes_conceptual_progression_recurrences(self) -> None:
+        """The chapter narrative needs additive → delta → gated functions."""
+        function_names = {
+            node.name
+            for node in self.trees["gated-delta"].body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertLessEqual(
+            {"additive_recurrence", "delta_recurrence", "gated_delta_recurrence"},
+            function_names,
+        )
+
+        additive = ast.unparse(
+            self.function("gated-delta", "additive_recurrence")
+        )
+        # The baseline must stay a blind append: no normalization, no gates.
+        self.assertNotIn("normalize", additive)
+        self.assertIn("memory + torch.einsum", additive)
+
+        delta = self.function("gated-delta", "delta_recurrence")
+        delta_args = {argument.arg for argument in delta.args.args}
+        self.assertEqual(
+            delta_args, {"q", "k", "v", "beta", "memory", "norm_eps"}
+        )
+        delta_text = ast.unparse(delta)
+        self.assertIn("q = F.normalize(q", delta_text)
+        self.assertIn("k = F.normalize(k", delta_text)
+        self.assertIn("error = v[:, t] - prediction", delta_text)
+
     def test_kda_qkv_shortconv_and_low_rank_direct_gates(self) -> None:
         forward = self.method("kda", "KimiDeltaAttention", "forward")
         self.assertEqual(
@@ -720,6 +749,41 @@ class PyTorchReferenceTests(unittest.TestCase):
             self.assert_finite_shape(cache, (2, 2, 16))
         for gate_input in gate_inputs.values():
             torch.testing.assert_close(gate_input, x)
+
+    def test_gated_delta_progression_equivalences(self) -> None:
+        module = self.modules["gated-delta"]
+
+        # A reused key pollutes the additive memory but is exactly
+        # overwritten by the delta rule with beta = 1 and a unit-norm key.
+        key = torch.nn.functional.normalize(
+            torch.randn(1, 1, 1, 4), p=2.0, dim=-1
+        )
+        keys = key.expand(1, 2, 1, 4)
+        values = torch.randn(1, 2, 1, 3)
+        full_write = torch.ones(1, 2, 1)
+        additive_out, additive_memory = module.additive_recurrence(
+            keys, keys, values
+        )
+        delta_out, _ = module.delta_recurrence(keys, keys, values, full_write)
+        self.assert_finite_shape(additive_out, (1, 2, 1, 3))
+        self.assert_finite_shape(additive_memory, (1, 1, 4, 3))
+        torch.testing.assert_close(delta_out[:, -1], values[:, -1])
+        self.assertFalse(
+            torch.allclose(additive_out[:, -1], values[:, -1]),
+            "additive memory should interfere on a reused key",
+        )
+
+        # alpha = 1 collapses Gated DeltaNet onto the pure delta rule.
+        q = torch.randn(2, 6, 4, 4)
+        k = torch.randn(2, 6, 4, 4)
+        v = torch.randn(2, 6, 4, 5)
+        beta = torch.rand(2, 6, 4)
+        gated_out, gated_memory = module.gated_delta_recurrence(
+            q, k, v, torch.ones(2, 6, 4), beta
+        )
+        delta_ref, delta_memory = module.delta_recurrence(q, k, v, beta)
+        torch.testing.assert_close(gated_out, delta_ref)
+        torch.testing.assert_close(gated_memory, delta_memory)
 
     def test_kda_tiny_forward_and_hybrid(self) -> None:
         module = self.modules["kda"]

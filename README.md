@@ -5,7 +5,7 @@
 - `MHA → MQA → GQA → MLA → {MFA / TPA, DSA → CSA / HCA}`（MFA 与 TPA 是从 MLA 之后分出的两条并列 dense 分解路线；DSA 直接构建在 MLA 之上，并延伸到 CSA / HCA）
 - `Linear Attention → DeltaNet / Gated DeltaNet → KDA → Hybrid Attention`
 
-CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容量的两条 dense 路线。全站共 12 章、48 个推导和 72 道练习，学习进度只保存在浏览器 `localStorage`，不会上传。
+CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容量的两条 dense 路线。全站共 12 章、49 个推导和 72 道练习，学习进度只保存在浏览器 `localStorage`，不会上传。
 
 ## 章节内容契约
 
@@ -17,7 +17,7 @@ CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容�
 
 - `order` 从 0 连续递增，`category` 只能是 `dense`、`sparse`、`linear` 或 `hybrid`。
 - 动机、约束、数学直觉、架构图、警告和权威来源组成基础教学内容；来源使用可解析的 HTTP(S) URL。
-- 除 Linear Attention 与 DeltaNet 外，`attentionConfig` 必须给出来源可追溯的代表模型、至少 4 个可交互结构模块、有效模块连线，以及每个模块的数学符号、shape、具体参数和边界说明；上述两章显式标记为不渲染参数图。
+- 除 Linear Attention 与 DeltaNet 外，`attentionConfig` 必须给出来源可追溯的代表模型、论文架构图式的 activation/weight/operator/state 模块、有效模块连线，以及每个模块经 LaTeX 渲染的数学符号、符号 shape、具体参数和边界说明；上述两章显式标记为不渲染参数图。
 - `positionEncoding` 必须包含标题、摘要、公式、实现边界，以及恰好 3 个带 `label/title/body` 的步骤。
 - 数学推导为 4–6 个；每个推导都必须有 `title/body/source`。
 - 每章恰好 6 道练习；每题都必须有 `kind/level/q/hint/answer`。
@@ -30,7 +30,7 @@ CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容�
 
 ### 代表模型 Attention 参数
 
-章节页在教学内容前展示来源可追溯的交互式模型结构图。点击或键盘选择 SVG 模块后，右侧详情面板展示对应数学符号、张量 shape、代表模型数值和口径说明；模块图与正文架构图的“点击跳代码”互不复用事件。Linear Attention 与 DeltaNet 不展示参数图。其余章节中的数字属于明确命名的论文实验或官方 checkpoint，不代表架构定义强制这些取值；来源未明确的字段保持“报告未给出”，推导值会单独标注。
+章节页在教学内容前展示来源可追溯、参考论文原图组织的交互式模型结构图：圆角块表示 activation，梯形/沙漏表示可学习 weight，圆或菱形表示 operator/gate，双框表示 cache/state。SVG 直接用 LaTeX 展示正文一致的 tensor 符号与符号 shape；点击或键盘选择模块后，右侧详情面板继续展示该符号、代表模型数值和口径说明。模块图与正文架构图的“点击跳代码”互不复用事件。Linear Attention 与 DeltaNet 不展示参数图；来源未明确的字段保持“报告未给出”。
 
 ## PyTorch 教学实现
 
@@ -50,7 +50,7 @@ CSA 与 HCA 是两章独立内容；MFA 与 TPA 是固定 KV 预算下提高容�
 - `csa → pytorch/csa.py`：10 块，重叠压缩、索引打分与 top-k、原始 Q/K/V 通道、摘要 gather、局部窗口、共享 softmax、输出投影与 smoke test。
 - `hca → pytorch/hca.py`：10 块，非重叠重压缩、逆 RoPE 规范化、完结摘要缓存、局部窗口、dense 摘要读取、输出投影与 smoke test。
 - `linear → pytorch/linear_attention.py`：5 块，ELU+1、prefix/recurrent 等价与固定状态。
-- `gated-delta → pytorch/gated_delta.py`：5 块，ShortConv、标量门控 delta 递推与教学边界。
+- `gated-delta → pytorch/gated_delta.py`：7 块，从加法 fast-weight、纯 Delta rule 到标量门控递推，外加 ShortConv 模块、教学边界与等价性 smoke test。
 - `kda → pytorch/kda.py`：7 块，逐通道 DPLR、NoPE 全局层与 3:1 层级混合；章节参数图另以最新 Kimi K3 展示 69 KDA + 24 Gated MLA 的代表配置。
 
 修改 `pytorch/` 后重新生成浏览器 bundle：

@@ -20,6 +20,8 @@
     cyanStroke: "var(--diagram-cyan-stroke, #397f8b)",
     orange: "var(--diagram-orange, #faead9)",
     orangeStroke: "var(--diagram-orange-stroke, #b87938)",
+    weight: "var(--diagram-weight, #fbe0da)",
+    weightStroke: "var(--diagram-weight-stroke, #bb6a55)",
     paper: "var(--diagram-paper, #fffdf9)"
   };
 
@@ -40,7 +42,9 @@
     "--diagram-cyan:#dff3f5",
     "--diagram-cyan-stroke:#397f8b",
     "--diagram-orange:#faead9",
-    "--diagram-orange-stroke:#b87938"
+    "--diagram-orange-stroke:#b87938",
+    "--diagram-weight:#fbe0da",
+    "--diagram-weight-stroke:#bb6a55"
   ].join(";");
 
   var buildSerial = 0;
@@ -129,13 +133,14 @@
       ["视觉语义", "蓝=投影/读取，玫瑰=递推状态单元与反馈环，薰衣草=归一化写回；橙色注释标明执行边界。"]
     ],
     delta: [
-      ["参数路径必须分开", R`只有 q/k/v 经过 causal ShortConv（q/k 再 SiLU + L2Norm，v 只 SiLU）；\(\alpha\)、\(\beta\)、output gate \(g\) 直接由当前 hidden 投影。`],
-      ["转置状态约定", R`图用 \(F=S^{\mathsf T}\)，形状 \(d_v\times d_k\)；因此预测和读取写成 \(Fk\)、\(Fq\)。`],
-      ["单一更新方程", R`\(F_t=\alpha_tF_{t-1}(I-\beta_tk_tk_t^{\mathsf T})+\beta_tv_tk_t^{\mathsf T}\)：先 decay 再 delta 纠写，与论文块图一致。`],
-      ["五步展开", R`等价展开为 decay → predict → error → write → read：\(e_t=v_t-(\alpha_tF_{t-1})k_t\)，误差基于衰减后的状态，顺序决定语义。`],
-      ["读取与门控", R`\(o_t=F_t(q_t/\sqrt{d_k})\)；输出 \(W_O[\operatorname{RMSNorm}(o_t)\odot\operatorname{SiLU}(g_t)]\)，\(g\) 是 direct 投影门。`],
-      ["训练执行", R`训练用 decay-aware chunkwise WY/UT 变换；解码只保留 \(F\) 和三份 ShortConv 状态。`],
-      ["视觉语义", "蓝=特征计算，绿=gate/control，玫瑰=F 状态单元与反馈环，薰衣草=读取/写回。"]
+      ["加法记忆的干扰", R`Stage 1：线性注意力把每个 \(k_tv_t^{\mathsf T}\) 直接叠进固定 \([d_k,d_v]\) 状态；相似 key 的写入互相污染，无法覆盖旧值。`],
+      ["Delta rule 三步", R`Stage 2：先读旧预测 \(\hat v_t=S_{t-1}^{\mathsf T}k_t\)，再算误差 \(e_t=v_t-\hat v_t\)，最后沿 key 方向擦除并写入 \(\beta_tk_te_t^{\mathsf T}\)。`],
+      ["单位 key 几何", R`L2 归一化使 \(\|k_t\|=1\)，\((I-\beta_tk_tk_t^{\mathsf T})\) 只在 \(k_t\) 方向收缩；\(\beta_t\in(0,1)\) 在旧关联与新值之间插值。`],
+      ["现代参数路径", R`Stage 3：q/k 走 Linear→ShortConv→SiLU→L2，v 走 Linear→ShortConv→SiLU；\(\alpha\)、\(\beta\)、\(g\) 直接由 \(x_t\) 投影（\(\beta=\sigma\)），输出 RMSNorm ⊙ SiLU(g) 后过 \(W_O\)。`],
+      ["单一更新方程", R`\(F_t=\alpha_tF_{t-1}(I-\beta_tk_tk_t^{\mathsf T})+\beta_tv_tk_t^{\mathsf T}\)（图用 \(F=S^{\mathsf T}\)）；\(\alpha_t=1\) 时精确退化为纯 DeltaNet。`],
+      ["训练执行", R`训练不做逐 token 全状态扫描：只在 chunk 边界存 \(S\) checkpoint，chunk 内用 WY/UT 变换转成 matmul；解码只保留 \(F\) 和三份 ShortConv 状态。`],
+      ["固定状态上限", R`delta 只减少干扰，\(d_k\times d_v\) 容量不变；检索饱和时可周期性混入 sparse/global attention 层（虚线可选路径）。`],
+      ["视觉语义", "蓝=计算，绿=gate/control，玫瑰=状态与反馈环，薰衣草=读取/写回，青=几何注记；虚线=训练/可选。"]
     ],
     kda: [
       ["逐通道衰减", R`\(\alpha\) 是 \(d_k\) 维 direct 低秩门（\(W\) 降维 → SiLU → \(W\) 升维 → log-decay）；在 \(F=S^{\mathsf T}\) 约定下 decay 写成 \(F\operatorname{Diag}(\alpha)\)。`],
@@ -159,7 +164,7 @@
     csa: R`CSA：\(K^{I\mathrm{Comp}}\) 负责找地址，\(C^{\mathrm{Comp}}\) 提供内容；再与 SWA 一起进入唯一的 MQA+sink 核心。`,
     hca: "HCA：只缓存已完成的重压缩块，不做 TopK；全部摘要与 SWA 一起 dense 读取。",
     linear: R`Linear Transformer：\(\operatorname{ELU}+1\) 把历史折进 \(S\)/\(z\) 循环单元，query 用分子除以分母读取固定状态。`,
-    delta: R`GDN：q/k/v 走 ShortConv，direct gates 控制单一循环单元 \(F_t=\alpha F(I-\beta kk^{\mathsf T})+\beta vk^{\mathsf T}\)，再 \(Fq\) 读出。`,
+    delta: R`DeltaNet：加法记忆会干扰，delta rule 读旧预测、只写误差；GDN 再乘 \(\alpha_t\) 衰减；训练走 chunk WY/UT，容量到顶可混全局注意力。`,
     kda: "KDA：逐 key-channel decay 后做 delta 纠写，并按精确 checkpoint 尾部与 NoPE MLA 交错。"
   };
 
@@ -172,7 +177,8 @@
   }
 
   function defs(rootId) {
-    var tones = ["compute", "control", "state", "gather", "cyan", "orange", "muted"];
+    var tones = ["compute", "control", "state", "gather", "cyan", "orange",
+      "weight", "muted"];
     return "<defs>" + tones.map(function (tone) {
       var color = tone === "muted" ? P.muted : toneStroke(tone);
       return '<marker id="' + rootId + '-arrow-' + tone +
@@ -1180,61 +1186,124 @@
 
   function deltaDiagram(rootId) {
     var b = "";
+    /* Narrative panels: additive baseline, delta-rule fix, modern mixer. */
+    b += panel(24, 66, 340, 214, "STAGE 1 · ADDITIVE FAST WEIGHT", "compute");
+    b += panel(400, 66, 676, 214,
+      "STAGE 2 · DELTA RULE · READ → ERROR → WRITE", "control");
+    b += panel(24, 316, 1052, 524, "STAGE 3 · GATED DELTANET TOKEN MIXER",
+      "state");
 
-    b += box(470, 84, 160, 56, M("x_t", "Input hidden"),
-      M("[B,1,d]", "[B,1,d]"), "compute", 1, "03");
+    /* Stage 1: append-only linear-attention memory and its failure mode. */
+    b += box(48, 100, 292, 64,
+      M("S_t=S_{t-1}+k_tv_t^{\\mathsf T}", "append-only fast weight"),
+      M("\\text{fixed }[d_k,d_v]\\text{ state}", "fixed [dk,dv] state"),
+      "state", 1, "02", { subSize: 8.2 });
+    b += box(48, 196, 292, 60, "interference / overload",
+      "similar keys accumulate · no overwrite", "orange", null, "02",
+      { subSize: 8.2 });
 
-    b += box(50, 180, 150, 76, M("q_t", "q path"),
-      "ShortConv→SiLU→L2", "compute", null, "01", { subSize: 8.0 });
-    b += box(220, 180, 150, 76, M("k_t", "k path"),
-      "ShortConv→SiLU→L2", "compute", null, "01", { subSize: 8.0 });
-    b += box(390, 180, 150, 76, M("v_t", "v path"),
-      "ShortConv→SiLU", "compute", null, "01", { subSize: 8.0 });
-    b += box(560, 180, 150, 76, M("\\alpha_t", "Decay gate"),
-      "direct · per-head", "control", null, "03", { subSize: 8.0 });
-    b += box(730, 180, 150, 76, M("\\beta_t", "Write gate"),
-      "direct · sigmoid", "control", null, "03", { subSize: 8.0 });
-    b += box(900, 180, 150, 76, M("g_t", "Output gate"),
-      "direct · no conv", "control", null, "03", { subSize: 8.0 });
+    /* Stage 2: prediction-error write plus unit-key geometry. */
+    b += box(424, 100, 190, 64,
+      M("\\hat v_t=S_{t-1}^{\\mathsf T}k_t", "read old prediction"),
+      "read old prediction", "compute", 2, "03", { subSize: 8.2 });
+    b += box(646, 100, 176, 64,
+      M("e_t=v_t-\\hat v_t", "compute error"),
+      "compute error", "compute", 3, "03", { subSize: 8.2 });
+    b += box(854, 100, 204, 64,
+      M("S_t=S_{t-1}+\\beta_tk_te_t^{\\mathsf T}", "erase + write correction"),
+      "erase / write along k", "state", 4, "03",
+      { titleSize: 9.6, subSize: 8.2 });
+    b += box(424, 196, 398, 60,
+      M("\\|k_t\\|_2=1:\\ (I-\\beta_tk_tk_t^{\\mathsf T})\\ \\text{contracts only along }k_t",
+        "unit-key L2 geometry"),
+      M("\\beta_t\\in(0,1)\\ \\text{interpolates }S^{\\mathsf T}k_t\\to v_t",
+        "beta interpolates old to new"),
+      "cyan", null, "03", { titleSize: 8.8, subSize: 8.2 });
 
-    b += box(300, 320, 500, 96,
+    /* Stage 3: modern token-mixer paths around one recurrence cell. */
+    b += box(470, 336, 160, 52, M("x_t", "Input hidden"),
+      M("[B,1,d]", "[B,1,d]"), "compute", null, "05");
+    b += box(50, 432, 150, 76, M("q_t", "q path"),
+      "Linear→ShortConv→SiLU→L2", "compute", null, "01", { subSize: 7.4 });
+    b += box(220, 432, 150, 76, M("k_t", "k path"),
+      "Linear→ShortConv→SiLU→L2", "compute", null, "01", { subSize: 7.4 });
+    b += box(390, 432, 150, 76, M("v_t", "v path"),
+      "Linear→ShortConv→SiLU", "compute", null, "01", { subSize: 7.4 });
+    b += box(560, 432, 150, 76, M("\\alpha_t\\in(0,1)", "Decay gate"),
+      "direct · per-head", "control", null, "05",
+      { titleSize: 10.0, subSize: 8.0 });
+    b += box(730, 432, 150, 76, M("\\beta_t=\\sigma(W^\\beta x_t)", "Write gate"),
+      "direct · sigmoid", "control", null, "05",
+      { titleSize: 9.2, subSize: 8.0 });
+    b += box(900, 432, 150, 76, M("g_t", "Output gate"),
+      "direct · SiLU", "control", null, "05", { subSize: 8.0 });
+
+    b += box(300, 552, 500, 88,
       M("F_t=\\alpha_tF_{t-1}(I-\\beta_tk_tk_t^{\\mathsf T})+\\beta_tv_tk_t^{\\mathsf T}",
         "Recurrence: decay, then delta write"),
-      M("F=S^{\\mathsf T}\\in\\mathbb R^{d_v\\times d_k}", "F = S^T in R^{dv×dk}"),
-      "state", 2, "02", { titleSize: 10.0 });
+      M("F=S^{\\mathsf T}\\in\\mathbb R^{d_v\\times d_k}\\ \\cdot\\ \\alpha_t=1\\Rightarrow\\text{pure delta}",
+        "F = S^T; alpha = 1 gives pure delta"),
+      "state", 5, "04", { titleSize: 10.0, subSize: 8.2 });
 
-    b += box(300, 470, 240, 72,
-      M("o_t=F_t(q_t/\\sqrt{d_k})", "Read with q"),
-      null, "gather", 3, "02", { titleSize: 10.4 });
-    b += box(600, 470, 260, 72,
+    b += box(300, 684, 240, 64, M("o_t=F_tq_t", "Read with q"),
+      null, "gather", 6, "04", { titleSize: 10.4 });
+    b += box(600, 684, 260, 64,
       M("\\operatorname{RMSNorm}(o_t)\\odot\\operatorname{SiLU}(g_t)", "Norm ⊙ output gate"),
-      null, "gather", 4, "03", { titleSize: 9.6 });
-    b += box(600, 586, 260, 56, M("W_O\\to u_t", "WO → residual"),
-      null, "gather", 5, "03");
+      null, "gather", 7, "05", { titleSize: 9.6 });
+    b += box(600, 776, 260, 52, M("W_O\\to u_t", "WO → residual"),
+      null, "gather", 8, "05");
 
-    b += box(60, 586, 300, 56, "Training execution",
-      "chunkwise WY/UT · decode keeps F + conv states", "orange", null, "04",
-      { dashed: true, subSize: 8.0 });
+    /* Execution notes: chunked training path and the fixed-state ceiling. */
+    b += box(60, 884, 470, 72, "Training path · chunk checkpoints + WY/UT",
+      "chunk-edge S checkpoints · in-chunk WY/UT matmuls · no full state scan",
+      "orange", null, "06", { dashed: true, titleSize: 9.8, subSize: 7.8 });
+    b += box(590, 884, 470, 72, "Fixed-state ceiling → sparse global hybrid",
+      M("d_k\\times d_v\\ \\text{recall bound · optional periodic full/sparse attention}",
+        "dk x dv recall bound; optional hybrid attention layers"),
+      "orange", null, "06", { dashed: true, titleSize: 9.8, subSize: 7.8 });
 
-    b += edge(rootId, "M480 140V154H125V180", null, "compute");
-    b += edge(rootId, "M508 140V162H295V180", null, "compute");
-    b += edge(rootId, "M536 140V170H465V180", null, "compute");
-    b += edge(rootId, "M564 140V170H635V180", null, "control");
-    b += edge(rootId, "M592 140V162H805V180", null, "control");
-    b += edge(rootId, "M620 140V154H975V180", null, "control");
-    b += edge(rootId, "M295 256V288H400V320", null, "compute");
-    b += edge(rootId, ortho(465, 256, 465, 320), null, "compute");
-    b += edge(rootId, ortho(635, 256, 635, 320), null, "control");
-    b += edge(rootId, "M805 256V288H700V320", null, "control");
-    b += edge(rootId, "M800 344H844V392H800",
-      [860, 414, M("F_{t-1}\\;\\text{carry}", "carry F to t+1"), 150], "state");
-    b += edge(rootId, ortho(420, 416, 420, 470), null, "state");
-    b += edge(rootId, "M125 256V506H300", null, "compute");
-    b += edge(rootId, ortho(540, 506, 600, 506), null, "gather");
-    b += edge(rootId, "M975 256V506H860", null, "control");
-    b += edge(rootId, ortho(730, 542, 730, 586), null, "gather");
-    return baseSvg(rootId, "gated-delta", 678, b,
-      "Gated DeltaNet following the paper block figure: parallel conv and direct-gate projections, one recurrence cell with a single feedback loop, gated readout");
+    /* Stage 1 internals and the hand-off into the delta rule. */
+    b += edge(rootId, ortho(194, 164, 194, 196), null, "orange");
+    b += edge(rootId, ortho(340, 132, 424, 132), null, "control");
+    b += edge(rootId, ortho(340, 226, 424, 226), null, "cyan");
+
+    /* Stage 2 chain and the geometry note feeding the write step. */
+    b += edge(rootId, ortho(614, 132, 646, 132), null, "compute");
+    b += edge(rootId, ortho(822, 132, 854, 132), null, "compute");
+    b += edge(rootId, "M822 226H941V164", null, "cyan");
+    b += edge(rootId, "M623 256V300H550V336",
+      [745, 292, M("+\\ \\alpha_t\\ \\text{decay}\\ \\Rightarrow\\ \\text{Gated DeltaNet}",
+        "+ alpha decay gives Gated DeltaNet"), 230, 8.4], "control");
+
+    /* Input fan-out: conv paths on the left, direct gates on the right. */
+    b += edge(rootId, "M480 388V402H125V432", null, "compute");
+    b += edge(rootId, "M508 388V410H295V432", null, "compute");
+    b += edge(rootId, "M536 388V418H465V432", null, "compute");
+    b += edge(rootId, "M564 388V418H635V432", null, "control");
+    b += edge(rootId, "M592 388V410H805V432", null, "control");
+    b += edge(rootId, "M620 388V402H975V432", null, "control");
+
+    /* Recurrence inputs, single feedback loop, gated readout. */
+    b += edge(rootId, "M295 508V530H400V552", null, "compute");
+    b += edge(rootId, ortho(465, 508, 465, 552), null, "compute");
+    b += edge(rootId, ortho(635, 508, 635, 552), null, "control");
+    b += edge(rootId, "M805 508V530H700V552", null, "control");
+    b += edge(rootId, "M800 576H844V616H800",
+      [872, 646, M("F_{t-1}\\;\\text{carry}", "carry F to t+1"), 130, 8.4],
+      "state");
+    b += edge(rootId, ortho(420, 640, 420, 684), null, "state");
+    b += edge(rootId, "M125 508V664H330V684", null, "compute");
+    b += edge(rootId, ortho(540, 716, 600, 716), null, "gather");
+    b += edge(rootId, "M975 508V716H860", null, "control");
+    b += edge(rootId, ortho(730, 748, 730, 776), null, "gather");
+
+    /* Execution notes hang off the token loop and the output. */
+    b += edge(rootId, ortho(420, 748, 420, 884),
+      [320, 866, "TRAINING · chunkwise WY/UT", 190, 8.2], "orange", true);
+    b += edge(rootId, ortho(730, 828, 730, 884),
+      [855, 866, "OPTIONAL · sparse global hybrid", 210, 8.2], "orange", true);
+    return baseSvg(rootId, "gated-delta", 990, b,
+      "DeltaNet narrative in three stages: an additive fast-weight memory with key interference, the delta rule reading the old prediction and writing only the error with unit-key L2 geometry, and the Gated DeltaNet token mixer with conv q/k/v paths, direct gates, one gated recurrence cell with a feedback loop, gated readout, a chunkwise WY/UT training note, and a fixed-state ceiling with an optional sparse global hybrid");
   }
 
   function kdaDiagram(rootId) {
@@ -1360,75 +1429,118 @@
   /* ==================================================================== *
    * Config explorer builder · window.AttentionDiagrams.buildConfig
    *
-   * A compact, data-driven parameter/model-structure map used by the
-   * interactive attentionConfig explorer. It is deliberately separate
-   * from the hand-drawn chapter diagrams above: modules carry
-   * data-config-module (never data-code-block), so the two interaction
-   * layers cannot collide.
+   * A data-driven parameter/model-structure map used by the interactive
+   * attentionConfig explorer. It is deliberately separate from the
+   * hand-drawn chapter diagrams above: modules carry data-config-module
+   * (never data-code-block), so the two interaction layers cannot
+   * collide.
+   *
+   * Visual grammar (screenshot-faithful):
+   *   activation → rounded block      weight  → trapezoid / hourglass
+   *   operator   → circle/pill/diamond state  → double-border block
+   *   block      → composite rounded panel node
    *
    * Schema:
    *   buildConfig({
    *     key: "mla",                       // stable diagram key
    *     title: "…",                       // accessible <title> text
    *     description: "…",                 // accessible <desc> text
-   *     lanes: [{ id, label, tone }],     // optional horizontal lanes
-   *     nodes: [{                         // array, or an { id: node } map
+   *     groups: [{ id, label, tone,       // background containers drawn
+   *                members: [ids],        //   around member modules
+   *                titlePos: "bottom" }],
+   *     modules: [{
    *       id: "wq",                       // required, stable module id
-   *       label: "W^Q" | M(tex, fb),      // display label (text or math)
-   *       value: "[d, H·dh]",             // short summary/value line
-   *                                       //   (alias: summary)
-   *       tone: "compute",                // palette tone key
-   *       lane: "proj", col: 0,           // optional lane / column hints
-   *       x, y, w, h,                     // optional explicit geometry
+   *       kind: "weight",                 // activation|weight|operator|
+   *                                       //   state|block
+   *       label: "Query 投影",            // plain-text human label (aria)
+   *       tex: "W^{Q}",                   // TeX symbol shown in the SVG
+   *       texShape: "[d,\\,H_q d_h]",     // TeX symbolic shape line
+   *       fallback: "W^Q",                // plain-text SVG fallbacks
+   *       shapeFallback: "[d, Hq·dh]",
+   *       glyph: "down|up|pair|pill|diamond",  // kind-specific variant
+   *       tone: "weight",                 // palette tone key
+   *       x, y, w, h,                     // explicit geometry (required)
+   *       titleSize, shapeSize,           // optional font sizes
    *       dashed: false,                  // optional-path styling
-   *       selected: false,                // initial aria-pressed state
-   *       detail: "wq-detail"             // detail-panel linkage id
-   *     }],
-   *     edges: [{ from, to, label, tone, dashed, back }]
+   *       relates: ["q"],                 // weight/activation relations
+   *       description: "…",               // detail-panel paragraph
+   *       symbols: [{ tex, shape,         // detail rows: TeX symbol and
+   *                   label, value, note }] // symbolic shape + concrete
+   *     }],                               //   representative values
+   *     edges: [{ from, to, label, tone, dashed,
+   *               fromSide, toSide,       // top|bottom|left|right
+   *               fromAt, toAt,           // 0..1 port position on side
+   *               bend, lx, ly }]         // routing / label overrides
    *   })
    *
-   * When x/y are omitted, modules are placed on left-to-right columns
-   * derived from edge topology (edges marked back:true are excluded from
-   * ranking and routed on a return rail). Lanes stack as horizontal
-   * bands sharing the same columns. Returns
-   * { svg, key, modules, width, height }; every module <g> carries
-   * data-config-module, role="button", tabindex="0" and aria-pressed so
-   * an external controller can wire selection without inline scripts.
+   * Returns { svg, key, modules, width, height }; every module <g>
+   * carries data-config-module, data-config-kind, role="button",
+   * tabindex="0" and aria-pressed so an external controller can wire
+   * selection without inline scripts. A static geometry check rejects
+   * connectors that traverse module interiors or overlap rails.
    * ==================================================================== */
 
-  var CONFIG_LAYOUT = {
-    nodeW: 156,
-    nodeH: 58,
-    colGap: 54,
-    rowGap: 24,
-    margin: 30,
-    lanePadX: 20,
-    lanePadY: 22,
-    laneGap: 38
+  var CONFIG_MARGIN = 28;
+
+  var CONFIG_KIND_DEFAULTS = {
+    activation: { w: 128, h: 46, tone: "compute", titleSize: 10.6, shapeSize: 8.2 },
+    weight: { w: 112, h: 40, tone: "weight", titleSize: 9.8, shapeSize: 7.8 },
+    operator: { w: 34, h: 34, tone: "control", titleSize: 9.4, shapeSize: 7.6 },
+    state: { w: 148, h: 50, tone: "state", titleSize: 9.8, shapeSize: 8 },
+    block: { w: 168, h: 52, tone: "gather", titleSize: 10.2, shapeSize: 8.2 }
+  };
+
+  var CONFIG_KIND_WORDS = {
+    activation: "激活张量",
+    weight: "可学习权重",
+    operator: "算子/门控",
+    state: "缓存/状态",
+    block: "复合模块"
   };
 
   /* Only these tones have arrow markers in defs(); others fall back. */
   var CONFIG_MARKER_TONES = {
-    compute: 1, control: 1, state: 1, gather: 1, cyan: 1, orange: 1, muted: 1
+    compute: 1, control: 1, state: 1, gather: 1, cyan: 1, orange: 1,
+    weight: 1, muted: 1
   };
 
   function configMarkerTone(tone) {
     return CONFIG_MARKER_TONES[tone] ? tone : "muted";
   }
 
-  function normalizeConfigNode(id, spec, order) {
+  function normalizeConfigNode(spec, order, key) {
+    if (!spec || spec.id == null) {
+      throw new Error(key + ": config module #" + order + " is missing an id");
+    }
+    var kind = String(spec.kind || "");
+    var defaults = CONFIG_KIND_DEFAULTS[kind];
+    if (!defaults) {
+      throw new Error(key + ": config module " + spec.id +
+        " has unknown kind " + JSON.stringify(spec.kind));
+    }
+    if (typeof spec.x !== "number" || typeof spec.y !== "number") {
+      throw new Error(key + ": config module " + spec.id +
+        " requires explicit numeric x/y geometry");
+    }
     return {
-      id: id,
-      label: spec.label != null ? spec.label : id,
-      value: spec.value != null ? spec.value
-        : (spec.summary != null ? spec.summary : null),
-      tone: spec.tone || "compute",
-      lane: spec.lane != null ? String(spec.lane) : null,
-      col: typeof spec.col === "number" ? spec.col : null,
-      x: typeof spec.x === "number" ? spec.x : null,
-      y: typeof spec.y === "number" ? spec.y : null,
-      w: typeof spec.w === "number" ? spec.w : CONFIG_LAYOUT.nodeW,
-      h: typeof spec.h === "number" ? spec.h : CONFIG_LAYOUT.nodeH,
+      id: String(spec.id),
+      kind: kind,
+      label: spec.label != null ? String(spec.label) : String(spec.id),
+      tone: spec.tone || defaults.tone,
+      glyph: spec.glyph != null ? String(spec.glyph) : null,
+      x: spec.x,
+      y: spec.y,
+      w: typeof spec.w === "number" ? spec.w : defaults.w,
+      h: typeof spec.h === "number" ? spec.h : defaults.h,
+      tex: spec.tex != null ? String(spec.tex) : null,
+      texShape: spec.texShape != null ? String(spec.texShape) : null,
+      fallback: spec.fallback != null ? String(spec.fallback) : null,
+      shapeFallback: spec.shapeFallback != null
+        ? String(spec.shapeFallback) : null,
+      titleSize: typeof spec.titleSize === "number"
+        ? spec.titleSize : defaults.titleSize,
+      shapeSize: typeof spec.shapeSize === "number"
+        ? spec.shapeSize : defaults.shapeSize,
       dashed: !!spec.dashed,
       selected: !!spec.selected,
       detail: spec.detail != null ? String(spec.detail) : null,
@@ -1436,196 +1548,194 @@
     };
   }
 
-  function resolveLaneId(node, lanes, laneIndex) {
-    if (node.lane && laneIndex[node.lane]) return node.lane;
-    return lanes[0].id;
+  function configPort(node, side, at) {
+    var t = at == null ? 0.5 : at;
+    if (side === "top") {
+      return { x: node.x + node.w * t, y: node.y, vertical: true };
+    }
+    if (side === "bottom") {
+      return { x: node.x + node.w * t, y: node.y + node.h, vertical: true };
+    }
+    if (side === "left") {
+      return { x: node.x, y: node.y + node.h * t, vertical: false };
+    }
+    return { x: node.x + node.w, y: node.y + node.h * t, vertical: false };
   }
 
-  /* Assign x/y to every module that lacks explicit geometry. Columns come
-     from longest-path ranks over forward edges; an explicit col wins. */
-  function layoutConfigNodes(nodes, edges, lanes) {
-    var byId = {};
-    nodes.forEach(function (node) { byId[node.id] = node; });
-
-    var rank = {};
-    nodes.forEach(function (node) {
-      rank[node.id] = node.col != null ? node.col : 0;
-    });
-    for (var pass = 0; pass < nodes.length; pass += 1) {
-      var changed = false;
-      edges.forEach(function (e) {
-        if (e.back || e.from === e.to || byId[e.to].col != null) return;
-        if (rank[e.to] < rank[e.from] + 1) {
-          rank[e.to] = rank[e.from] + 1;
-          changed = true;
-        }
-      });
-      if (!changed) break;
+  function inferConfigSides(a, b) {
+    var dx = (b.x + b.w / 2) - (a.x + a.w / 2);
+    var dy = (b.y + b.h / 2) - (a.y + a.h / 2);
+    if (Math.abs(dy) >= Math.abs(dx)) {
+      return dy < 0 ? ["top", "bottom"] : ["bottom", "top"];
     }
-
-    var auto = nodes.filter(function (node) {
-      return node.x == null || node.y == null;
-    });
-    if (!auto.length) return;
-
-    /* Compress the rank values in use into consecutive columns. */
-    var used = {};
-    auto.forEach(function (node) { used[rank[node.id]] = true; });
-    var ordered = Object.keys(used).map(Number).sort(function (a, b) {
-      return a - b;
-    });
-    var colOf = {};
-    ordered.forEach(function (value, index) { colOf[value] = index; });
-
-    var columns = ordered.map(function () { return []; });
-    auto.forEach(function (node) {
-      columns[colOf[rank[node.id]]].push(node);
-    });
-    columns.forEach(function (column) {
-      column.sort(function (a, b) { return a.order - b.order; });
-    });
-
-    var L = CONFIG_LAYOUT;
-    var colW = columns.map(function (column) {
-      return column.reduce(function (w, node) {
-        return Math.max(w, node.w);
-      }, L.nodeW);
-    });
-    var colX = [];
-    var cursor = L.margin + (lanes.length ? L.lanePadX : 0);
-    colW.forEach(function (w, index) {
-      colX[index] = cursor;
-      cursor += w + L.colGap;
-    });
-
-    function stack(cell, cellH, top, c) {
-      var y = top;
-      cell.forEach(function (node) {
-        node.x = colX[c] + (colW[c] - node.w) / 2;
-        node.y = y;
-        y += node.h + L.rowGap;
-      });
-    }
-
-    function cellHeight(cell) {
-      return cell.reduce(function (h, node) { return h + node.h; }, 0) +
-        Math.max(0, cell.length - 1) * L.rowGap;
-    }
-
-    if (!lanes.length) {
-      var colH = columns.map(cellHeight);
-      var maxH = colH.reduce(function (a, b) { return Math.max(a, b); }, 0);
-      columns.forEach(function (column, c) {
-        stack(column, colH[c], L.margin + (maxH - colH[c]) / 2, c);
-      });
-      return;
-    }
-
-    /* Lane layout: one horizontal band per lane, columns shared across
-       lanes so cross-lane edges stay aligned. */
-    var laneIndex = {};
-    lanes.forEach(function (lane) { laneIndex[lane.id] = lane; });
-    var laneY = L.margin + 14;
-    lanes.forEach(function (lane) {
-      var cells = columns.map(function (column) {
-        return column.filter(function (node) {
-          return resolveLaneId(node, lanes, laneIndex) === lane.id;
-        });
-      });
-      var cellH = cells.map(cellHeight);
-      var contentH = Math.max(L.nodeH, cellH.reduce(function (a, b) {
-        return Math.max(a, b);
-      }, 0));
-      cells.forEach(function (cell, c) {
-        stack(cell, cellH[c], laneY + L.lanePadY + (contentH - cellH[c]) / 2, c);
-      });
-      laneY += contentH + 2 * L.lanePadY + L.laneGap;
-    });
+    return dx > 0 ? ["right", "left"] : ["left", "right"];
   }
 
-  /* Default orthogonal route between two resolved module geometries.
-     backIndex offsets stacked return rails so they do not overlap. */
-  function routeConfigEdge(a, b, backIndex) {
+  /* Direction-aware orthogonal route between two module geometries.
+     Ports (side + 0..1 offset) and the mid bend can all be overridden so
+     dense fan-ins keep their rails apart. */
+  function routeConfigEdge(a, b, e) {
     if (a === b) {
       var loopX = a.x + a.w;
       var loopY = a.y + a.h / 2;
       return {
         d: "M" + loopX + " " + (loopY - 9) + "H" + (loopX + 20) +
           "V" + (loopY + 9) + "H" + loopX,
-        lx: loopX + 34, ly: loopY - 20, lw: 96,
+        lx: loopX + 12, ly: loopY - 24, lw: 120,
         maxX: loopX + 20, maxY: loopY + 9
       };
     }
-    var sx;
-    var sy;
-    var tx;
-    var ty;
-    if (b.x >= a.x + a.w + 8) {
-      sx = a.x + a.w;
-      sy = a.y + a.h / 2;
-      tx = b.x;
-      ty = b.y + b.h / 2;
-      return {
-        d: ortho(sx, sy, tx, ty, "x"),
-        lx: (sx + tx) / 2,
-        ly: (sy === ty ? sy : (sy + ty) / 2) - 11,
-        lw: Math.max(72, tx - sx - 8),
-        maxX: tx, maxY: Math.max(sy, ty)
-      };
-    }
-    if (a.x >= b.x + b.w + 8) {
-      sx = a.x + a.w / 2;
-      tx = b.x + b.w / 2;
-      var rail = Math.max(a.y + a.h, b.y + b.h) + 18 + backIndex * 14;
-      return {
-        d: "M" + sx + " " + (a.y + a.h) + "V" + rail + "H" + tx +
-          "V" + (b.y + b.h),
-        lx: (sx + tx) / 2, ly: rail - 10,
-        lw: Math.max(88, Math.abs(sx - tx) - 16),
-        maxX: Math.max(sx, tx), maxY: rail
-      };
-    }
-    /* Same column: connect the facing horizontal borders. */
-    sx = a.x + a.w / 2;
-    tx = b.x + b.w / 2;
-    if (b.y >= a.y + a.h) {
-      sy = a.y + a.h;
-      ty = b.y;
+    var sides;
+    if (!e.fromSide && !e.toSide && e.bend != null) {
+      /* A bare bend value is a horizontal rail y: route vertically. */
+      sides = (b.y + b.h / 2) < (a.y + a.h / 2)
+        ? ["top", "bottom"]
+        : ["bottom", "top"];
     } else {
-      sy = a.y;
-      ty = b.y + b.h;
+      sides = inferConfigSides(a, b);
+    }
+    var s = configPort(a, e.fromSide || sides[0], e.fromAt);
+    var t = configPort(b, e.toSide || sides[1], e.toAt);
+    var d;
+    var lx;
+    var ly;
+    if (s.vertical && t.vertical) {
+      if (s.x === t.x) {
+        d = "M" + s.x + " " + s.y + "V" + t.y;
+        lx = s.x + 10;
+        ly = (s.y + t.y) / 2;
+      } else {
+        var bendY = e.bend != null ? e.bend : (s.y + t.y) / 2;
+        d = "M" + s.x + " " + s.y + "V" + bendY + "H" + t.x + "V" + t.y;
+        lx = (s.x + t.x) / 2;
+        ly = bendY - 9;
+      }
+    } else if (s.vertical && !t.vertical) {
+      d = "M" + s.x + " " + s.y + "V" + t.y + "H" + t.x;
+      lx = (s.x + t.x) / 2;
+      ly = t.y - 9;
+    } else if (!s.vertical && t.vertical) {
+      d = "M" + s.x + " " + s.y + "H" + t.x + "V" + t.y;
+      lx = (s.x + t.x) / 2;
+      ly = s.y - 9;
+    } else if (s.y === t.y) {
+      d = "M" + s.x + " " + s.y + "H" + t.x;
+      lx = (s.x + t.x) / 2;
+      ly = s.y - 10;
+    } else {
+      var bendX = e.bend != null ? e.bend : (s.x + t.x) / 2;
+      d = "M" + s.x + " " + s.y + "H" + bendX + "V" + t.y + "H" + t.x;
+      lx = bendX;
+      ly = (s.y + t.y) / 2;
     }
     return {
-      d: ortho(sx, sy, tx, ty, "y"),
-      lx: Math.max(sx, tx) + 58, ly: (sy + ty) / 2, lw: 104,
-      maxX: Math.max(sx, tx), maxY: Math.max(sy, ty)
+      d: d,
+      lx: e.lx != null ? e.lx : lx,
+      ly: e.ly != null ? e.ly : ly,
+      lw: e.lw != null ? e.lw : 132,
+      maxX: Math.max(s.x, t.x, e.bend != null ? e.bend : 0),
+      maxY: Math.max(s.y, t.y, s.vertical && t.vertical && e.bend != null
+        ? e.bend : 0)
     };
   }
 
-  function configModule(node) {
+  /* Kind-specific glyphs. Every visible outline carries .config-shape so
+     hover/selection styling never touches the transparent hit rect. */
+  function configShapeMarkup(node) {
     var fill = toneFill(node.tone);
     var stroke = toneStroke(node.tone);
+    var dash = node.dashed ? 'stroke-dasharray="6 5" ' : "";
+    var base = 'class="config-shape" fill="' + fill + '" stroke="' + stroke +
+      '" stroke-width="1.4" ' + dash;
+    var x = node.x;
+    var y = node.y;
+    var w = node.w;
+    var h = node.h;
+    function poly(points) {
+      return '<polygon ' + base + 'points="' + points.map(function (p) {
+        return p[0] + "," + p[1];
+      }).join(" ") + '"/>';
+    }
+    if (node.kind === "weight") {
+      if (node.glyph === "pair") {
+        /* Paired down/up trapezoids (low-rank bottleneck), waist at mid. */
+        var waistL = x + w * 0.36;
+        var waistR = x + w * 0.64;
+        var mid = y + h / 2;
+        return poly([[x, y], [x + w, y], [waistR, mid], [waistL, mid]]) +
+          poly([[waistL, mid], [waistR, mid], [x + w, y + h], [x, y + h]]);
+      }
+      if (node.glyph === "up") {
+        /* Wide top: expansion along the upward data flow. */
+        return poly([[x, y], [x + w, y],
+          [x + w * 0.86, y + h], [x + w * 0.14, y + h]]);
+      }
+      /* Default "down": narrow top, i.e. compression along upward flow. */
+      return poly([[x + w * 0.14, y], [x + w * 0.86, y],
+        [x + w, y + h], [x, y + h]]);
+    }
+    if (node.kind === "operator") {
+      if (node.glyph === "pill") {
+        return '<rect ' + base + 'x="' + x + '" y="' + y + '" width="' + w +
+          '" height="' + h + '" rx="' + h / 2 + '"/>';
+      }
+      if (node.glyph === "diamond") {
+        return poly([[x + w / 2, y], [x + w, y + h / 2],
+          [x + w / 2, y + h], [x, y + h / 2]]);
+      }
+      var r = Math.min(w, h) / 2;
+      return '<circle ' + base + 'cx="' + (x + w / 2) + '" cy="' +
+        (y + h / 2) + '" r="' + r + '"/>';
+    }
+    if (node.kind === "state") {
+      /* Double border marks persistent memory. */
+      return '<rect ' + base + 'x="' + x + '" y="' + y + '" width="' + w +
+        '" height="' + h + '" rx="10"/>' +
+        '<rect class="config-shape" fill="none" stroke="' + stroke +
+        '" stroke-width="1" stroke-opacity=".55" x="' + (x + 3.5) +
+        '" y="' + (y + 3.5) + '" width="' + (w - 7) + '" height="' +
+        (h - 7) + '" rx="7"/>';
+    }
+    if (node.kind === "block") {
+      return '<rect ' + base + 'x="' + x + '" y="' + y + '" width="' + w +
+        '" height="' + h + '" rx="13" stroke-width="1.7"/>';
+    }
+    return '<rect ' + base + 'x="' + x + '" y="' + y + '" width="' + w +
+      '" height="' + h + '" rx="10"/>';
+  }
+
+  function configModule(node) {
     var cx = node.x + node.w / 2;
-    var titleY = node.y + node.h / 2 - (node.value != null ? 7 : 0);
-    var aria = "配置模块 " + fallbackLabel(node.label) +
-      (node.value != null ? "：" + fallbackLabel(node.value) : "");
+    var cy = node.y + node.h / 2;
+    var hasShape = node.texShape != null;
+    var title = node.tex != null
+      ? M(node.tex, node.fallback != null ? node.fallback : node.label)
+      : node.label;
+    var shape = hasShape
+      ? M(node.texShape, node.shapeFallback != null
+          ? node.shapeFallback : fallbackLabel(node.texShape))
+      : null;
+    var titleY = hasShape && node.kind !== "operator" ? cy - 8 : cy;
+    var aria = "配置模块（" + (CONFIG_KIND_WORDS[node.kind] || node.kind) +
+      "）" + fallbackLabel(title) + "：" + node.label;
+    var body =
+      '<rect class="config-module-hit" x="' + node.x + '" y="' + node.y +
+      '" width="' + node.w + '" height="' + node.h +
+      '" fill="#ffffff" fill-opacity="0" stroke="none"/>' +
+      configShapeMarkup(node) +
+      labelMarkup(cx, titleY, node.w + 26, 28, title, node.titleSize,
+        P.ink, 600) +
+      (shape && node.kind !== "operator"
+        ? labelMarkup(cx, cy + 12, node.w + 30, 22, shape, node.shapeSize,
+            P.muted, 500)
+        : "");
     return (
-      '<g class="config-module" data-config-module="' + escapeText(node.id) + '"' +
+      '<g class="config-module" data-config-module="' + escapeText(node.id) +
+      '" data-config-kind="' + escapeText(node.kind) + '"' +
       (node.detail ? ' data-config-detail="' + escapeText(node.detail) + '"' : "") +
       ' role="button" tabindex="0" aria-pressed="' +
       (node.selected ? "true" : "false") +
-      '" aria-label="' + escapeText(aria) + '">' +
-      '<rect class="config-module-box" x="' + node.x + '" y="' + node.y +
-      '" width="' + node.w + '" height="' + node.h +
-      '" rx="9" fill="' + fill + '" stroke="' + stroke +
-      '" stroke-width="1.35" ' +
-      (node.dashed ? 'stroke-dasharray="6 5" ' : "") + '/>' +
-      labelMarkup(cx, titleY, node.w - 18, 30, node.label, 10.4, P.ink, 600) +
-      (node.value != null
-        ? labelMarkup(cx, node.y + node.h / 2 + 14, node.w - 16, 22,
-            node.value, 8.4, P.muted, 500)
-        : "") +
-      '</g>'
+      '" aria-label="' + escapeText(aria) + '">' + body + '</g>'
     );
   }
 
@@ -1646,6 +1756,112 @@
     );
   }
 
+  /* Static geometry guard for the config explorer: no connector may
+     traverse a module interior, and collinear rails from different edges
+     must not overlap (shared-source fan-out excepted). */
+  function validateConfigGeometry(svg, key) {
+    function pathPoints(d) {
+      var points = [];
+      var x = 0;
+      var y = 0;
+      var match;
+      var commands = /([MHV])\s*(-?[\d.]+)(?:\s+(-?[\d.]+))?/g;
+      while ((match = commands.exec(d))) {
+        if (match[1] === "M") {
+          x = Number(match[2]);
+          y = Number(match[3]);
+        } else if (match[1] === "H") {
+          x = Number(match[2]);
+        } else {
+          y = Number(match[2]);
+        }
+        points.push({ x: x, y: y });
+      }
+      return points;
+    }
+
+    var boxes = [];
+    var boxMatch;
+    var boxPattern = /<rect class="config-module-hit" x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"/g;
+    while ((boxMatch = boxPattern.exec(svg))) {
+      boxes.push({
+        x: Number(boxMatch[1]),
+        y: Number(boxMatch[2]),
+        w: Number(boxMatch[3]),
+        h: Number(boxMatch[4])
+      });
+    }
+
+    var edges = [];
+    var edgeMatch;
+    var edgePattern = /<g class="config-edge"[^>]*>\s*<path d="([^"]+)"/g;
+    while ((edgeMatch = edgePattern.exec(svg))) {
+      edges.push({ d: edgeMatch[1], points: pathPoints(edgeMatch[1]) });
+    }
+
+    function crossesInterior(a, z, node) {
+      var epsilon = 0.75;
+      if (a.x === z.x) {
+        return a.x > node.x + epsilon && a.x < node.x + node.w - epsilon &&
+          Math.max(Math.min(a.y, z.y), node.y + epsilon) <
+          Math.min(Math.max(a.y, z.y), node.y + node.h - epsilon);
+      }
+      if (a.y === z.y) {
+        return a.y > node.y + epsilon && a.y < node.y + node.h - epsilon &&
+          Math.max(Math.min(a.x, z.x), node.x + epsilon) <
+          Math.min(Math.max(a.x, z.x), node.x + node.w - epsilon);
+      }
+      throw new Error(key + ": config connector is not orthogonal: " + a.x +
+        "," + a.y + " -> " + z.x + "," + z.y);
+    }
+
+    edges.forEach(function (item) {
+      for (var i = 1; i < item.points.length; i += 1) {
+        for (var j = 0; j < boxes.length; j += 1) {
+          if (crossesInterior(item.points[i - 1], item.points[i], boxes[j])) {
+            throw new Error(key + ": config connector traverses module: " +
+              item.d);
+          }
+        }
+      }
+    });
+
+    var RAIL_GAP = 3.5;
+    var OVERLAP_LIMIT = 6;
+    function sharedSpan(a1, a2, b1, b2) {
+      return Math.min(Math.max(a1, a2), Math.max(b1, b2)) -
+        Math.max(Math.min(a1, a2), Math.min(b1, b2));
+    }
+    for (var ei = 0; ei < edges.length; ei += 1) {
+      for (var ej = ei + 1; ej < edges.length; ej += 1) {
+        var A = edges[ei].points;
+        var B = edges[ej].points;
+        var sharedSource = A[0].x === B[0].x && A[0].y === B[0].y;
+        for (var si = 1; si < A.length; si += 1) {
+          for (var sj = 1; sj < B.length; sj += 1) {
+            if (sharedSource && si === 1 && sj === 1) continue;
+            var a0 = A[si - 1];
+            var a1 = A[si];
+            var b0 = B[sj - 1];
+            var b1 = B[sj];
+            var overlap = -1;
+            if (a0.x === a1.x && b0.x === b1.x &&
+                Math.abs(a0.x - b0.x) <= RAIL_GAP) {
+              overlap = sharedSpan(a0.y, a1.y, b0.y, b1.y);
+            } else if (a0.y === a1.y && b0.y === b1.y &&
+                Math.abs(a0.y - b0.y) <= RAIL_GAP) {
+              overlap = sharedSpan(a0.x, a1.x, b0.x, b1.x);
+            }
+            if (overlap > OVERLAP_LIMIT) {
+              throw new Error(key + ": overlapping config rails: " +
+                edges[ei].d + " | " + edges[ej].d);
+            }
+          }
+        }
+      }
+    }
+  }
+
   function buildConfig(config) {
     if (!config || typeof config !== "object") {
       throw new Error("buildConfig: a config object is required");
@@ -1655,23 +1871,13 @@
     var rootId = "attention-config-" +
       key.replace(/[^A-Za-z0-9_-]/g, "-") + "-" + buildSerial;
 
-    var rawNodes = config.nodes || config.modules;
-    var nodes = [];
-    if (Array.isArray(rawNodes)) {
-      rawNodes.forEach(function (spec, index) {
-        if (!spec || spec.id == null) {
-          throw new Error(key + ": config node #" + index + " is missing an id");
-        }
-        nodes.push(normalizeConfigNode(String(spec.id), spec, index));
-      });
-    } else if (rawNodes && typeof rawNodes === "object") {
-      Object.keys(rawNodes).forEach(function (id, index) {
-        nodes.push(normalizeConfigNode(id, rawNodes[id] || {}, index));
-      });
+    var rawNodes = config.modules || config.nodes;
+    if (!Array.isArray(rawNodes) || !rawNodes.length) {
+      throw new Error(key + ": config.modules must declare at least one module");
     }
-    if (!nodes.length) {
-      throw new Error(key + ": config.nodes must declare at least one module");
-    }
+    var nodes = rawNodes.map(function (spec, index) {
+      return normalizeConfigNode(spec, index, key);
+    });
     var byId = {};
     nodes.forEach(function (node) {
       if (byId[node.id]) {
@@ -1696,35 +1902,17 @@
         label: spec.label != null ? spec.label : null,
         tone: configMarkerTone(spec.tone || "muted"),
         dashed: !!spec.dashed,
-        back: !!spec.back
+        fromSide: spec.fromSide != null ? String(spec.fromSide) : null,
+        toSide: spec.toSide != null ? String(spec.toSide) : null,
+        fromAt: typeof spec.fromAt === "number" ? spec.fromAt : null,
+        toAt: typeof spec.toAt === "number" ? spec.toAt : null,
+        bend: typeof spec.bend === "number" ? spec.bend : null,
+        lx: typeof spec.lx === "number" ? spec.lx : null,
+        ly: typeof spec.ly === "number" ? spec.ly : null,
+        lw: typeof spec.lw === "number" ? spec.lw : null
       };
     });
 
-    var lanes = [];
-    if (Array.isArray(config.lanes)) {
-      config.lanes.forEach(function (lane, index) {
-        if (!lane || lane.id == null) {
-          throw new Error(key + ": config lane #" + index + " is missing an id");
-        }
-        lanes.push({
-          id: String(lane.id),
-          label: lane.label != null ? String(lane.label) : String(lane.id),
-          tone: lane.tone || "paper"
-        });
-      });
-    } else {
-      var seenLanes = {};
-      nodes.forEach(function (node) {
-        if (node.lane && !seenLanes[node.lane]) {
-          seenLanes[node.lane] = true;
-          lanes.push({ id: node.lane, label: node.lane, tone: "paper" });
-        }
-      });
-    }
-
-    layoutConfigNodes(nodes, edges, lanes);
-
-    var L = CONFIG_LAYOUT;
     var maxRight = 0;
     var maxBottom = 0;
     nodes.forEach(function (node) {
@@ -1732,41 +1920,49 @@
       maxBottom = Math.max(maxBottom, node.y + node.h);
     });
 
-    /* Lane panels sit behind the modules; band extents come from the
-       members' bounding boxes, so explicit-geometry modules are covered. */
-    var laneBody = "";
-    if (lanes.length) {
-      var laneIndex = {};
-      lanes.forEach(function (lane) { laneIndex[lane.id] = lane; });
-      lanes.forEach(function (lane) {
-        var top = Infinity;
-        var bottom = -Infinity;
-        nodes.forEach(function (node) {
-          if (resolveLaneId(node, lanes, laneIndex) !== lane.id) return;
-          top = Math.min(top, node.y);
-          bottom = Math.max(bottom, node.y + node.h);
-        });
-        if (top === Infinity) return;
-        var panelX = L.margin;
-        var panelY = top - L.lanePadY;
-        var panelW = maxRight + L.lanePadX - panelX;
-        var panelH = bottom - top + 2 * L.lanePadY;
-        maxRight = Math.max(maxRight, panelX + panelW);
-        maxBottom = Math.max(maxBottom, panelY + panelH);
-        laneBody += panel(panelX, panelY, panelW, panelH, lane.label, lane.tone);
+    /* Group panels sit behind everything; extents come from the members'
+       bounding boxes so hand-placed geometry stays covered. */
+    var groupBody = "";
+    (config.groups || []).forEach(function (group, index) {
+      if (!group || group.id == null || !Array.isArray(group.members)) {
+        throw new Error(key + ": config group #" + index +
+          " needs an id and a members array");
+      }
+      var left = Infinity;
+      var right = -Infinity;
+      var top = Infinity;
+      var bottom = -Infinity;
+      group.members.forEach(function (memberId) {
+        var member = byId[String(memberId)];
+        if (!member) {
+          throw new Error(key + ": config group " + group.id +
+            " references unknown module " + memberId);
+        }
+        left = Math.min(left, member.x);
+        right = Math.max(right, member.x + member.w);
+        top = Math.min(top, member.y);
+        bottom = Math.max(bottom, member.y + member.h);
       });
-    }
+      if (left === Infinity) return;
+      var pad = typeof group.pad === "number" ? group.pad : 14;
+      var panelX = left - pad;
+      var panelY = top - pad;
+      var panelW = right - left + 2 * pad;
+      var panelH = bottom - top + 2 * pad;
+      maxRight = Math.max(maxRight, panelX + panelW);
+      maxBottom = Math.max(maxBottom, panelY + panelH +
+        (group.titlePos === "bottom" ? 14 : 0));
+      groupBody += panel(panelX, panelY, panelW, panelH,
+        group.label != null ? String(group.label) : String(group.id),
+        group.tone || "paper", false,
+        { titlePos: group.titlePos === "bottom" ? "bottom" : undefined });
+    });
 
     var nodeBody = nodes.map(configModule).join("");
 
     var edgeBody = "";
-    var backCount = 0;
     edges.forEach(function (e) {
-      var a = byId[e.from];
-      var b = byId[e.to];
-      var isBack = a !== b && a.x >= b.x + b.w + 8;
-      var route = routeConfigEdge(a, b, isBack ? backCount : 0);
-      if (isBack) backCount += 1;
+      var route = routeConfigEdge(byId[e.from], byId[e.to], e);
       maxRight = Math.max(maxRight, route.maxX);
       maxBottom = Math.max(maxBottom, route.maxY);
       if (e.label != null) {
@@ -1776,8 +1972,8 @@
       edgeBody += configEdgeMarkup(rootId, route, e);
     });
 
-    var width = Math.ceil(maxRight + L.margin);
-    var height = Math.ceil(maxBottom + L.margin);
+    var width = Math.ceil(maxRight + CONFIG_MARGIN);
+    var height = Math.ceil(maxBottom + CONFIG_MARGIN);
     var titleId = rootId + "-title";
     var descId = rootId + "-desc";
     var title = config.title != null
@@ -1797,12 +1993,13 @@
       '<g style="' + STYLE_VARS + '">' + defs(rootId) +
       '<rect width="' + width + '" height="' + height + '" fill="' +
       P.canvas + '"/>' +
-      laneBody + edgeBody + nodeBody +
+      groupBody + edgeBody + nodeBody +
       '</g></svg>';
 
     if (/<script\b/i.test(svg)) {
       throw new Error(key + ": config svg must not contain inline scripts");
     }
+    validateConfigGeometry(svg, key);
 
     return {
       svg: svg,

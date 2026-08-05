@@ -1,6 +1,9 @@
-"""Educational recurrent Gated Delta attention in plain PyTorch.
+"""Educational DeltaNet-family recurrences in plain PyTorch.
 
-The implementation is intentionally token-by-token so the state update is
+The file follows the DeltaNet narrative in three stages: an additive
+fast-weight baseline, the pure delta rule (read the old prediction, write
+only the error), and the scalar-gated form used by Gated DeltaNet.  Every
+recurrence is intentionally token-by-token so the state update stays
 visible.  It is suitable for CPU experiments, not throughput comparisons.
 """
 
@@ -59,7 +62,105 @@ class CausalDepthwiseConv1d(nn.Module):
 # [/Block 01]
 
 
-# [Block 02] Scalar-gated delta recurrence
+# [Block 02] Additive fast-weight recurrence
+def additive_recurrence(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    memory: Optional[Tensor] = None,
+) -> Tuple[Tensor, Tensor]:
+    """Linear-attention memory: blindly append every key/value pair.
+
+    Shapes:
+        q, k: ``[B,T,H,Dk]``; v: ``[B,T,H,Dv]``.
+        memory: optional state ``S [B,H,Dk,Dv]``.
+
+    ``S <- S + k_t v_t^T`` never reads the state before writing.  Repeated
+    or similar keys therefore pile up: reading back with a reused key
+    returns the sum of everything stored under it, not the latest value.
+    This interference is the failure the delta rule fixes.
+    """
+
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError("q, k, and v must have shapes [B, T, H, D]")
+    if q.shape != k.shape or q.shape[:3] != v.shape[:3]:
+        raise ValueError("q/k must match and v must share [B, T, H]")
+
+    batch, length, heads, key_dim = k.shape
+    value_dim = v.shape[-1]
+    if memory is None:
+        memory = k.new_zeros(batch, heads, key_dim, value_dim)
+
+    outputs = []
+    for t in range(length):
+        memory = memory + torch.einsum("bhk,bhv->bhkv", k[:, t], v[:, t])
+        outputs.append(torch.einsum("bhkv,bhk->bhv", memory, q[:, t]))
+
+    output = torch.stack(outputs, dim=1) if outputs else v.new_empty(
+        batch, 0, heads, value_dim
+    )
+    return output, memory
+# [/Block 02]
+
+
+# [Block 03] Delta-rule recurrence
+def delta_recurrence(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    beta: Tensor,
+    memory: Optional[Tensor] = None,
+    norm_eps: float = 1e-6,
+) -> Tuple[Tensor, Tensor]:
+    """Pure DeltaNet: read the old prediction, then write only the error.
+
+    Shapes follow :func:`additive_recurrence` plus ``beta [B,T,H]``, one
+    delta step size per head and token.
+
+    Per token:
+
+    ``prediction = S^T k_t``   (what the memory currently answers)
+    ``error = v_t - prediction``
+    ``S <- S + beta_t k_t error^T``   (erase old, write the correction)
+
+    q and k are L2-normalized, so ``||k_t|| = 1`` and the update equals
+    ``(I - beta_t k_t k_t^T) S + beta_t k_t v_t^T``: the state changes only
+    along the ``k_t`` direction, and ``beta_t`` in ``(0,1)`` interpolates
+    between the old association and the new value.
+    """
+
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError("q, k, and v must have shapes [B, T, H, D]")
+    if q.shape != k.shape or q.shape[:3] != v.shape[:3]:
+        raise ValueError("q/k must match and v must share [B, T, H]")
+    if beta.shape != q.shape[:3]:
+        raise ValueError("beta must have shape [B, T, H]")
+
+    batch, length, heads, key_dim = q.shape
+    value_dim = v.shape[-1]
+    q = F.normalize(q, p=2.0, dim=-1, eps=norm_eps)
+    k = F.normalize(k, p=2.0, dim=-1, eps=norm_eps)
+
+    if memory is None:
+        memory = q.new_zeros(batch, heads, key_dim, value_dim)
+
+    outputs = []
+    for t in range(length):
+        key_t = k[:, t]  # [B,H,Dk]
+        prediction = torch.einsum("bhkv,bhk->bhv", memory, key_t)
+        error = v[:, t] - prediction
+        correction = torch.einsum("bhk,bhv->bhkv", key_t, error)
+        memory = memory + beta[:, t, :, None, None] * correction
+        outputs.append(torch.einsum("bhkv,bhk->bhv", memory, q[:, t]))
+
+    output = torch.stack(outputs, dim=1) if outputs else v.new_empty(
+        batch, 0, heads, value_dim
+    )
+    return output, memory
+# [/Block 03]
+
+
+# [Block 04] Scalar-gated delta recurrence
 def gated_delta_recurrence(
     q: Tensor,
     k: Tensor,
@@ -69,7 +170,7 @@ def gated_delta_recurrence(
     memory: Optional[Tensor] = None,
     norm_eps: float = 1e-6,
 ) -> Tuple[Tensor, Tensor]:
-    """Apply a normalized, scalar-gated delta rule.
+    """Gated DeltaNet: the delta rule plus one scalar decay per head.
 
     Shapes:
         q, k: ``[B,T,H,Dk]`` (normalized internally).
@@ -78,13 +179,14 @@ def gated_delta_recurrence(
         beta: ``[B,T,H]``, one delta step size per head and token.
         memory: optional tutorial state ``S [B,H,Dk,Dv]``.
 
-    The update is written in a prediction-error form:
+    The update is :func:`delta_recurrence` applied to a decayed state:
 
     ``S_bar = alpha_t S``
     ``S <- S_bar + beta_t k_t (v_t - S_bar^T k_t)^T``.
 
     With unit-norm keys this expands to
-    ``alpha_t (I - beta_t k_t k_t^T) S + beta_t k_t v_t^T``.
+    ``alpha_t (I - beta_t k_t k_t^T) S + beta_t k_t v_t^T``, and
+    ``alpha_t = 1`` recovers the pure delta rule exactly.
 
     The paper commonly stores a value-by-key fast-weight matrix ``F``.  This
     tutorial stores the transpose ``S = F^T`` so keys index rows and the code
@@ -127,10 +229,10 @@ def gated_delta_recurrence(
         batch, 0, heads, value_dim
     )
     return output, memory
-# [/Block 02]
+# [/Block 04]
 
 
-# [Block 03] Importable Gated Delta module
+# [Block 05] Importable Gated Delta module
 class GatedDeltaState(NamedTuple):
     """Streaming memory plus the independent q/k/v ShortConv histories."""
 
@@ -213,22 +315,55 @@ class GatedDeltaAttention(nn.Module):
         y = self.out_proj(y.reshape(batch, length, self.d_model))
         new_conv_cache = (new_q_cache, new_k_cache, new_v_cache)
         return y, GatedDeltaState(new_memory, new_conv_cache)
-# [/Block 03]
+# [/Block 05]
 
 
-# [Block 04] Reference simplifications
+# [Block 06] Reference simplifications
 REFERENCE_SIMPLIFICATIONS = (
-    "The recurrence uses a Python loop rather than a WY/scan chunk kernel.",
+    "additive_recurrence and delta_recurrence are teaching baselines for the "
+    "narrative; the importable GatedDeltaAttention module below runs the gated form.",
+    "The recurrences use Python loops; training kernels keep state "
+    "checkpoints at chunk boundaries and use in-chunk WY/UT matmul forms "
+    "instead of a full per-token state scan.",
     "Projection widths are kept equal to d_model instead of using production expansions.",
     "Gate equations follow GDN, but initialization is simplified and not checkpoint-compatible.",
+    "The fixed [Dk,Dv] state bounds exact recall; frontier stacks optionally "
+    "interleave sparse or full global-attention layers when retrieval saturates.",
     "No fused kernels, tensor-parallel layout, mixed-precision policy, or custom backward is used.",
 )
-# [/Block 04]
+# [/Block 06]
 
 
-# [Block 05] Deterministic smoke test
+# [Block 07] Deterministic smoke test
 def _smoke_test() -> None:
     torch.manual_seed(1)
+
+    # Stage progression: a reused key pollutes the additive memory, but the
+    # delta rule (beta = 1, unit-norm key) overwrites it exactly.
+    key = F.normalize(torch.randn(1, 1, 1, 4), p=2.0, dim=-1)
+    keys = key.expand(1, 2, 1, 4)
+    values = torch.randn(1, 2, 1, 3)
+    full_write = torch.ones(1, 2, 1)
+    additive_out, _ = additive_recurrence(keys, keys, values)
+    delta_out, _ = delta_recurrence(keys, keys, values, full_write)
+    torch.testing.assert_close(delta_out[:, -1], values[:, -1])
+    assert not torch.allclose(additive_out[:, -1], values[:, -1])
+    print("delta rule overwrites a reused key; additive memory interferes")
+
+    # alpha = 1 collapses Gated DeltaNet back onto the pure delta rule.
+    q = torch.randn(2, 6, 4, 4)
+    k = torch.randn(2, 6, 4, 4)
+    v = torch.randn(2, 6, 4, 5)
+    beta = torch.rand(2, 6, 4)
+    gated_out, gated_memory = gated_delta_recurrence(
+        q, k, v, torch.ones(2, 6, 4), beta
+    )
+    delta_ref, delta_memory = delta_recurrence(q, k, v, beta)
+    torch.testing.assert_close(gated_out, delta_ref)
+    torch.testing.assert_close(gated_memory, delta_memory)
+    print("gated_delta_recurrence(alpha=1) == delta_recurrence")
+
+    # Full-sequence forward equals token-by-token streaming for the module.
     model = GatedDeltaAttention(d_model=16, num_heads=4, conv_kernel_size=3)
     model.eval()
     x = torch.randn(2, 6, 16)
@@ -251,4 +386,4 @@ def _smoke_test() -> None:
 
 if __name__ == "__main__":
     _smoke_test()
-# [/Block 05]
+# [/Block 07]

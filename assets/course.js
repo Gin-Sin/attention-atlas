@@ -122,6 +122,35 @@
     }).join("") + "</div>";
   }
 
+  var CONFIG_KIND_BADGES = {
+    activation: "Activation · 激活张量",
+    weight: "Weight · 可学习权重",
+    operator: "Operator · 算子/门控",
+    state: "State · 缓存/状态",
+    block: "Block · 复合模块"
+  };
+
+  /* Visual-grammar legend: the card must distinguish activations from
+     weights before any module is clicked. */
+  function renderAttentionConfigLegend() {
+    function item(shape, label) {
+      return '<span class="attention-config__legend-item">' +
+        '<svg viewBox="0 0 28 16" aria-hidden="true" focusable="false">' +
+        shape + "</svg>" + esc(label) + "</span>";
+    }
+    return '<div class="attention-config__legend" aria-label="视觉图例">' +
+      item('<rect x="2" y="2.5" width="24" height="11" rx="4" class="legend-activation"/>',
+        "圆角块 = 激活张量") +
+      item('<polygon points="6,2.5 22,2.5 26,13.5 2,13.5" class="legend-weight"/>',
+        "梯形 = 可学习权重") +
+      item('<circle cx="14" cy="8" r="6" class="legend-operator"/>',
+        "圆 / 菱形 = 算子·门控") +
+      item('<rect x="2" y="2" width="24" height="12" rx="4" class="legend-state"/>' +
+        '<rect x="4.5" y="4.5" width="19" height="7" rx="2.5" class="legend-state-inner"/>',
+        "双框 = 缓存/状态") +
+      "</div>";
+  }
+
   function renderAttentionConfig(config) {
     if (!config || config.omit) return "";
     if (!(config.modules || []).length) {
@@ -150,7 +179,8 @@
     return '<section class="attention-config" aria-labelledby="attention-config-title">' +
       '<header class="attention-config__header"><span>Representative Attention Configuration</span>' +
       '<h2 id="attention-config-title">' + esc(config.model) + "</h2><p>" +
-      esc(config.scope) + '</p></header><div class="attention-config__explorer">' +
+      esc(config.scope) + "</p>" + renderAttentionConfigLegend() +
+      '</header><div class="attention-config__explorer">' +
       '<div class="attention-config__map" aria-label="可交互模型结构图">' +
       diagramSvg + '</div><aside class="attention-config__detail" data-config-detail ' +
       'aria-live="polite" aria-atomic="true">' + renderAttentionConfigDetail(initial) +
@@ -159,16 +189,23 @@
       sources + "</div></footer></section>";
   }
 
+  /* Detail rows show TeX symbols and symbolic tensor shapes (rendered by
+     KaTeX after each update); concrete representative values stay plain. */
   function renderAttentionConfigDetail(module) {
     if (!module) return "";
+    var kindBadge = CONFIG_KIND_BADGES[module.kind]
+      ? '<span class="attention-config__kind attention-config__kind--' +
+        esc(module.kind) + '">' + esc(CONFIG_KIND_BADGES[module.kind]) + "</span>"
+      : "";
     var symbols = (module.symbols || []).map(function (item) {
-      return '<div class="attention-config__symbol"><dt><code>' +
-        esc(item.symbol) + '</code><span>' + esc(item.label || "Shape") +
-        '</span></dt><dd><strong>' + esc(item.shape) + '</strong><span>' +
+      return '<div class="attention-config__symbol"><dt><code>\\(' +
+        esc(item.tex) + '\\)</code><span>' + esc(item.label || "Shape") +
+        '</span></dt><dd><strong>\\(' + esc(item.shape) + '\\)</strong><span>' +
         esc(item.value) + '</span><small>' + esc(item.note) + "</small></dd></div>";
     }).join("");
-    return '<span class="attention-config__detail-kicker">Selected module</span><h3>' +
-      esc(module.label) + '</h3><p>' + esc(module.description) +
+    return '<span class="attention-config__detail-kicker">Selected module</span>' +
+      '<h3>' + esc(module.label) + "</h3>" + kindBadge +
+      '<p>' + esc(module.description) +
       '</p><dl class="attention-config__symbols">' + symbols + "</dl>";
   }
 
@@ -183,15 +220,34 @@
     }));
     if (!detail || !nodes.length) return;
 
+    /* Weight/activation relations are symmetric for highlighting. */
+    var related = new Map();
+    (config.modules || []).forEach(function (module) {
+      (module.relates || []).forEach(function (other) {
+        if (!related.has(module.id)) related.set(module.id, new Set());
+        if (!related.has(other)) related.set(other, new Set());
+        related.get(module.id).add(other);
+        related.get(other).add(module.id);
+      });
+    });
+
     function selectModule(id, focusNode) {
       var module = modules.get(id);
       if (!module) return;
+      var relatedIds = related.get(id) || new Set();
       nodes.forEach(function (node) {
-        var selected = node.getAttribute("data-config-module") === id;
+        var nodeId = node.getAttribute("data-config-module");
+        var selected = nodeId === id;
         node.classList.toggle("is-config-selected", selected);
+        node.classList.toggle(
+          "is-config-related",
+          !selected && relatedIds.has(nodeId)
+        );
         node.setAttribute("aria-pressed", selected ? "true" : "false");
       });
       detail.innerHTML = renderAttentionConfigDetail(module);
+      /* The detail panel carries fresh \( … \) markup on every update. */
+      renderMath(detail);
       if (focusNode) focusNode.focus();
     }
 
@@ -209,7 +265,7 @@
   }
 
   /* Default section headings; chapters may override any subset through the
-     optional `sectionTitles` record (currently used by the MLA chapter). */
+     optional `sectionTitles` record for architecture-specific narratives. */
   var SECTION_TITLE_DEFAULTS = {
     motivation: "问题从哪里来",
     constraints: "设计限定条件",

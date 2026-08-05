@@ -544,23 +544,114 @@ button { font: inherit; }
   cursor: pointer;
   outline: none;
 }
-.attention-config__map [data-config-module] rect,
-.attention-config__map [data-config-module] polygon {
+.attention-config__map [data-config-module] .config-shape {
   transition: stroke .18s ease, stroke-width .18s ease, filter .18s ease;
 }
-.attention-config__map [data-config-module]:hover rect,
-.attention-config__map [data-config-module]:focus-visible rect,
-.attention-config__map [data-config-module]:hover polygon,
-.attention-config__map [data-config-module]:focus-visible polygon {
+.attention-config__map [data-config-module]:hover .config-shape,
+.attention-config__map [data-config-module]:focus-visible .config-shape {
   stroke: var(--category-ink);
   stroke-width: 2;
   filter: drop-shadow(0 5px 8px rgb(48 54 58 / 12%));
 }
-.attention-config__map [data-config-module].is-config-selected rect,
-.attention-config__map [data-config-module].is-config-selected polygon {
+.attention-config__map [data-config-module].is-config-selected .config-shape {
   stroke: var(--category-ink);
   stroke-width: 3;
   filter: drop-shadow(0 6px 10px rgb(48 54 58 / 16%));
+}
+/* Weight ↔ activation relations of the current selection. */
+.attention-config__map [data-config-module].is-config-related .config-shape {
+  stroke: var(--category-ink);
+  stroke-width: 2;
+  stroke-dasharray: 3 3;
+}
+.attention-config__map [data-config-module] .svg-math-switch,
+.attention-config__map [data-config-module] foreignObject,
+.attention-config__map [data-config-module] foreignObject * {
+  pointer-events: none;
+}
+.attention-config__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 4px;
+}
+.attention-config__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  font: 500 10px/1.4 var(--mono);
+}
+.attention-config__legend-item svg {
+  width: 28px;
+  height: 16px;
+  flex: none;
+}
+.attention-config__legend-item .legend-activation {
+  fill: #dceafa;
+  stroke: #5c82aa;
+  stroke-width: 1.2;
+}
+.attention-config__legend-item .legend-weight {
+  fill: #fbe0da;
+  stroke: #bb6a55;
+  stroke-width: 1.2;
+}
+.attention-config__legend-item .legend-operator {
+  fill: #e2f2e4;
+  stroke: #5f8d69;
+  stroke-width: 1.2;
+}
+.attention-config__legend-item .legend-state {
+  fill: #f6e1e4;
+  stroke: #a96773;
+  stroke-width: 1.2;
+}
+.attention-config__legend-item .legend-state-inner {
+  fill: none;
+  stroke: #a96773;
+  stroke-width: .8;
+  stroke-opacity: .55;
+}
+.attention-config__kind {
+  display: inline-block;
+  margin: 0 0 10px;
+  padding: 2px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-2);
+  font: 500 9px/1.6 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  background: rgb(255 255 255 / 72%);
+}
+.attention-config__kind--weight {
+  border-color: #bb6a55;
+  color: #9c563f;
+  background: #fbe0da;
+}
+.attention-config__kind--activation {
+  border-color: #5c82aa;
+  color: #46688c;
+  background: #dceafa;
+}
+.attention-config__kind--operator {
+  border-color: #5f8d69;
+  color: #4c7455;
+  background: #e2f2e4;
+}
+.attention-config__kind--state {
+  border-color: #a96773;
+  color: #8c5260;
+  background: #f6e1e4;
+}
+.attention-config__kind--block {
+  border-color: #826ca2;
+  color: #6a5588;
+  background: #ece4f6;
+}
+.attention-config__symbol .katex {
+  font-size: .98em;
 }
 .attention-config__detail {
   min-width: 0;
@@ -665,10 +756,8 @@ button { font: inherit; }
   overflow: hidden;
   border: 1px solid var(--rule);
   border-radius: 14px;
-  background: rgb(255 253 248 / 94%);
+  background: var(--paper);
   box-shadow: 0 16px 44px rgb(48 54 58 / 13%);
-  backdrop-filter: blur(14px);
-  transition: width .2s ease, border-radius .2s ease, box-shadow .2s ease;
 }
 .chapter-toc__header {
   display: flex;
@@ -705,7 +794,6 @@ button { font: inherit; }
 .chapter-toc__toggle i {
   color: var(--category-ink);
   font: normal 500 12px/1 var(--sans);
-  transition: transform .2s ease;
 }
 .chapter-toc__body {
   max-height: calc(100vh - 106px);
