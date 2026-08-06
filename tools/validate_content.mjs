@@ -747,13 +747,17 @@ function validateRenderer(courseSource, chapterHtml) {
     !/data-config-expand/.test(courseSource) ||
     !/config-is-open/.test(courseSource) ||
     !/attention-config__tex/.test(courseSource) ||
-    !/attention-config__symbol-label/.test(courseSource)
+    !/attention-config__symbol-label/.test(courseSource) ||
+    !/function renderConfigInlineMath\(/.test(courseSource) ||
+    !/renderConfigInlineMath\(module\.description\)/.test(courseSource) ||
+    !/renderConfigInlineMath\(item\.value\)/.test(courseSource) ||
+    !/renderConfigInlineMath\(item\.note\)/.test(courseSource)
   ) {
     addError(
       "assets/course.js must rerun KaTeX on config detail updates, render the " +
         "visual-grammar legend, show module kind badges, highlight related " +
         "weights/activations, expose the fullscreen control, and keep TeX " +
-        "separate from detail labels"
+        "separate from detail labels while rendering inline math in detail copy"
     );
   }
   if (/<(?:code|pre)\b[^>]*>\\\\\(/.test(courseSource)) {

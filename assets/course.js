@@ -192,8 +192,32 @@
       sources + "</div></footer></section>";
   }
 
-  /* Detail rows show TeX symbols and symbolic tensor shapes (rendered by
-     KaTeX after each update); concrete representative values stay plain. */
+  /* Detail copy mixes prose with compact variable names such as d_h^R or
+     W_i^O. Wrap those sub/superscript tokens in inline-math delimiters while
+     leaving the surrounding Chinese/English prose untouched. */
+  function renderConfigInlineMath(value) {
+    var source = String(value == null ? "" : value);
+    var tokenPattern =
+      /[A-Za-z\u0370-\u03ff][A-Za-z\u0370-\u03ff\u0300-\u036f]*(?:(?:_|\^)(?:\{[^{}\n]+\}|[A-Za-z0-9\u0370-\u03ff\u0300-\u036f⊤]+))+/g;
+    var output = "";
+    var cursor = 0;
+    var match;
+
+    while ((match = tokenPattern.exec(source))) {
+      output += esc(source.slice(cursor, match.index));
+      var tex = match[0].replace(
+        /([_^])([A-Za-z0-9\u0370-\u03ff\u0300-\u036f⊤]{2,})/g,
+        "$1{$2}"
+      );
+      output += "\\(" + esc(tex) + "\\)";
+      cursor = match.index + match[0].length;
+    }
+
+    return output + esc(source.slice(cursor));
+  }
+
+  /* Symbols and symbolic tensor shapes are already explicit TeX. The helper
+     above catches compact TeX-like tokens in descriptions, values and notes. */
   function renderAttentionConfigDetail(module) {
     if (!module) return "";
     var kindBadge = CONFIG_KIND_BADGES[module.kind]
@@ -205,11 +229,12 @@
         esc(item.tex) + '\\)</span><span class="attention-config__symbol-label">' +
         esc(item.label || "Shape") +
         '</span></dt><dd><strong>\\(' + esc(item.shape) + '\\)</strong><span>' +
-        esc(item.value) + '</span><small>' + esc(item.note) + "</small></dd></div>";
+        renderConfigInlineMath(item.value) + '</span><small>' +
+        renderConfigInlineMath(item.note) + "</small></dd></div>";
     }).join("");
     return '<span class="attention-config__detail-kicker">Selected module</span>' +
       '<h3>' + esc(module.label) + "</h3>" + kindBadge +
-      '<p>' + esc(module.description) +
+      '<p>' + renderConfigInlineMath(module.description) +
       '</p><dl class="attention-config__symbols">' + symbols + "</dl>";
   }
 
